@@ -1,0 +1,8 @@
+{
+	"schema": "lr.revive/1",
+	"_about": "Downed runners and NPC teammates (game/revive.rs). A runner who would die goes down instead, and a downed body is revived by a teammate holding interact beside it. No item is needed. Distances are metres on the floor, times are seconds.",
+	"reach": 1.7,
+	"hold_seconds": 3.0,
+	"timeout_seconds": 45.0,
+	"hunter_stun_seconds": 2.0
+}

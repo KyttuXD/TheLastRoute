@@ -1,0 +1,8 @@
+{
+  "schema": "lr.spectate/1",
+  "button": "SPECTATE",
+  "downed_prompt": "YOU ARE DOWN // SPECTATE",
+  "watching": "WATCHING {name}",
+  "no_one": "NO OTHER RUNNER TO WATCH",
+  "hint": "LEFT AND RIGHT CYCLE THE RUNNERS"
+}

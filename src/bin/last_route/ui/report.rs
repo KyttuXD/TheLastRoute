@@ -1,7 +1,7 @@
 //! The end of a run, as the original plays it: the death moment (death_moment.gd: a dark
 //! subtitle box low on the screen, the catcher's name in spaced capitals and her line typed one
 //! word every 250 ms, from death_lines.json) and then the run card (run_report.gd: the signal
-//! backdrop with its two extra frames, YOU DIED, the reason and the stats grid).
+//! backdrop with its two extra frames, GAME OVER, the reason and the stats grid).
 
 use super::style::*;
 use crate::app::assets::Assets;
@@ -226,9 +226,11 @@ pub struct Card {
     pub primary: String,
     pub secondary: String,
     pub stats: Vec<(&'static str, String)>,
+    /// The SPECTATE button, when another runner is in the room to watch (game/spectate.rs).
+    pub spectate: Option<String>,
 }
 
-pub fn card_for(g: &Game, seed_text: &str, can_respawn: bool) -> Option<Card> {
+pub fn card_for(g: &Game, seed_text: &str, can_respawn: bool, spectate_ok: bool) -> Option<Card> {
     let r = g.report.as_ref()?;
     let name = r.hunter_name.to_uppercase();
     let reason = match r.cause {
@@ -243,7 +245,7 @@ pub fn card_for(g: &Game, seed_text: &str, can_respawn: bool) -> Option<Card> {
         } else {
             "ROUTE SIGNAL // ARCHIVED".into()
         },
-        title: "YOU DIED".into(),
+        title: "GAME OVER".into(),
         reason: if infinite {
             reason
         } else {
@@ -255,6 +257,7 @@ pub fn card_for(g: &Game, seed_text: &str, can_respawn: bool) -> Option<Card> {
             "RESTART ROUTE".into()
         },
         secondary: "MAIN MENU".into(),
+        spectate: (spectate_ok && !g.spectating()).then(|| crate::game::spectate::labels().button.clone()),
         stats: vec![
             ("DEPTH REACHED", depth.to_string()),
             ("SCORE", r.score.max(0).to_string()),
@@ -317,6 +320,7 @@ pub fn draw_card(a: &Assets, c: &Card, focus: usize) -> Option<usize> {
     y += grid_h + 12.0 + 5.0;
     let w1 = button_min(a, &c.primary, 8.0, false).x.max(92.0);
     let w2 = button_min(a, &c.secondary, 7.0, false).x.max(76.0);
+    let w3 = c.spectate.as_ref().map_or(0.0, |s| button_min(a, s, 7.0, false).x.max(76.0));
     let mut hit = None;
     if button(
         a,
@@ -338,7 +342,49 @@ pub fn draw_card(a: &Assets, c: &Card, focus: usize) -> Option<usize> {
     ) {
         hit = Some(1);
     }
+    if let Some(sl) = &c.spectate {
+        if button(
+            a,
+            Rect::new(x + w1 + w2 + 12.0, y, w3, bh),
+            sl,
+            7.0,
+            Kind::Secondary,
+            state(focus == 2),
+        ) {
+            hit = Some(2);
+        }
+    }
     hit
+}
+
+/// The WATCHING line of a spectator, at the top of the screen, and the hint under it.
+pub fn draw_watching(a: &Assets, target: Option<&str>) {
+    let p = pal();
+    let v = view();
+    let labels = crate::game::spectate::labels();
+    let line = match target {
+        Some(name) => labels.watching_line(&name.to_uppercase()),
+        None => labels.no_one.clone(),
+    };
+    let y = 14.0;
+    label_r(a, F::Body, &line, v.x - 14.0, y, 7.0, p.amber);
+    label_r(a, F::Body, &labels.hint, v.x - 14.0, y + lh(F::Body, 7.0) + 2.0, 5.0, p.dim);
+}
+
+/// The SPECTATE prompt of a downed runner, low on the screen. True when it is pressed this frame.
+pub fn draw_downed_prompt(a: &Assets) -> bool {
+    let v = view();
+    let label = &crate::game::spectate::labels().downed_prompt;
+    let w = button_min(a, label, 7.0, false).x.max(150.0);
+    let bh = button_min(a, label, 7.0, false).y.max(18.0);
+    button(
+        a,
+        Rect::new(v.x * 0.5 - w * 0.5, v.y - bh - 30.0, w, bh),
+        label,
+        7.0,
+        Kind::Secondary,
+        state(false),
+    )
 }
 
 #[cfg(test)]

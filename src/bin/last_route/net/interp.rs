@@ -336,6 +336,7 @@ mod tests {
             slim: false,
             hide: None,
             held: None,
+            flash_pitch: None,
         }
     }
 

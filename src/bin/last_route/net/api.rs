@@ -141,6 +141,31 @@ pub fn clear_skin(cfg: &BackendConfig, session_token: &str) -> Result<(), NetErr
     post_with_timeout(cfg, "/api/v1/skins/clear", &json!({"sessionToken": session_token}), Duration::from_secs(10)).map(|_| ())
 }
 
+/// The skin the website holds for an account: `hash` is empty when it holds none, `arms` is the account's ARMS setting
+/// ("auto", "classic" or "slim").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountSkin {
+    pub hash: String,
+    pub arms: String,
+}
+
+impl AccountSkin {
+    pub fn from_json(p: &Json) -> AccountSkin {
+        AccountSkin { hash: s(p, "hash").trim().to_ascii_lowercase(), arms: s(p, "arms").trim().to_ascii_lowercase() }
+    }
+}
+
+/// `GET /api/v1/skins/<ACCOUNT>`: the account's skin, public (no token). The answer is `{ok, account, hash|"", arms,
+/// updatedAt, versions}`. The name is a path segment, so only letters, digits, `_` and `-` are sent.
+pub fn account_skin(cfg: &BackendConfig, account: &str) -> Result<AccountSkin, NetError> {
+    guard(cfg)?;
+    if account.is_empty() || !account.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(NetError::Refused("the account name cannot be used for a skin".to_string()));
+    }
+    let url = cfg.url(&format!("/api/v1/skins/{account}"));
+    check(json_request(Method::Get, url).timeout(Duration::from_secs(10)).send()?).map(|p| AccountSkin::from_json(&p))
+}
+
 // ---- health -------------------------------------------------------------------------------------
 
 /// `GET /api/health` (5 s). `Ok(true)` only for 200 with `ok: true` ("DIRECTORY ONLINE").

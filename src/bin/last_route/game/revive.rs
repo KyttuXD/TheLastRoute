@@ -1,0 +1,306 @@
+//! Downed runners and NPC teammates, with no revive kit (data/revive.json).
+//!
+//! A runner who would die goes down instead ([`Game::go_down`], called from `end_run`). A downed runner lies still: no
+//! move, no interact, no ladder, and the hunters that caught it cannot catch it again. A teammate revives it by holding
+//! interact beside it for `hold_seconds`: a bot standing within `reach` on the same floor does it on its own, and the
+//! runner revives a downed bot the same way by holding interact (`Controls::interact_held`). A downed body that nobody
+//! revives within `timeout_seconds` dies: the runner's run ends ([`Game::finish_run`]), a bot is taken off the floor.
+//!
+//! Bots never walk to a downed teammate yet (npc.rs); they revive only what is within reach of them.
+
+use super::{pdist, Controls, Game};
+use serde_json::Value;
+use std::sync::OnceLock;
+
+/// The embedded file (data/revive.json), by its path under the data folder.
+pub const REVIVE_PATH: &str = "revive.json";
+
+/// The numbers of a revive, from data/revive.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rules {
+    /// Metres on the floor within which a teammate (or the runner, for a bot) can hold the revive.
+    pub reach: f32,
+    /// Seconds of continuous holding that revive a body.
+    pub hold_seconds: f32,
+    /// Seconds a downed body lasts before nobody's revive saves it.
+    pub timeout_seconds: f32,
+    /// Seconds a hunter that caught the runner stays stunned when the runner goes down.
+    pub hunter_stun_seconds: f32,
+}
+
+impl Rules {
+    pub fn parse(text: &str) -> Result<Rules, String> {
+        let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let num = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_f64)
+                .map(|x| x as f32)
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .ok_or_else(|| format!("{k} must be a number of 0 or more"))
+        };
+        Ok(Rules {
+            reach: num("reach")?,
+            hold_seconds: num("hold_seconds")?,
+            timeout_seconds: num("timeout_seconds")?,
+            hunter_stun_seconds: num("hunter_stun_seconds")?,
+        })
+    }
+}
+
+/// The embedded rules (data/revive.json), parsed once.
+pub fn rules() -> &'static Rules {
+    static RULES: OnceLock<Rules> = OnceLock::new();
+    RULES.get_or_init(|| {
+        let text = crate::content::embedded::data_under("")
+            .find(|(p, _)| *p == REVIVE_PATH)
+            .map(|(_, t)| t)
+            .expect("data/revive.json is embedded by build.rs");
+        Rules::parse(text).expect("data/revive.json is valid")
+    })
+}
+
+/// A downed body: the seconds left before it dies, the seconds of revive hold so far, and (for the runner) the hunter
+/// that caught it, for the run report.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Downed {
+    pub remaining: f32,
+    pub held: f32,
+    pub hunter: usize,
+}
+
+impl Game {
+    /// True while the runner lies down (and is not yet revived or dead).
+    pub fn runner_downed(&self) -> bool {
+        self.downed.is_some()
+    }
+
+    /// The runner would die: it goes down instead. Returns true when the runner is down after the call (it went down
+    /// now, or it was down already and a further catch does not kill it; only the timeout does).
+    pub(super) fn go_down(&mut self, hunter: usize) -> bool {
+        if self.downed.is_some() {
+            return true;
+        }
+        let r = rules();
+        self.downed = Some(Downed { remaining: r.timeout_seconds, held: 0.0, hunter });
+        self.escape = None;
+        self.hide_check = None;
+        if self.p.hidden.is_some() {
+            self.leave_locker(None);
+        }
+        self.p.flashlight_on = false;
+        if let Some(h) = self.hunters.get_mut(hunter) {
+            h.apply_stun(r.hunter_stun_seconds, false);
+        }
+        self.say("YOU ARE DOWN");
+        true
+    }
+
+    /// A bot goes down (a teammate can revive it). False when it is not on the floor or is down already.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn npc_go_down(&mut self, id: u32) -> bool {
+        if self.downed_npcs.contains_key(&id) || !self.npcs.iter().any(|n| n.id == id) {
+            return false;
+        }
+        self.downed_npcs.insert(id, Downed { remaining: rules().timeout_seconds, held: 0.0, hunter: 0 });
+        true
+    }
+
+    /// The revive of every downed body, one frame: the holds and the timeouts. Called every frame before the runner's
+    /// own step, so a downed runner is revived or dies here too.
+    pub(super) fn tick_revives(&mut self, dt: f32, c: &Controls) {
+        let r = rules();
+        let level = self.runner_level();
+        let at = self.p.pos;
+        // the teammates who can hold a revive: joined bots that are not down
+        let helpers: Vec<(u32, i32, (f32, f32))> = self
+            .npcs
+            .iter()
+            .filter(|n| n.joined && !self.downed_npcs.contains_key(&n.id))
+            .map(|n| (n.id, n.level, n.at))
+            .collect();
+
+        if let Some(mut d) = self.downed {
+            let helped = helpers.iter().any(|&(_, lv, p)| lv == level && pdist(p, at) <= r.reach);
+            d.held = if helped { d.held + dt } else { 0.0 };
+            d.remaining -= dt;
+            if d.held >= r.hold_seconds {
+                self.downed = None;
+                self.say("YOU ARE BACK UP");
+            } else if d.remaining <= 0.0 {
+                self.downed = None;
+                let a = self.admin_flags();
+                if !(a.god || a.no_target) {
+                    self.finish_run(d.hunter, "contact");
+                }
+            } else {
+                self.downed = Some(d);
+            }
+        }
+
+        // the runner holds a revive on a downed bot by holding interact beside it (not while it is down itself)
+        let runner_helps = self.downed.is_none() && c.interact_held;
+        let ids: Vec<u32> = self.downed_npcs.keys().copied().collect();
+        for id in ids {
+            let Some(npc) = self.npcs.iter().find(|n| n.id == id) else {
+                self.downed_npcs.remove(&id);
+                continue;
+            };
+            let (lv, p, name) = (npc.level, npc.at, npc.name.clone());
+            let helped = (runner_helps && lv == level && pdist(at, p) <= r.reach)
+                || helpers.iter().any(|&(hid, hlv, hp)| hid != id && hlv == lv && pdist(hp, p) <= r.reach);
+            let Some(mut d) = self.downed_npcs.get(&id).copied() else {
+                continue;
+            };
+            d.held = if helped { d.held + dt } else { 0.0 };
+            d.remaining -= dt;
+            if d.held >= r.hold_seconds {
+                self.downed_npcs.remove(&id);
+                self.say(&format!("{name} IS BACK UP"));
+            } else if d.remaining <= 0.0 {
+                self.downed_npcs.remove(&id);
+                self.npcs.retain(|n| n.id != id);
+                self.say(&format!("{name} DID NOT MAKE IT"));
+            } else {
+                self.downed_npcs.insert(id, d);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    fn game() -> (Game, Content) {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-REVIVE-7", 0, &content, &catalog);
+        g.npc_ensure_run(&content);
+        // the run's own bots are few on some difficulties: the tests need two
+        if g.npcs.len() < 2 {
+            g.npc_spawn(2, 90, (0.0, 1.5, 0.0), (1.0, 0.0, 0.0));
+        }
+        (g, content)
+    }
+
+    /// Puts bot `id` on the runner's floor, beside the runner, joined.
+    fn beside_runner(g: &mut Game, id: u32) {
+        let (level, at) = (g.runner_level(), g.p.pos);
+        let n = g.npcs.iter_mut().find(|n| n.id == id).expect("the bot exists");
+        n.joined = true;
+        n.level = level;
+        n.at = at;
+    }
+
+    fn idle() -> Controls {
+        Controls::default()
+    }
+
+    #[test]
+    fn the_data_file_loads_with_the_agreed_numbers() {
+        let r = rules();
+        assert_eq!(r.hold_seconds, 3.0);
+        assert_eq!(r.timeout_seconds, 45.0);
+        assert!(r.reach > 0.0);
+        assert!(Rules::parse("{\"reach\": 1.0}").is_err(), "a missing number is refused");
+    }
+
+    #[test]
+    fn a_downed_runner_is_not_dead() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        assert!(g.runner_downed(), "the catch puts the runner down");
+        assert!(g.report.is_none(), "a downed runner has no run report: it is not dead");
+        // a downed runner's body reads as down to the other players, not as a finished run
+        let state = crate::net::runner_figure::local_state(&g);
+        assert!(state.down, "the wire pose shows the runner down");
+        // a further catch while down does not kill it
+        g.end_run(0, "contact");
+        assert!(g.report.is_none());
+        assert!(g.runner_downed());
+    }
+
+    #[test]
+    fn a_held_revive_restores_the_runner() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        let id = g.npcs[0].id;
+        beside_runner(&mut g, id);
+        // 2.5 s of hold is not enough
+        for _ in 0..25 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(g.runner_downed(), "two and a half seconds is short of the hold");
+        for _ in 0..10 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(!g.runner_downed(), "three seconds of hold restores the runner");
+        assert!(g.report.is_none());
+    }
+
+    #[test]
+    fn a_downed_runner_who_is_not_revived_dies_at_the_timeout() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        // nobody beside the runner: the timeout is 45 s
+        for _ in 0..44 {
+            g.tick_revives(1.0, &idle());
+        }
+        assert!(g.runner_downed(), "44 s is inside the timeout");
+        assert!(g.report.is_none());
+        g.tick_revives(1.0, &idle());
+        assert!(!g.runner_downed());
+        assert!(g.report.is_some(), "the timeout ends the run");
+    }
+
+    #[test]
+    fn a_bot_revives_a_downed_bot() {
+        let (mut g, _) = game();
+        let (a, b) = (g.npcs[0].id, g.npcs[1].id);
+        assert!(g.npc_go_down(a));
+        beside_runner(&mut g, a);
+        beside_runner(&mut g, b);
+        // the revive is held by the other bot, not by the one that is down
+        for _ in 0..31 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(!g.downed_npcs.contains_key(&a), "a teammate's three-second hold revives the bot");
+        assert!(g.downed_npcs.is_empty());
+        assert!(g.npcs.iter().any(|n| n.id == a), "a revived bot stays on the floor");
+    }
+
+    #[test]
+    fn a_downed_bot_nobody_revives_leaves_the_floor_at_the_timeout() {
+        let (mut g, _) = game();
+        let a = g.npcs[0].id;
+        let before = g.npcs.len();
+        assert!(g.npc_go_down(a));
+        assert!(!g.npc_go_down(a), "a bot goes down once");
+        for _ in 0..46 {
+            g.tick_revives(1.0, &idle());
+        }
+        assert!(!g.npcs.iter().any(|n| n.id == a));
+        assert_eq!(g.npcs.len(), before - 1);
+        assert!(g.report.is_none(), "a bot's death is no run end");
+    }
+
+    #[test]
+    fn the_runner_revives_a_downed_bot_by_holding_interact() {
+        let (mut g, _) = game();
+        let a = g.npcs[0].id;
+        assert!(g.npc_go_down(a));
+        beside_runner(&mut g, a);
+        // the bot is beside the runner but only the runner's hold revives it: no other bot is near
+        for id in g.npcs.iter().map(|n| n.id).filter(|&id| id != a).collect::<Vec<_>>() {
+            g.npcs.retain(|n| n.id != id);
+        }
+        let held = Controls { interact_held: true, ..Controls::default() };
+        for _ in 0..31 {
+            g.tick_revives(0.1, &held);
+        }
+        assert!(g.downed_npcs.is_empty(), "the runner's held interact revives the bot");
+    }
+}

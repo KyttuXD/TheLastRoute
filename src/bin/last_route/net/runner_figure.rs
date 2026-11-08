@@ -152,7 +152,7 @@ pub fn remote_state(r: &RemoteView) -> RunnerState {
 }
 
 /// The state of this runner's own body, for the sample it sends (`Sample::with_body`) and for anything that draws it.
-/// Down once its route has ended, stunned while locked, on a ladder (`game/ladder.rs`),
+/// Down once its route has ended or while it lies downed (game/revive.rs), stunned while locked, on a ladder (`game/ladder.rs`),
 /// airborne with the sign of its vertical speed, swimming in water as deep as the swim rules say, chased while a
 /// hunter is in the chase.
 pub fn local_state(g: &Game) -> RunnerState {
@@ -168,8 +168,11 @@ pub fn local_state(g: &Game) -> RunnerState {
         chased: g.hunters.iter().any(|h| h.active && h.state == crate::hunters::brain::State::Chase),
         swimming: crate::game::swim_effects::SwimState::is_swimming(&g.swim_cfg, g.swim.depth),
         stunned: p.stun > 0.0,
-        down: g.report.is_some(),
+        // a downed runner lies down for the others too (game/revive.rs); a dead one's route has ended
+        down: g.report.is_some() || g.runner_downed(),
         speed: p.move_vel.0.hypot(p.move_vel.1),
+        // the sample's pose is the walk clip either way; a viewer reads a backwards step from the sample's position
+        backward: false,
     }
 }
 
@@ -355,7 +358,23 @@ pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose
     draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed, None);
 }
 
-/// Runs the driver of `key` for this frame and draws the figure.
+/// Above this ground speed a step is a teleport (a respawn or a ladder snap), not a walk, so it never reads as backwards.
+const TELEPORT_MPS: f32 = 15.0;
+
+/// Whether a figure with ground velocity `vel` (x, z in metres per second) that faces `yaw` is walking backwards: its
+/// motion points more than 120 degrees away from the way it faces (`forward2` is (-sin yaw, -cos yaw), as the game
+/// uses it). Sideways and forward motion, and a still figure, are not backwards.
+pub fn moving_backward(vel: (f32, f32), yaw: f32) -> bool {
+    let speed = vel.0.hypot(vel.1);
+    if speed <= 1e-4 || speed > TELEPORT_MPS {
+        return false;
+    }
+    let (fx, fz) = (-yaw.sin(), -yaw.cos());
+    (vel.0 * fx + vel.1 * fz) / speed < -0.5
+}
+
+/// Runs the driver of `key` for this frame and draws the figure. The figure's own ground step since its last frame
+/// says whether a moving state is walking backwards (a remote runner's or a bot's facing is its yaw).
 #[allow(clippy::too_many_arguments)]
 fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, dt: f32, epoch: u64) {
     let driven = FIGURES.with(|f| {
@@ -366,7 +385,14 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, sli
         }
         fig.seen = epoch;
         fig.view.as_mut().map(|v| {
-            v.update(state, dt);
+            let here = (pos.x, pos.z);
+            let mut state = *state;
+            if let (Some(last), true) = (v.last_pos, dt > 1e-5) {
+                let vel = ((here.0 - last.0) / dt, (here.1 - last.1) / dt);
+                state.backward = state.moving && moving_backward(vel, yaw);
+            }
+            v.last_pos = Some(here);
+            v.update(&state, dt);
             (v.rig.clone(), v.locals(), v.fade, v.pitch)
         })
     });
@@ -485,6 +511,12 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
         let held = if r.hide.is_some() { None } else { r.held };
         draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, r.slim, &remote_state(r), held, dt, epoch);
+        // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none
+        if let (Some(pitch), None) = (r.flash_pitch, r.hide) {
+            let mut beam = crate::render::beam::flashlight_cone(pos, r.yaw, pitch, r.crouching);
+            beam.texture = Some(a.white.clone());
+            crate::render::draw_stats::draw_counted(&beam);
+        }
     }
     prune(epoch, false);
     draw_occupants(g, a, remotes, active_y);
@@ -588,6 +620,7 @@ mod tests {
             vy,
             clip,
             held: None,
+            flash_pitch: None,
             hide: None,
             hide_since: None,
         }
@@ -645,6 +678,18 @@ mod tests {
         assert_eq!(bot_state(&spec.bots, fast, false, false).pose(), Pose::Sprint, "6 m/s sprints");
         assert_eq!(bot_state(&spec.bots, 0.0, true, false).pose(), Pose::Climb, "a ladder climbs");
         assert_eq!(bot_state(&spec.bots, 0.0, false, true).pose(), Pose::Fall, "a drop falls");
+    }
+
+    #[test]
+    fn a_backwards_step_is_backwards_and_a_forward_one_is_not() {
+        // facing yaw 0 looks along -z (forward2 = (0, -1)); facing yaw pi/2 looks along -x
+        assert!(moving_backward((0.0, 2.0), 0.0), "a step back at yaw 0 is backwards");
+        assert!(!moving_backward((0.0, -2.0), 0.0), "a step forward at yaw 0 is not");
+        assert!(moving_backward((2.0, 0.0), std::f32::consts::FRAC_PI_2), "a step back at yaw pi/2 is backwards");
+        assert!(!moving_backward((-2.0, 0.0), std::f32::consts::FRAC_PI_2), "a step forward at yaw pi/2 is not");
+        assert!(!moving_backward((2.0, 0.0), 0.0), "a sideways step is not backwards");
+        assert!(!moving_backward((0.0, 0.0), 0.0), "standing still is not backwards");
+        assert!(!moving_backward((0.0, 40.0), 0.0), "a teleport-sized step is not a walk");
     }
 
     #[test]

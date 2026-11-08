@@ -690,6 +690,39 @@ mod tests {
         assert!(reach(&open) > reach(&two), "{} vs {}", reach(&open), reach(&two));
     }
 
+    /// A placed door must draw something: for every door model, each doorway it is placed in (single, and double at
+    /// spans 2 and 3) and both the closed and the open pose, the frame's three pieces and each leaf are finite,
+    /// non-flat boxes, a single door has one leaf and a double door two, and each leaf is a door's size. A model whose
+    /// frame or leaves came out empty, flat or non-finite fails here, before it reaches the screen.
+    #[test]
+    fn every_door_model_draws_its_frame_and_leaves_for_a_placed_door() {
+        fn finite_box(b: &Bounds) -> bool {
+            b.lo.is_finite() && b.hi.is_finite() && b.lo.cmple(b.hi).all()
+        }
+        for (ptype, text, double) in all_models() {
+            let spans: Vec<i32> = if double { vec![2, 3] } else { vec![1] };
+            for span in spans {
+                for open in [0.0, 1.0] {
+                    let b = build(text, ptype, span, open);
+                    let ctx = format!("{ptype} span {span} open {open}");
+                    for name in ["DoorFrameL", "DoorFrameR", "DoorFrameTop"] {
+                        let f = b.frame(name);
+                        assert!(finite_box(&f), "{ctx}: {name} is not a finite box");
+                        assert!(f.hi.x > f.lo.x && f.hi.y > f.lo.y, "{ctx}: {name} is flat");
+                    }
+                    assert_eq!(b.leaves.len(), if double { 2 } else { 1 }, "{ctx}: leaves");
+                    for leaf in &b.leaves {
+                        assert!(finite_box(leaf), "{ctx}: a leaf is not a finite box");
+                        let height = leaf.hi.y - leaf.lo.y;
+                        assert!(height > 1.5, "{ctx}: a leaf is {height} m tall");
+                        let width = (leaf.hi.x - leaf.lo.x).hypot(leaf.hi.z - leaf.lo.z);
+                        assert!(width > 0.3, "{ctx}: a leaf is {width} m across");
+                    }
+                }
+            }
+        }
+    }
+
     /// A door with a crest (luxury) or a spire (gothic) is taller than its bar: the wall over it starts above the
     /// crest, and a filler band closes the slit between the bar and that soffit. A plain door needs none.
     #[test]

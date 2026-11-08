@@ -5,6 +5,26 @@ Updated as work lands. The port's current implementation is now treated as the
 completed scope for this checklist; future expansions should be tracked as new
 items rather than left in an ambiguous in-progress state.
 
+## Next up (2026-11-07)
+
+- [ ] Warm pool of Rust room hosts on vps2, off by default and switchable. Why: it cuts room start time, but it needs directory and ticket changes and KT deferred it.
+- [ ] AKIRI always-on room moved to the Rust host. Why: blocked until the Rust host registers reserved codes.
+- [ ] Inferno lava pit is not drawn (see the Inferno item under Godot parity and the Known bugs list). Why: lava regions render as a solid wall mass.
+- [ ] Quality governor parity (see Performance and FPS). Why: there is no frame budget yet, so slow machines cannot step quality down.
+- [ ] Map flat textures: floral, star, parquet, check, runner, safe, terrazzo, seawall, whitewash, tealpanel and skylight have no flat version yet. Why: the flat-texture set is incomplete, so these floors do not match the rest of the world.
+- [ ] Stair texture rework follow-up, if the first pass needs more. Why: stair looks are a KT priority and one pass may not be enough.
+- [ ] Hunters and NPCs in sewer water: verify no regression after the fix for spawning on water and getting stuck in it. Why: the collision change affects how they enter and leave water and has not been checked in a run.
+- [ ] Client listing poll at 0.5 s, measured on a real device. Why: the interval was chosen without a measurement on device.
+- [ ] Mac updater loop guard and installed-release record: confirm on a Mac after the nightly. Why: the guard is unproven until a real update runs on a Mac.
+- [ ] Confirm the Level -2 water depth (0.7 m, down from 1.4 m) with KT before wading and swim tuning is locked. Why: it is a gameplay change and KT has not signed it off (docs/SEWERS.md).
+- [ ] Add a test that every sewer prop and ceiling fixture fits under the 4.0 m sewer wall height, then look at it in the running game. Why: the height readers are untested at 4.0 m and nothing has been seen on screen.
+- [ ] Check the Mansion doors in a run on KT-MBA (the luxuryRoomDoor models and data are fine). Why: the doors are invisible in game, so the draw path is the suspect.
+- [ ] Fix bed placement in furnished.rs so beds stop sticking out into the hallway. Why: a bed in the hallway blocks the way and breaks the room layout.
+- [ ] Change the account screen kicker from "KYTTU'S LAB // ACCOUNT" to "KYTTU: THE LAST ROUTE". Why: the title still shows the old lab name.
+- [ ] Deploy the public route process on vps2 (unit in docs/SERVERS.md), then set `client_host_fallback` to false. Why: the public route has no real host until then; the server change needs KT's approval.
+- [ ] Ship the CREATE ROOM build fix (docs/patches/node-hosted-build.patch and the region agent's Rust host). Why: CREATE ROOM is refused with BUILD MISMATCH on the live site.
+- [ ] Admin STATUS should show the real server state in a hosted room, not always "SERVER OFFLINE (SOLO, NO SERVER)". Why: the status line misleads the admin.
+
 ## GitHub CI and deploy (2026-11-07, repo is public)
 
 - [x] CI restored (.github/workflows/build.yml, test.yml): Windows, Linux, macOS Intel and macOS Apple Silicon are separate builds; nightly builds go to the "nightly" and "nightly-server" releases, not Actions artifacts.

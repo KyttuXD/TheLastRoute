@@ -80,6 +80,8 @@ pub struct Rules {
     pub flow: FlowRules,
     pub effects: BTreeMap<String, EffectDef>,
     pub difficulty: BTreeMap<String, DifficultyScale>,
+    /// Axe strikes that burst a pipe, by pipe kind ("crawl", "outflow").
+    pub durability: BTreeMap<String, u32>,
 }
 
 fn num(v: &Value, section: &str, key: &str) -> Result<f32, String> {
@@ -164,7 +166,20 @@ impl Rules {
         if !difficulty.contains_key("standard") {
             return Err("difficulty.standard: missing".into());
         }
-        Ok(Rules { valve, flow, effects, difficulty })
+        let mut durability = BTreeMap::new();
+        for (kind, v) in root.get("durability").and_then(Value::as_object).ok_or("durability: an object is needed")? {
+            if kind.starts_with('_') {
+                continue;
+            }
+            let strikes = v.as_u64().filter(|n| *n >= 1).ok_or_else(|| format!("durability.{kind}: a whole number of 1 or more is needed"))?;
+            durability.insert(kind.clone(), strikes as u32);
+        }
+        for kind in ["crawl", "outflow"] {
+            if !durability.contains_key(kind) {
+                return Err(format!("durability.{kind}: missing"));
+            }
+        }
+        Ok(Rules { valve, flow, effects, difficulty, durability })
     }
 
     /// The scales for a difficulty name ("relaxed", "standard", "hard", "nightmare"); Standard when unknown.
@@ -179,6 +194,11 @@ impl Rules {
     /// An empty `valve_effect` is the flood valve (Godot: `get("valve_effect", "flood")`).
     pub fn effect(&self, name: &str) -> Option<&EffectDef> {
         self.effects.get(if name.is_empty() { "flood" } else { name })
+    }
+
+    /// Axe strikes that burst a pipe of kind `pipe` ("crawl" or "outflow"); one for an unknown kind.
+    pub fn strikes_to_burst(&self, pipe: &str) -> u32 {
+        self.durability.get(pipe).copied().unwrap_or(1)
     }
 }
 
@@ -337,6 +357,8 @@ pub struct TurnAt<'a> {
 pub struct PipeNetwork {
     valves: BTreeMap<String, Valve>,
     runs: BTreeMap<String, Run>,
+    /// Axe strikes so far on each pipe that has not burst yet (`BRK:x:y:z:n`).
+    strikes: BTreeMap<String, u32>,
 }
 
 impl PipeNetwork {
@@ -347,6 +369,27 @@ impl PipeNetwork {
     /// A pipe's flow starts (burst by the Axe) at `id` from `now`; one already known is left as it is.
     pub fn start_flow(&mut self, id: &str, now: f32) {
         self.runs.entry(id.to_string()).or_insert(Run { opened_at: now, shut_at: None, outlet: 0 });
+    }
+
+    /// One Axe strike on the unburst pipe `id`, which takes `need` strikes to burst. Returns true on the strike that
+    /// bursts it (its count is then cleared); a strike short of that only dents it.
+    pub fn strike(&mut self, id: &str, need: u32) -> bool {
+        let hits = {
+            let h = self.strikes.entry(id.to_string()).or_insert(0);
+            *h += 1;
+            *h
+        };
+        if hits >= need.max(1) {
+            self.strikes.remove(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The strikes a pipe has taken so far (0 once it bursts or before the first).
+    pub fn strikes_on(&self, id: &str) -> u32 {
+        self.strikes.get(id).copied().unwrap_or(0)
     }
 
     pub fn run(&self, id: &str) -> Option<&Run> {
@@ -556,6 +599,29 @@ mod tests {
         assert!(Rules::parse("{}").is_err());
         assert!(Rules::parse(&text.replace("\"reach\": 3.0", "\"reach\": 0")).is_err());
         assert!(Rules::parse(&text.replace("\"outlet_count\": 2", "\"outlet_count\": 0")).is_err());
+    }
+
+    #[test]
+    fn pipe_durability_is_data_and_above_the_old_breach_points() {
+        let r = rules();
+        assert!(r.strikes_to_burst("crawl") > 3, "above the ported crawl hit points (3)");
+        assert!(r.strikes_to_burst("outflow") > 4, "above the ported outflow hit points (4)");
+        assert!(r.strikes_to_burst("outflow") >= r.strikes_to_burst("crawl"));
+        assert_eq!(r.strikes_to_burst("no such pipe"), 1);
+        let text = include_str!("../data/pipes.json");
+        assert!(Rules::parse(&text.replace("\"outflow\": 10", "\"outflow\": 0")).is_err(), "a zero durability is refused");
+        assert!(Rules::parse(&text.replace("\"crawl\": 6,", "")).is_err(), "a missing durability is refused");
+    }
+
+    #[test]
+    fn a_pipe_bursts_on_the_strike_that_reaches_its_durability() {
+        let mut n = PipeNetwork::new();
+        assert!(!n.strike("BRK:1:-1:1:0", 3));
+        assert!(!n.strike("BRK:1:-1:1:0", 3));
+        assert_eq!(n.strikes_on("BRK:1:-1:1:0"), 2);
+        assert!(n.strike("BRK:1:-1:1:0", 3), "the third strike bursts it");
+        assert_eq!(n.strikes_on("BRK:1:-1:1:0"), 0);
+        assert!(n.strike("BRK:1:-1:1:1", 0), "a need of 0 still takes one strike");
     }
 
     #[test]

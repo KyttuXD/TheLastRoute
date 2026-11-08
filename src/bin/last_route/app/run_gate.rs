@@ -194,7 +194,7 @@ mod tests {
         let (mut g, content, catalog) = staged(1.5);
         let start = g.p.pos;
         frames(&mut g, &content, &catalog, 600, true, true);
-        assert!(g.escape.is_some() || g.report.is_some(), "the standing runner was caught while paused");
+        assert!(g.escape.is_some() || g.report.is_some() || g.runner_downed(), "the standing runner was caught while paused");
         assert!(dist(g.p.pos, start) < 1.0, "and it never walked: the menu blanked its controls");
     }
 
@@ -210,7 +210,7 @@ mod tests {
         // the same staging, not paused, does attack: the test would pass for the wrong reason otherwise
         let (mut g, content, catalog) = staged(1.5);
         frames_with(&mut g, &content, &catalog, 600, false, false, Controls::default());
-        assert!(g.escape.is_some() || g.report.is_some(), "an unpaused runner is caught");
+        assert!(g.escape.is_some() || g.report.is_some() || g.runner_downed(), "an unpaused runner is caught");
     }
 
     #[test]
@@ -436,7 +436,8 @@ mod tests {
             let c = controls_for(true, true, &Controls { interact: true, ..Controls::default() }).unwrap();
             g.step(DT, &c, &content, &catalog, &sounds);
         }
-        assert!(g.report.is_some(), "the blanked presses never broke the hold: the run ended");
+        // a lost struggle takes the runner down first (game/revive.rs): the run ends only at the revive timeout
+        assert!(g.report.is_some() || g.runner_downed(), "the blanked presses never broke the hold: the runner went down");
     }
 
     #[test]

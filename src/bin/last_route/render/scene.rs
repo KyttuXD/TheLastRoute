@@ -631,6 +631,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
     HUNTER_MESHES.with(|m| m.borrow_mut().cache.sync(&lists, g.run_seed));
     anim::with_views(g.time, |views, dt| {
         let mut stars = Builder::new(Some(a.white.clone()));
+        let mut beams: Vec<Mesh> = Vec::new();
         // the hunter that holds the runner is always posed: the grab camera comes from her
         let held_slot = g.escape.as_ref().map(|e| e.hunter);
         let mut held_driven = false;
@@ -809,11 +810,21 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget) {
             for (p, rot) in view.stars(&input, &out, g.time) {
                 stars.cube_basis(p, Vec3::splat(0.09), rot, star, 2.0);
             }
+            // Kathy's search beam (render/beam.rs), from her eyes along her facing: yellow, red while she chases
+            if super::beam::kathy_beam_shown(&h.gimmick, h.active, held, faded, h.stun) {
+                let mut cone = super::beam::kathy_cone(root, super::beam::kathy_eye_units(model), matches!(h.state, State::Chase));
+                cone.texture = Some(a.white.clone());
+                beams.push(cone);
+            }
         }
         if held_slot.is_some() && !held_driven {
             grab::abandon();
         }
         stars.draw_and_clear();
+        // the beams are see-through, so they go after the solid hunters and the stars
+        for cone in &beams {
+            crate::render::draw_stats::draw_counted(cone);
+        }
     });
     // NPC teammates (game/npc.rs) and bots: the runner mannequin in its skin, bent like a runner (net/runner_figure.rs),
     // in this camera and material scope like the remote runners. A bot on another floor shows through an opening only.

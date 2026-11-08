@@ -9,6 +9,7 @@
 //! upload and the room).
 
 use super::style::*;
+use super::text_field::{self, pasted};
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
 use crate::net::world_sync::SKIN_DEFAULT;
@@ -98,12 +99,6 @@ impl TextBox {
     fn set_end(&mut self) {
         self.end();
     }
-}
-
-/// What a paste puts in a box: no whitespace or line breaks (a link copied with a trailing newline stays one line),
-/// only the characters the box allows, and no more than `room` of them.
-fn pasted(raw: &str, allowed: &dyn Fn(char) -> bool, room: usize) -> String {
-    raw.chars().filter(|c| !c.is_whitespace()).filter(|c| allowed(*c)).take(room).collect()
 }
 
 /// Key repeat for a held key: fires when pressed, then after `delay` seconds again `per_sec` times a second.
@@ -653,6 +648,27 @@ fn mine_text(st: &Settings, s: &SkinUi) -> String {
     }
 }
 
+/// One frame of typing and paste for the link box. Only a focused box takes either: a paste made while the box has no
+/// keyboard is dropped. Typed characters are skipped while Cmd/Ctrl is held (a shortcut's leftover letter is not text),
+/// and both go through the shared rules for [`Kind::Link`] (printable ASCII, no spaces or line breaks, at most `cap`).
+fn link_keys(tb: &mut TextBox, focused: bool, cap: usize, command: bool, typed: &[char], clip: Option<&str>) {
+    if !focused {
+        return;
+    }
+    if !command {
+        for &ch in typed {
+            if let Some(c) = text_field::Kind::Link.typed(ch) {
+                tb.insert(c, cap);
+            }
+        }
+    }
+    if let Some(clip) = clip {
+        for ch in pasted(text_field::Kind::Link, clip, cap.saturating_sub(tb.len())).chars() {
+            tb.insert(ch, cap);
+        }
+    }
+}
+
 /// Keys for the focused link box: printable ASCII characters, paste (Ctrl or Cmd + V, Shift+Insert), copy and cut (Ctrl or
 /// Cmd + C / X: the whole link), Backspace and Delete with key repeat, Left, Right, Home and End. Returns true when Enter
 /// was pressed.
@@ -660,26 +676,21 @@ fn edit_keys(s: &mut SkinUi, now: f64) -> bool {
     use super::text_field::{shortcut_pressed, Shortcut};
     let command = super::text_field::command_down();
     let shortcut = shortcut_pressed();
-    let paste = shortcut == Some(Shortcut::Paste);
-    let (true, Some(rules)) = (s.url_focused, s.rules.as_ref()) else {
-        while get_char_pressed().is_some() {}
-        return false;
-    };
-    let cap = rules.max_url_length;
-    let allowed = |c: char| c.is_ascii_graphic();
-    let (delay, per_sec) = (rules.repeat_delay_secs, rules.repeat_per_sec);
-    let tb = &mut s.url;
+    let mut typed = vec![];
     while let Some(ch) = get_char_pressed() {
-        if !command && allowed(ch) {
-            tb.insert(ch, cap);
-        }
+        typed.push(ch);
     }
-    // the web page delivers a paste when the browser fires its paste event, which can be a frame after the key
-    if let Some(clip) = super::clipboard::poll_paste(paste) {
-        for ch in pasted(&clip, &allowed, cap.saturating_sub(tb.len())).chars() {
-            tb.insert(ch, cap);
-        }
+    // taken every frame, focused or not: the web page keeps a paste until it is read, and a box without the keyboard must
+    // not get that paste later. The browser answers the shortcut a moment after the key, so this is a read per frame.
+    let clip = super::clipboard::poll_paste(shortcut == Some(Shortcut::Paste));
+    let Some(rules) = s.rules.as_ref() else { return false };
+    let cap = rules.max_url_length;
+    let (delay, per_sec) = (rules.repeat_delay_secs, rules.repeat_per_sec);
+    if !s.url_focused {
+        return false;
     }
+    let tb = &mut s.url;
+    link_keys(tb, true, cap, command, &typed, clip.as_deref());
     match shortcut {
         Some(Shortcut::Copy) if !tb.text.is_empty() => super::clipboard::copy(&tb.text),
         Some(Shortcut::Cut) if !tb.text.is_empty() => {
@@ -1110,14 +1121,36 @@ mod tests {
     }
 
     #[test]
-    fn paste_filters_to_the_boxs_rules() {
-        let url_ok = |c: char| c.is_ascii_graphic();
-        assert_eq!(pasted("  https://example.com/a.png\r\n", &url_ok, 512), "https://example.com/a.png", "whitespace and line breaks go");
-        assert_eq!(pasted("https://exa mple.com", &url_ok, 512), "https://example.com");
-        assert_eq!(pasted("https://example.com/long", &url_ok, 10), "https://ex", "the room left caps it");
-        let name_ok = |c: char| c.is_ascii_alphanumeric() || c == '_';
-        assert_eq!(pasted("Not ch!", &name_ok, 16), "Notch");
-        assert_eq!(pasted("naïve\u{202e}", &url_ok, 512), "nave", "non-ASCII and control characters go");
+    fn a_pasted_skin_url_with_a_trailing_newline_lands_whole() {
+        let mut t = TextBox::default();
+        link_keys(&mut t, true, 512, true, &[], Some("https://example.com/skins/night.png\r\n"));
+        assert_eq!(t.text, "https://example.com/skins/night.png", "the newline goes, the link lands whole");
+        assert_eq!(t.caret, t.len(), "the caret is at the end after a paste");
+    }
+
+    #[test]
+    fn a_paste_into_an_unfocused_link_box_is_ignored() {
+        let mut t = TextBox::default();
+        link_keys(&mut t, false, 512, true, &[], Some("https://example.com/a.png"));
+        assert_eq!(t, TextBox::default(), "a paste while the box has no keyboard does nothing");
+        link_keys(&mut t, false, 512, false, &['x'], None);
+        assert_eq!(t, TextBox::default(), "typing does nothing either");
+    }
+
+    #[test]
+    fn a_paste_is_capped_by_the_room_left() {
+        let mut t = TextBox { text: "https://".to_string(), caret: 8 };
+        link_keys(&mut t, true, 12, true, &[], Some("example.com/a.png"));
+        assert_eq!(t.text, "https://exam", "only the room left (4 of 12) is filled");
+    }
+
+    #[test]
+    fn typed_keys_skip_the_command_leftovers() {
+        let mut t = TextBox::default();
+        link_keys(&mut t, true, 512, true, &['v', '\u{16}'], None);
+        assert_eq!(t.text, "", "a letter that comes with Ctrl or Cmd is not typed");
+        link_keys(&mut t, true, 512, false, &['a', ' ', 'b'], None);
+        assert_eq!(t.text, "ab", "a space is refused, the letters are typed");
     }
 
     #[test]

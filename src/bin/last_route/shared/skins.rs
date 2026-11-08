@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::net::api;
 use crate::net::config::BackendConfig;
 use crate::net::http::{Method, Request};
-use crate::net::NetError;
+use crate::net::{NetError, Pending};
 use crate::net::world_sync::{clean_skin, is_skin_hash, SKIN_DEFAULT};
 use crate::shared::paths;
 pub use crate::shared::skin_png::SKIN_SIZE;
@@ -167,6 +167,13 @@ pub fn worn_skin_in(skins: Option<&Path>, cache: Option<&Path>, saved: &str, det
     let id = resolve_skin(saved, &list_skins(skins));
     let mut loaded = skins.and_then(|dir| load_skin_in(dir, &id));
     let mut id = id;
+    // A skin adopted from the account at sign-in is saved as its hash and lives in the cache, not in the skins folder.
+    if loaded.is_none() && is_skin_hash(saved) {
+        loaded = read_skin_in(&[cache.map(Path::to_path_buf)], saved).and_then(|bytes| validate_skin(&bytes, max_bytes()).ok()).filter(|valid| valid.hash == saved);
+        if loaded.is_some() {
+            id = saved.to_string();
+        }
+    }
     if loaded.is_none() && skins.is_none() {
         // no skins folder (the browser): the applied custom skin lives in memory
         let wanted = clean_skin(saved);
@@ -1151,6 +1158,127 @@ impl WornTracker {
     /// The worn skin; DEFAULT and classic until the first [`WornTracker::update`].
     pub fn get(&self) -> Worn {
         self.worn.clone().unwrap_or(Worn { hash: SKIN_DEFAULT.to_string(), slim: false })
+    }
+}
+
+/// What signing in does to the local skin: nothing, or wear the account's skin (its hash, and whether the slim arms show).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInSkin {
+    Keep,
+    Adopt(String, bool),
+}
+
+/// The slim arms an account skin is worn with: SLIM and CLASSIC force the account's ARMS setting, AUTO (or an unknown
+/// setting) keeps the local value.
+pub fn arms_slim(arms: &str, local_slim: bool) -> bool {
+    match ArmsSetting::parse(arms) {
+        Some(ArmsSetting::Slim) => true,
+        Some(ArmsSetting::Classic) => false,
+        Some(ArmsSetting::Auto) | None => local_slim,
+    }
+}
+
+/// What signing in does with the account's website skin. `account_hash` is the hash the website holds (empty for none),
+/// `arms` its ARMS setting; `local_skin` is the saved `settings.skin`, `local_is_default` whether no custom skin is
+/// applied, `local_slim` the saved `settings.skin_slim` and `worn_hash` the hash the runner wears now.
+/// An empty account skin changes nothing. A hash already applied (saved or worn) changes nothing. Otherwise the account's
+/// skin is adopted: with no local custom skin, or over one that differs, since the account holds the last upload.
+pub fn sign_in_skin(account_hash: &str, arms: &str, local_skin: &str, local_is_default: bool, local_slim: bool, worn_hash: &str) -> SignInSkin {
+    let hash = account_hash.trim().to_ascii_lowercase();
+    if !is_skin_hash(&hash) {
+        return SignInSkin::Keep;
+    }
+    let applied = !local_is_default && (local_skin == hash || worn_hash == hash);
+    if applied {
+        return SignInSkin::Keep;
+    }
+    SignInSkin::Adopt(hash, arms_slim(arms, local_slim))
+}
+
+/// The local skin state a sign-in check is judged against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalSkin {
+    pub skin: String,
+    pub slim: bool,
+    pub worn_hash: String,
+}
+
+/// Whether the account's skin picture is in the cache (or, with no cache folder, in memory) and passes the check.
+fn account_picture_held(dir: Option<&Path>, hash: &str) -> bool {
+    match dir {
+        Some(dir) => !fetch_needed(dir, hash),
+        None => peer_skin(hash).is_some(),
+    }
+}
+
+/// The full sign-in decision for an answer from the website: [`sign_in_skin`], and when the account's skin is adopted and
+/// not held yet, its picture is downloaded, checked (hash and the whole PNG check) and kept in the cache. A picture that
+/// fails the check is refused with its reason: nothing is written and the caller keeps the local skin.
+pub fn sign_in_skin_fetching(info: &crate::net::api::AccountSkin, local: &LocalSkin, cfg: &SkinConfig, base: &str, dir: Option<&Path>) -> Result<SignInSkin, String> {
+    let decision = sign_in_skin(&info.hash, &info.arms, &local.skin, local.skin == SKIN_DEFAULT, local.slim, &local.worn_hash);
+    let SignInSkin::Adopt(hash, _) = &decision else { return Ok(decision) };
+    if account_picture_held(dir, hash) {
+        return Ok(decision);
+    }
+    match dir {
+        Some(dir) => fetch_skin_why(cfg, base, dir, hash)?,
+        None => {
+            let bytes = fetch_skin_bytes(cfg, base, hash)?;
+            remember_peer(hash, &bytes);
+        }
+    }
+    Ok(decision)
+}
+
+/// A sign-in check running on a worker thread (one GET, and a download when the account's skin must be adopted). The
+/// frame loop polls it once; the answer is applied only when the local skin has not changed since the check started.
+pub struct SignInSync {
+    pending: Pending<SignInSkin>,
+    local_skin: String,
+}
+
+impl SignInSync {
+    /// Starts the check for the signed-in `account`. None when offline or the skin settings are missing.
+    pub fn start(cfg: BackendConfig, account: String, local: LocalSkin) -> Option<SignInSync> {
+        if cfg.offline {
+            return None;
+        }
+        let settings = config()?;
+        let dir = cache_dir();
+        let local_skin = local.skin.clone();
+        let pending = Pending::spawn(move || {
+            let info = api::account_skin(&cfg, &account)?;
+            // a refused picture, or a failed download, leaves the local skin as it is
+            match sign_in_skin_fetching(&info, &local, &settings, &cfg.base_url, dir.as_deref()) {
+                Ok(decision) => Ok(decision),
+                Err(why) => {
+                    eprintln!("skins: the account skin could not be adopted ({why})");
+                    Ok(SignInSkin::Keep)
+                }
+            }
+        });
+        Some(SignInSync { pending, local_skin })
+    }
+
+    /// The answer once the check has finished (None while it runs). An answer for a local skin that changed since the
+    /// check started is dropped, and a failed check counts as Keep.
+    pub fn poll(&mut self, current_skin: &str) -> Option<SignInSkin> {
+        let result = self.pending.poll()?;
+        let decision = match result {
+            Ok(decision) => decision,
+            Err(e) => {
+                eprintln!("skins: the account skin could not be checked ({})", download_error_text(&e));
+                SignInSkin::Keep
+            }
+        };
+        Some(if current_skin == self.local_skin { decision } else { SignInSkin::Keep })
+    }
+}
+
+/// Records that the website holds the account's skin `hash` (it was just adopted from there), so it is not uploaded back.
+pub fn mark_account_holds(hash: &str) {
+    if is_skin_hash(hash) {
+        remember_uploaded(hash);
     }
 }
 
@@ -2344,6 +2472,100 @@ use std::time::Duration;
         std::fs::write(cached_path(&dir, &id), b"damaged").unwrap();
         assert!(fetch_needed(&dir, &id), "a damaged copy is fetched again");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn local(skin: &str, slim: bool, worn: &str) -> LocalSkin {
+        LocalSkin { skin: skin.to_string(), slim, worn_hash: worn.to_string() }
+    }
+
+    #[test]
+    fn sign_in_adopts_the_account_skin_over_no_custom_skin_or_a_different_one() {
+        let (acct, other) = ("a".repeat(64), "b".repeat(64));
+        assert_eq!(sign_in_skin(&acct, "auto", SKIN_DEFAULT, true, false, SKIN_DEFAULT), SignInSkin::Adopt(acct.clone(), false), "no custom skin here");
+        assert_eq!(sign_in_skin(&acct, "auto", "CUSTOM", false, true, &other), SignInSkin::Adopt(acct.clone(), true), "a different custom skin is replaced");
+        assert_eq!(sign_in_skin(&acct, "classic", SKIN_DEFAULT, true, true, SKIN_DEFAULT), SignInSkin::Adopt(acct.clone(), false), "the account's CLASSIC wins");
+        assert_eq!(sign_in_skin(&acct, "slim", SKIN_DEFAULT, true, false, SKIN_DEFAULT), SignInSkin::Adopt(acct, true), "the account's SLIM wins");
+    }
+
+    #[test]
+    fn sign_in_changes_nothing_for_an_empty_or_an_already_applied_account_skin() {
+        let acct = "c".repeat(64);
+        assert_eq!(sign_in_skin("", "slim", "CUSTOM", false, false, &acct), SignInSkin::Keep, "the website holds no skin");
+        assert_eq!(sign_in_skin("NOT A HASH", "slim", SKIN_DEFAULT, true, false, SKIN_DEFAULT), SignInSkin::Keep, "a non-hash is nothing");
+        assert_eq!(sign_in_skin(&acct, "slim", &acct, false, false, SKIN_DEFAULT), SignInSkin::Keep, "the saved hash is already applied");
+        assert_eq!(sign_in_skin(&acct, "slim", "CUSTOM", false, false, &acct), SignInSkin::Keep, "the worn hash is already applied");
+    }
+
+    #[test]
+    fn the_account_arms_decide_slim_and_auto_keeps_the_local_value() {
+        assert!(arms_slim("slim", false));
+        assert!(!arms_slim("classic", true));
+        assert!(arms_slim("auto", true));
+        assert!(!arms_slim("auto", false));
+        assert!(arms_slim("", true), "an unknown setting keeps the local value");
+    }
+
+    #[test]
+    fn the_account_skin_answer_is_read_with_its_hash_and_arms() {
+        let p: api::Json = serde_json::from_str(r#"{"ok":true,"account":"KYTTU","hash":"ABCDEF","arms":"Slim","updatedAt":1,"versions":[]}"#).unwrap();
+        assert_eq!(api::AccountSkin::from_json(&p), api::AccountSkin { hash: "abcdef".into(), arms: "slim".into() });
+        let none: api::Json = serde_json::from_str(r#"{"ok":true,"account":"KYTTU","hash":"","arms":"auto"}"#).unwrap();
+        assert_eq!(api::AccountSkin::from_json(&none).hash, "");
+        assert!(api::account_skin(&BackendConfig::primary(), "A/B").is_err(), "a name that is not a path segment is never sent");
+    }
+
+    #[test]
+    fn an_adopted_account_skin_is_fetched_checked_and_cached_once() {
+        use std::sync::atomic::Ordering;
+        let (id, bytes) = good_skin();
+        let cfg = offline_host_config();
+        let (port, seen, stop) = serve_routes(vec![(format!("/api/v1/skins/{id}"), bytes.clone(), "image/png")]);
+        let dir = temp_cache("account_ok");
+        let base = format!("http://127.0.0.1:{port}");
+        let info = api::AccountSkin { hash: id.clone(), arms: "classic".into() };
+        let first = sign_in_skin_fetching(&info, &local(SKIN_DEFAULT, true, SKIN_DEFAULT), &cfg, &base, Some(&dir));
+        assert_eq!(first, Ok(SignInSkin::Adopt(id.clone(), false)));
+        assert_eq!(std::fs::read(cached_path(&dir, &id)).unwrap(), bytes, "the verified picture is cached under its hash");
+        let again = sign_in_skin_fetching(&info, &local(SKIN_DEFAULT, true, SKIN_DEFAULT), &cfg, &base, Some(&dir));
+        assert_eq!(again, Ok(SignInSkin::Adopt(id.clone(), false)));
+        stop.store(true, Ordering::SeqCst);
+        assert_eq!(seen.lock().unwrap().len(), 1, "a held picture is not asked for again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bad_account_skin_picture_is_refused_and_changes_nothing() {
+        use std::sync::atomic::Ordering;
+        let (id, _good) = good_skin();
+        let (_hid, hostile) = hostile_skin();
+        let cfg = offline_host_config();
+        let (port, _seen, stop) = serve_routes(vec![
+            (format!("/api/v1/skins/{id}"), hostile.clone(), "image/png"),
+            (format!("/api/skins/files/{id}.png"), hostile, "image/png"),
+        ]);
+        let dir = temp_cache("account_bad");
+        let info = api::AccountSkin { hash: id.clone(), arms: "slim".into() };
+        let local_state = local(SKIN_DEFAULT, false, SKIN_DEFAULT);
+        let got = sign_in_skin_fetching(&info, &local_state, &cfg, &format!("http://127.0.0.1:{port}"), Some(&dir));
+        stop.store(true, Ordering::SeqCst);
+        assert!(got.is_err(), "a picture that is not the account's skin is refused");
+        assert!(!cached_path(&dir, &id).exists(), "nothing reaches the cache");
+        assert_eq!(local_state, local(SKIN_DEFAULT, false, SKIN_DEFAULT), "the local state is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_adopted_skin_kept_under_its_hash_is_worn_by_that_hash() {
+        let skins = temp_dir("adopted_skins");
+        let cache = temp_dir("adopted_cache");
+        let (id, bytes) = good_skin();
+        write_skin_file(&cache, &id, &bytes).unwrap();
+        let w = worn_skin_in(Some(&skins), Some(&cache), &id, true, ArmsSetting::Auto);
+        assert_eq!(w.hash, id, "the adopted hash is worn from the cache");
+        assert!(!w.slim, "the layout of the picture is read from it");
+        assert_eq!(worn_skin_in(Some(&skins), Some(&cache), &"e".repeat(64), false, ArmsSetting::Auto).hash, SKIN_DEFAULT, "a hash not held is DEFAULT");
+        let _ = std::fs::remove_dir_all(&skins);
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     fn shipped_rules() -> SkinRules {

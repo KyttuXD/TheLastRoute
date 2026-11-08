@@ -5,6 +5,7 @@
 pub mod ambient;
 pub mod anim;
 pub mod bbmodel;
+pub mod beam;
 pub mod builder;
 pub mod door;
 pub mod draw_stats;

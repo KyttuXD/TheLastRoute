@@ -242,7 +242,9 @@ impl Game {
         let targets: Vec<Option<(f32, f32)>> = if self.no_local_runner {
             self.hunters
                 .iter()
-                .map(|h| super::remote_targets::nearest_guest(h.pos, &guests).map(|k| guests[k].target.pos))
+                .map(|h| {
+                    super::remote_targets::nearest_guest(h.pos, &guests).map(|k| guests[k].target.pos)
+                })
                 .collect()
         } else {
             vec![runner; self.hunters.len()]
@@ -380,7 +382,8 @@ impl Game {
     /// The runner is caught by active hunter `i`: the struggle starts, or the run ends when the hunter's capture cannot
     /// be escaped (or the escape is still cooling down).
     fn resolve_capture(&mut self, i: usize, admin: &Admin) {
-        if self.escape_grace > 0.0 || admin.god || admin.no_target {
+        // a downed runner is not caught again: the struggle and the run end wait for the revive timeout (game/revive.rs)
+        if self.escape_grace > 0.0 || admin.god || admin.no_target || self.downed.is_some() || self.spectating() {
             return;
         }
         crate::audio::sound::capture();
@@ -629,19 +632,38 @@ impl Game {
         if self.no_local_runner {
             return;
         }
+        // a spectator cannot be caught (game/spectate.rs)
+        if self.spectating() {
+            return;
+        }
         let a = self.admin_flags();
         if a.god || a.no_target {
             // admin god mode / no target: nothing ends the run
             self.escape = None;
             return;
         }
+        // a runner who would die goes down instead (game/revive.rs); a downed runner is not killed by another catch,
+        // only by the revive timeout (finish_run)
+        if self.go_down(hunter) {
+            return;
+        }
+        self.finish_run(hunter, cause);
+    }
+
+    /// The run ends in death: the report, and the checkpoint cleared (`end_run` after a runner has gone down, and the
+    /// revive timeout of a downed runner).
+    pub(super) fn finish_run(&mut self, hunter: usize, cause: &'static str) {
         self.p.flashlight_on = false;
         // THE RUN SAVES ITSELF // DEATH ENDS IT
         crate::shared::checkpoint::clear();
-        let h = &self.hunters[hunter];
+        let (hunter_id, hunter_name) = self
+            .hunters
+            .get(hunter)
+            .map(|h| (h.def.id.clone(), h.def.name.clone()))
+            .unwrap_or_default();
         self.report = Some(Report {
-            hunter: h.def.id.clone(),
-            hunter_name: h.def.name.clone(),
+            hunter: hunter_id,
+            hunter_name,
             cause,
             depth: self.depth,
             score: self.score,

@@ -52,6 +52,9 @@
     },
     "stream_pipe_burst": {
       "channel": "EVENTS"
+    },
+    "stream_safe_room": {
+      "channel": "EVENTS"
     }
   }
 }

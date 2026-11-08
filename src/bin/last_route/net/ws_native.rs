@@ -16,10 +16,11 @@
 //! * [`NativeWsLink`]: the [`RoomLink`] over a [`WsConn`] and a [`WsCore`], with the browser link's keepalive (a
 //!   `{"t":"ping"}` text frame every 20 s) and its unreliable-drop rule (no unreliable frame is queued behind 256 KB).
 //!
-//! Limits: `ws://` only. A `wss://` address is refused with a clear error; TLS can be added inside [`WsConn::connect`]
-//! (the rustls config of `net/http.rs` is the one to reuse) without touching the link or anything above it. The
-//! connect and the handshake block (up to [`CONNECT_TIMEOUT`]), so a caller builds the link on a worker thread, the
-//! way `Pending::spawn` builds a session. Name resolution is the blocking system lookup and has no timeout of its own.
+//! `wss://` (the website's relay) runs the TLS handshake inside [`WsConn::connect`] with the rustls client settings of
+//! `net/http.rs` (Mozilla roots, TLS 1.2 and 1.3, the server name always checked); the link and everything above it are
+//! the same over both. The connect and the handshake block (up to [`CONNECT_TIMEOUT`]), so a caller builds the link on a
+//! worker thread, the way `Pending::spawn` builds a session. Name resolution is the blocking system lookup and has no
+//! timeout of its own.
 
 use super::relay::{RelayEvent, Role};
 use super::room_link::RoomLink;
@@ -33,6 +34,7 @@ use crate::shared::clock::Instant;
 use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The longest the TCP connect plus the HTTP upgrade may take.
@@ -412,9 +414,90 @@ impl FrameParser {
 
 // ---- the connection --------------------------------------------------------------------------------------------------
 
+/// The socket under a connection: plain TCP for `ws://`, TLS over TCP for `wss://`.
+enum WsStream {
+    Plain(TcpStream),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
+}
+
+impl WsStream {
+    fn tcp(&self) -> &TcpStream {
+        match self {
+            WsStream::Plain(s) => s,
+            WsStream::Tls(s) => &s.sock,
+        }
+    }
+}
+
+impl Read for WsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            WsStream::Plain(s) => s.read(buf),
+            // a server that drops the socket without a TLS close_notify is a closed peer, as in net/http.rs
+            WsStream::Tls(s) => match s.read(buf) {
+                Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(0),
+                other => other,
+            },
+        }
+    }
+}
+
+impl Write for WsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            WsStream::Plain(s) => s.write(buf),
+            // rustls takes plaintext into its buffer and reports 0 only when that buffer is full: that is "not now",
+            // not a closed socket, so it is reported as WouldBlock (the caller keeps its bytes and retries)
+            WsStream::Tls(s) => match s.write(buf) {
+                Ok(0) if !buf.is_empty() => Err(ErrorKind::WouldBlock.into()),
+                other => other,
+            },
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            WsStream::Plain(s) => s.flush(),
+            WsStream::Tls(s) => s.flush(),
+        }
+    }
+}
+
+/// The TLS handshake over `tcp` for `host`, within `deadline`. Blocking (the socket has its timeouts set here).
+fn open_tls(url: &WsUrl, tcp: TcpStream, deadline: Instant, tls: &Arc<rustls::ClientConfig>) -> Result<Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>, String> {
+    let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|_| "BAD WEBSOCKET ADDRESS".to_string())?;
+    let connection = rustls::ClientConnection::new(tls.clone(), name).map_err(|_| "SECURE CONNECTION FAILED".to_string())?;
+    let mut stream = rustls::StreamOwned::new(connection, tcp);
+    while stream.conn.is_handshaking() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err("TIMED OUT".into());
+        }
+        let _ = stream.sock.set_read_timeout(Some(left));
+        let _ = stream.sock.set_write_timeout(Some(left));
+        if let Err(e) = stream.conn.complete_io(&mut stream.sock) {
+            return Err(match e.kind() {
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => "TIMED OUT".to_string(),
+                // a certificate the roots do not vouch for, a name that does not match, a server that does not speak TLS
+                _ => "SECURE CONNECTION FAILED".to_string(),
+            });
+        }
+    }
+    Ok(Box::new(stream))
+}
+
+/// The player-facing reason a TCP connect failed.
+fn reach_message(kind: ErrorKind) -> String {
+    let why = match kind {
+        ErrorKind::ConnectionRefused => "NOTHING IS LISTENING THERE",
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => "TIMED OUT",
+        _ => "NETWORK ERROR",
+    };
+    format!("COULD NOT REACH THE SERVER ({why})")
+}
+
 /// A WebSocket client connection after its handshake: non-blocking, driven by [`WsConn::pump`].
 pub struct WsConn {
-    stream: TcpStream,
+    stream: WsStream,
     parser: FrameParser,
     /// Frames queued and not yet written, from `out_pos` on.
     out: Vec<u8>,
@@ -425,15 +508,18 @@ pub struct WsConn {
 }
 
 impl WsConn {
-    /// Opens `url` (`ws://`): the TCP connect and the HTTP upgrade, within `timeout`. Blocking.
+    /// Opens `url`: `ws://` as plain TCP, `wss://` over TLS (the TCP connect, the TLS handshake and the HTTP upgrade, all
+    /// within `timeout`). Blocking.
     pub fn connect(url: &str, timeout: Duration) -> Result<WsConn, String> {
+        WsConn::connect_with(url, timeout, &super::http::tls_config())
+    }
+
+    /// [`WsConn::connect`] with the TLS client settings given (the tests trust their own certificate this way).
+    fn connect_with(url: &str, timeout: Duration, tls: &Arc<rustls::ClientConfig>) -> Result<WsConn, String> {
         let url = parse_ws_url(url)?;
-        if url.secure {
-            return Err("wss:// IS NOT SUPPORTED BY THIS BUILD YET".into());
-        }
         let deadline = Instant::now() + timeout;
         let addrs: Vec<_> = (url.host.as_str(), url.port).to_socket_addrs().map_err(|_| "COULD NOT FIND THE SERVER".to_string())?.collect();
-        let mut stream = None;
+        let mut tcp = None;
         let mut last = "COULD NOT REACH THE SERVER".to_string();
         for addr in addrs {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -442,21 +528,23 @@ impl WsConn {
             }
             match TcpStream::connect_timeout(&addr, left) {
                 Ok(s) => {
-                    stream = Some(s);
+                    tcp = Some(s);
                     break;
                 }
-                Err(e) => last = format!("COULD NOT REACH THE SERVER ({:?})", e.kind()),
+                Err(e) => last = reach_message(e.kind()),
             }
         }
-        let mut stream = stream.ok_or(last)?;
-        let _ = stream.set_nodelay(true);
+        let tcp = tcp.ok_or(last)?;
+        let _ = tcp.set_nodelay(true);
+        let mut stream = if url.secure { WsStream::Tls(open_tls(&url, tcp, deadline, tls)?) } else { WsStream::Plain(tcp) };
         let key = super::base64_encode(&super::random_bytes(16));
         let io = |e: std::io::Error| match e.kind() {
             ErrorKind::TimedOut | ErrorKind::WouldBlock => "TIMED OUT".to_string(),
             _ => "THE CONNECTION BROKE DURING THE HANDSHAKE".to_string(),
         };
-        stream.set_write_timeout(Some(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))).map_err(io)?;
+        stream.tcp().set_write_timeout(Some(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))).map_err(io)?;
         stream.write_all(handshake_request(&url, &key).as_bytes()).map_err(io)?;
+        stream.flush().map_err(io)?;
         // the response head, then whatever the server already sent behind it
         let mut head = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -471,7 +559,7 @@ impl WsConn {
             if left.is_zero() {
                 return Err("TIMED OUT".into());
             }
-            stream.set_read_timeout(Some(left)).map_err(io)?;
+            stream.tcp().set_read_timeout(Some(left)).map_err(io)?;
             match stream.read(&mut chunk) {
                 Ok(0) => return Err("THE SERVER CLOSED THE CONNECTION".into()),
                 Ok(n) => head.extend_from_slice(&chunk[..n]),
@@ -482,9 +570,9 @@ impl WsConn {
         check_handshake_response(&String::from_utf8_lossy(&head[..split]), &key)?;
         let mut parser = FrameParser::new(false, MAX_MESSAGE_BYTES);
         parser.push(&head[split + 4..]);
-        stream.set_read_timeout(None).map_err(io)?;
-        stream.set_write_timeout(None).map_err(io)?;
-        stream.set_nonblocking(true).map_err(io)?;
+        stream.tcp().set_read_timeout(None).map_err(io)?;
+        stream.tcp().set_write_timeout(None).map_err(io)?;
+        stream.tcp().set_nonblocking(true).map_err(io)?;
         Ok(WsConn { stream, parser, out: Vec::new(), out_pos: 0, closed: false, close_sent: false })
     }
 
@@ -539,6 +627,10 @@ impl WsConn {
         if self.out_pos == self.out.len() {
             self.out.clear();
             self.out_pos = 0;
+        }
+        // TLS keeps records of its own until they reach the socket; a blocked socket here is not an error
+        if !self.closed {
+            let _ = self.stream.flush();
         }
     }
 
@@ -613,8 +705,12 @@ impl WsConn {
     /// Writes out what is queued (a close frame included) and shuts the socket.
     fn finish(&mut self) {
         self.flush();
+        if let WsStream::Tls(tls) = &mut self.stream {
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+        }
         self.closed = true;
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        let _ = self.stream.tcp().shutdown(std::net::Shutdown::Both);
     }
 
     /// Sends a close frame with `code` and `reason` and shuts the connection. Nothing is read after it.
@@ -992,10 +1088,100 @@ mod tests {
         assert_eq!(close_payload(1000, &"x".repeat(300)).len(), 102, "the reason is cut to 100 bytes");
     }
 
+    /// The test certificate (`testdata/`, for 127.0.0.1 and localhost only) as the one root a client trusts.
+    const TEST_CERT: &[u8] = include_bytes!("testdata/test_cert.der");
+    const TEST_KEY: &[u8] = include_bytes!("testdata/test_key.der");
+
+    fn trusting_test_config() -> Arc<rustls::ClientConfig> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(rustls::pki_types::CertificateDer::from(TEST_CERT.to_vec())).unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }
+
     #[test]
-    fn a_wss_address_is_refused_until_tls_is_added() {
-        let err = WsConn::connect("wss://example.org/api/ws", Duration::from_secs(1)).err().unwrap();
-        assert!(err.contains("wss://"), "{err}");
+    fn a_wss_address_builds_a_tls_connection_attempt() {
+        assert!(parse_ws_url("wss://127.0.0.1:1/api/ws").unwrap().secure);
+        // a port nobody listens on: a clear error, not a panic and not the old "not supported" refusal
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let err = WsConn::connect(&format!("wss://127.0.0.1:{port}/api/ws"), Duration::from_secs(3)).err().unwrap();
+        assert!(err.contains("COULD NOT REACH THE SERVER"), "{err}");
+        assert!(!err.contains("NOT SUPPORTED"), "{err}");
+    }
+
+    /// A loopback wss server: TLS with the test certificate, then the upgrade answer for the key it reads. Returns its port.
+    fn serve_wss_upgrade() -> (u16, std::thread::JoinHandle<()>) {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls::pki_types::CertificateDer::from(TEST_CERT.to_vec())],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(TEST_KEY.to_vec()).into(),
+            )
+            .unwrap();
+        let config = Arc::new(config);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
+            let mut got = Vec::new();
+            let mut b = [0u8; 1024];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tls.read(&mut b) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&b[..n]),
+                }
+            }
+            let head = String::from_utf8_lossy(&got).to_string();
+            let key = head.lines().find_map(|l| l.strip_prefix("Sec-WebSocket-Key: ")).unwrap_or("").trim().to_string();
+            let answer = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n", accept_key(&key));
+            tls.write_all(answer.as_bytes()).unwrap();
+            tls.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn a_wss_connection_runs_the_tls_handshake_and_then_the_upgrade() {
+        let (port, server) = serve_wss_upgrade();
+        let conn = WsConn::connect_with(&format!("wss://127.0.0.1:{port}/api/ws"), Duration::from_secs(5), &trusting_test_config())
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(!conn.is_closed());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_wss_client_refuses_a_server_that_does_not_speak_tls() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        });
+        let err = WsConn::connect_with(&format!("wss://127.0.0.1:{port}/api/ws"), Duration::from_secs(3), &trusting_test_config()).err().unwrap();
+        assert!(err.contains("SECURE CONNECTION FAILED"), "{err}");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_wss_client_refuses_a_certificate_the_roots_do_not_vouch_for() {
+        // the built-in roots do not include the test certificate, so the handshake must fail on it
+        let (port, _server) = serve_wss_upgrade();
+        let err = WsConn::connect(&format!("wss://127.0.0.1:{port}/api/ws"), Duration::from_secs(5)).err().unwrap();
+        assert!(err.contains("SECURE CONNECTION FAILED"), "{err}");
     }
 
     // ---- over a real loopback socket, against the in-process hub ----------------------------------------------------

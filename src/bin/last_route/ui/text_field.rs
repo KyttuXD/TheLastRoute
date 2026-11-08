@@ -7,8 +7,8 @@
 //! to [`apply`].
 //!
 //! Fields served: the JOIN ROOM code, the ACCOUNT sign-in form's username and password, the ACCOUNT SETTINGS username and
-//! the admin menu's FIELDS boxes. The SKIN tab's link box has a caret of its own (`skin_tab.rs`) and shares only the
-//! clipboard and the modifier test.
+//! the admin menu's FIELDS boxes. The SKIN tab's link box has a caret of its own (`skin_tab.rs`): it takes its typing and
+//! its paste through [`Kind::Link`] and shares the clipboard and the shortcut keys with the fields here.
 
 use super::clipboard;
 use macroquad::input::{get_char_pressed, is_key_down, is_key_pressed, KeyCode};
@@ -24,12 +24,17 @@ pub enum Kind {
     Code,
     /// Any printable text, at most [`FREE_MAX`] (the admin menu's boxes). No select all.
     Free,
+    /// A link (the SKIN tab's URL box): printable ASCII without spaces, at most [`LINK_MAX`]. A paste drops every space and
+    /// line break, so a link copied with a trailing newline lands whole. No select all.
+    Link,
 }
 
 pub const USERNAME_MAX: usize = 24;
 pub const PASSWORD_MAX: usize = 200;
 pub const CODE_MAX: usize = crate::net::api::CODE_LENGTH;
 pub const FREE_MAX: usize = 120;
+/// The longest link the SKIN box holds (data/skins/rules.json `max_length`, the cap the box uses at runtime).
+pub const LINK_MAX: usize = 512;
 
 impl Kind {
     /// The most characters the field holds.
@@ -39,6 +44,7 @@ impl Kind {
             Kind::Password => PASSWORD_MAX,
             Kind::Code => CODE_MAX,
             Kind::Free => FREE_MAX,
+            Kind::Link => LINK_MAX,
         }
     }
 
@@ -48,6 +54,7 @@ impl Kind {
             Kind::Username => (ch.is_ascii_alphanumeric() || ch == '_').then(|| ch.to_ascii_uppercase()),
             Kind::Code => ch.is_ascii_alphanumeric().then(|| ch.to_ascii_uppercase()),
             Kind::Password | Kind::Free => (!ch.is_control()).then_some(ch),
+            Kind::Link => ch.is_ascii_graphic().then_some(ch),
         }
     }
 
@@ -67,19 +74,20 @@ impl Kind {
     }
 
     fn can_select_all(self) -> bool {
-        self != Kind::Free
+        !matches!(self, Kind::Free | Kind::Link)
     }
 }
 
 /// What a paste of `raw` puts in a field of this kind: at most `room` characters, filtered like typed text.
 ///
 /// * Username: every whitespace and line break goes, then the typed filter (A-Z 0-9 _, upper case).
+/// * Link: the same, with the printable ASCII filter, so a link copied with a trailing newline lands whole.
 /// * Code: see [`code_from_paste`].
 /// * Password and free text: the text is trimmed, only its first line is used (no line break ever lands in the field),
 ///   control characters go, spaces inside stay.
 pub fn pasted(kind: Kind, raw: &str, room: usize) -> String {
     match kind {
-        Kind::Username => raw.chars().filter(|c| !c.is_whitespace()).filter_map(|c| kind.typed(c)).take(room).collect(),
+        Kind::Username | Kind::Link => raw.chars().filter(|c| !c.is_whitespace()).filter_map(|c| kind.typed(c)).take(room).collect(),
         Kind::Code => code_from_paste(raw).chars().take(room).collect(),
         Kind::Password | Kind::Free => {
             // invisible marks (zero-width spaces and joiners-of-nothing, BOM, bidi overrides) that a copy from a web page or
@@ -335,6 +343,19 @@ mod tests {
         assert_eq!(pasted(Kind::Username, &"a".repeat(40), 24).len(), 24, "capped at the field length");
         assert_eq!(pasted(Kind::Username, "abcdef", 3), "ABC", "the room left caps it");
         assert_eq!(pasted(Kind::Username, "", 24), "");
+    }
+
+    #[test]
+    fn a_pasted_link_lands_whole() {
+        assert_eq!(pasted(Kind::Link, "https://example.com/a.png\r\n", 512), "https://example.com/a.png", "a trailing newline goes");
+        assert_eq!(pasted(Kind::Link, "  https://example.com/a.png  \n", 512), "https://example.com/a.png");
+        assert_eq!(pasted(Kind::Link, "https://exa mple.com", 512), "https://example.com", "spaces inside go");
+        assert_eq!(pasted(Kind::Link, "https://example.com/long", 10), "https://ex", "the room left caps it");
+        assert_eq!(pasted(Kind::Link, "naïve\u{202e}", 512), "nave", "non-ASCII and control characters go");
+        assert_eq!(Kind::Link.typed(' '), None, "a typed space is refused");
+        assert_eq!(Kind::Link.typed('/'), Some('/'), "a link keeps its case and symbols");
+        assert_eq!(Kind::Link.copy_text("https://a.b/c.png").as_deref(), Some("https://a.b/c.png"));
+        assert_eq!(Kind::Link.copy_text(""), None);
     }
 
     #[test]

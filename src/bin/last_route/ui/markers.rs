@@ -302,6 +302,7 @@ mod tests {
             vy: 0.0,
             clip: None,
             held: None,
+            flash_pitch: None,
             hide: None,
             hide_since: None,
         }

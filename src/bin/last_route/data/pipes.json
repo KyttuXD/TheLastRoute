@@ -21,7 +21,12 @@
 		"max_cells": 160,
 		"outlet_count": 2
 	},
-	"effects": {
+	"durability": {
+			"_about": "Axe strikes that burst a pipe (game/pipes.rs strike_pipe, hunter_pipes.rs). A swing that does not burst it dents it. The sewer's ported breach hit points (world/route/sewer/seals.rs PIPE_HP: crawl 3, outflow 4) are golden-checked against Godot and stay as they are; the game counts these strikes instead. Before: one swing bursts any pipe (crawl and outflow both 1).",
+			"crawl": 6,
+			"outflow": 10
+		},
+		"effects": {
 		"flood": {
 			"kind": "flood",
 			"prompt": { "closed": "Hold to turn the valve", "open": "Hold to turn the valve", "shut_flood": "Hold to shut off the flood" }

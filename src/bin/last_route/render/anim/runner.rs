@@ -261,6 +261,8 @@ pub struct RunnerState {
     pub down: bool,
     /// real ground speed, metres per second
     pub speed: f32,
+    /// moving opposite to the way the runner faces: a paced clip plays time-reversed (see `ClipChoice::backward`)
+    pub backward: bool,
 }
 
 impl RunnerState {
@@ -329,6 +331,8 @@ pub struct ClipChoice {
     pub paced: bool,
     /// forward lean target of the body, radians (a swimmer)
     pub pitch: f32,
+    /// a paced clip moving backwards: the same clip plays with a negative speed scale, so the gait runs in reverse
+    pub backward: bool,
 }
 
 /// player_controller_3d.gd 1923-1935 / remote_players.gd 736-763.
@@ -345,8 +349,12 @@ pub fn clip_for(state: &RunnerState) -> ClipChoice {
         Pose::Stun | Pose::Down => (0.0, c.blend_default, 0.0),
     };
     let clip = c.clip(pose.key());
+    let paced = c.paced_clips.contains(&clip);
     ClipChoice {
-        paced: c.paced_clips.contains(&clip),
+        paced,
+        // Time reversal, not a walk_back clip: a walk cycle reversed in time keeps the left/right phase (each leg and
+        // arm runs the same curve backwards), so it needs no leg/arm swap and no extra rig data.
+        backward: paced && state.backward && state.moving,
         clip,
         alpha,
         blend,
@@ -476,8 +484,10 @@ impl RunnerView {
         self.pitch += (choice.pitch - self.pitch) * (1.0 - (-c.swim_pitch_rate * dt).exp());
         let rig = self.rig.clone();
         if choice.paced {
-            let (clip, goal) = pick(Some(&rig), &choice.clip, self.speed);
-            let scale = if goal <= 0.0 {
+            let (clip, forward) = pick(Some(&rig), &choice.clip, self.speed);
+            let goal = if choice.backward { -forward } else { forward };
+            // a still body snaps to 0; a moving one eases, so a turn-around runs the scale through zero
+            let scale = if goal == 0.0 {
                 goal
             } else {
                 let prev = self.pace.unwrap_or(goal);
@@ -661,6 +671,46 @@ mod tests {
             })
             .fold(0.0f32, f32::max);
         assert!(knee > 0.05, "a knee bends ({knee})");
+    }
+
+    #[test]
+    fn a_backwards_walk_selects_the_reversed_walk_and_a_forward_walk_does_not() {
+        let speed = ref_speed(None, "walk").0;
+        let back = RunnerState { moving: true, speed, backward: true, ..st() };
+        let fwd = RunnerState { moving: true, speed, ..st() };
+        assert!(clip_for(&back).backward, "a backwards walk picks the backwards gait");
+        assert_eq!(clip_for(&back).clip, config().clip("walk"), "the backwards gait is the walk clip, time-reversed");
+        assert!(!clip_for(&fwd).backward, "a forward walk does not");
+        assert!(!clip_for(&RunnerState { backward: true, ..st() }).backward, "a still body is not walking backwards");
+        // played, the backwards walk runs the walk clip at a negative scale; the forward walk runs it forwards
+        let mut back_view = RunnerView::load(false).expect("rig");
+        let mut fwd_view = RunnerView::load(false).expect("rig");
+        for _ in 0..30 {
+            back_view.update(&back, 1.0 / 30.0);
+            fwd_view.update(&fwd, 1.0 / 30.0);
+        }
+        assert_eq!(back_view.player.current_animation(), "walk");
+        assert!(back_view.player.speed_scale < 0.0, "backwards: {}", back_view.player.speed_scale);
+        assert_eq!(fwd_view.player.current_animation(), "walk");
+        assert!(fwd_view.player.speed_scale > 0.0, "forwards: {}", fwd_view.player.speed_scale);
+    }
+
+    #[test]
+    fn a_turn_around_passes_the_scale_through_zero() {
+        let mut view = RunnerView::load(false).expect("rig");
+        let speed = ref_speed(Some(&view.rig), "walk").0;
+        let fwd = RunnerState { moving: true, speed, ..st() };
+        let back = RunnerState { backward: true, ..fwd };
+        for _ in 0..30 {
+            view.update(&fwd, 1.0 / 30.0);
+        }
+        assert!(view.player.speed_scale > 0.5);
+        view.update(&back, 1.0 / 30.0);
+        assert!(view.player.speed_scale > 0.0 && view.player.speed_scale < 1.0, "eases, not a snap: {}", view.player.speed_scale);
+        for _ in 0..60 {
+            view.update(&back, 1.0 / 30.0);
+        }
+        assert!(view.player.speed_scale < -0.5, "settles reversed: {}", view.player.speed_scale);
     }
 
     #[test]

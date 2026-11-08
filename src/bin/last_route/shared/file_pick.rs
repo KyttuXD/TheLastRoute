@@ -4,8 +4,8 @@
 //!   plugin: a hidden `<input type=file>` is made and clicked, the chosen files are read into the page, and the game polls
 //!   for the answer. The bytes stay in the page until [`read`] copies them over, one file at a time.
 //! * Windows and macOS: the system open dialog (the `rfd` crate), opening in the Pictures folder, else Desktop, else the
-//!   home folder. Windows and Linux run the dialog on its own thread and the game polls; macOS asks for the open panel on
-//!   the main thread, which is the macroquad loop's thread, so the panel opens on the frame after the request.
+//!   home folder. Every desktop uses rfd's non-blocking async dialog, which the game polls each frame. The dialog does
+//!   not run a nested loop inside the frame: the blocking macOS open panel did, and that crashed the GL view's display.
 //! * Linux without a dialog backend (no desktop portal and no zenity): [`open`] says so and the caller shows a line about
 //!   dropping the file on the window.
 //!
@@ -485,32 +485,10 @@ mod imp {
         }
     }
 
-    /// The real dialog for a request. macOS: the open panel must run on the main thread, which is the macroquad loop's
-    /// thread, so the synchronous dialog is called right here (this runs from `state`, on the frame after the request) and
-    /// returns when the player is done. Windows and Linux: the dialog runs on a thread of its own (rfd's async dialog) and
-    /// the frame loop polls its future.
-    #[cfg(target_os = "macos")]
-    fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
-        let mut dialog = rfd::FileDialog::new().set_title(title(directory));
-        if let Some(dir) = start_dir() {
-            dialog = dialog.set_directory(dir);
-        }
-        let exts = extensions_of(&kind);
-        if !exts.is_empty() && !directory {
-            dialog = dialog.add_filter("Accepted files", &exts);
-        }
-        let result: Option<Vec<PathBuf>> = if directory {
-            dialog.pick_folder().map(|p| vec![p])
-        } else if multiple {
-            dialog.pick_files()
-        } else {
-            dialog.pick_file().map(|p| vec![p])
-        };
-        let mut answer = Some(result);
-        Dialog(Box::new(move || answer.take()))
-    }
-
-    #[cfg(not(target_os = "macos"))]
+    /// The real dialog for a request, on every desktop. It is rfd's async dialog, polled by the frame loop: the open panel
+    /// is shown without a nested run loop, so nothing is drawn from inside the GL view's display (macOS: a sheet on the
+    /// main window; Windows and Linux: the dialog runs on a thread of its own). A synchronous `pick_file` on macOS runs
+    /// AppKit's modal loop inside the frame callback, which aborted the game in `CA::Transaction::commit`.
     fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
         use std::future::Future;
         use std::pin::Pin;
@@ -660,6 +638,30 @@ mod tests {
             let Outcome::Picked(files) = poll_from(&mut reg, id, 100) else { panic!("a folder was chosen") };
             assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["skins/b.png", "skins/old/a.png"]);
             let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        }
+
+        #[test]
+        fn a_request_cancelled_while_its_dialog_is_open_ignores_the_late_answer() {
+            let dir = temp("cancel_open");
+            let file = dir.join("late.png");
+            std::fs::write(&file, b"late").unwrap();
+            let mut reg = Registry::default();
+            let (launch, launched) = fake(2, Some(vec![file]));
+            let id = reg.open_with(false, launch);
+            assert_eq!(poll_from(&mut reg, id, 100), Outcome::Pending, "the dialog opens on the first poll");
+            assert_eq!(reg.state(id), State::Pending, "still open");
+            reg.release(id);
+            assert_eq!(reg.state(id), State::Cancelled, "a released request reads as cancelled at once");
+            assert_eq!(poll_from(&mut reg, id, 100), Outcome::Cancelled, "the dialog's later answer is never taken");
+            assert_eq!(launched.get(), 1, "the dialog was started once and not again");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_missing_start_folder_gives_no_start_and_does_not_panic() {
+            let missing = PathBuf::from("/no/such/lr/home");
+            assert_eq!(start_dir_from(Some(missing.clone()), &|d| d.is_dir()), None, "a home folder that is not there");
+            assert_eq!(start_dir_from(None, &|d| d.is_dir()), None, "no home variable at all");
         }
 
         #[test]

@@ -167,13 +167,14 @@ impl Game {
     }
 
     /// The unburst pipe of the runner's sewer chunk an axe swing reaches: the breakable `n` (`BRK:x:y:z:n`) with a pipe
-    /// cell within `range` of the runner and inside the cone of `half_angle` in front. The breach hit points and tool
-    /// damage tables (`Breach.TOOL_DAMAGE`) are not ported, so one swing of the axe bursts it.
+    /// cell within `range` of the runner and inside the cone of `half_angle` in front, and the strikes it takes to burst
+    /// (`pipes::Rules::strikes_to_burst`). The tool damage tables (`Breach.TOOL_DAMAGE`) are not ported: every swing is
+    /// one strike.
     ///
     /// The swing must reach the pipe cell in a straight line over open floor (the pipe's own wall cell aside) and the
     /// runner's feet must be within `AXE_PIPE_REACH_Y` of the storey floor, so a swing never bursts a pipe through a
     /// wall or on another deck.
-    pub(super) fn axe_pipe_target(&self, range: f32, half_angle: f32) -> Option<(pipes::Chunk, usize)> {
+    pub(super) fn axe_pipe_target(&self, range: f32, half_angle: f32) -> Option<(pipes::Chunk, usize, u32)> {
         let (key, Some(ch)) = self.water_cache.as_ref()? else { return None };
         if key.1 != self.fac.level || !same_height(self.p.y() + self.p.feet_y, super::level_stack::floor_y_of(key.1)) {
             return None;
@@ -182,12 +183,13 @@ impl Game {
         let base = (key.0 * sewer_core::CHUNK - origin.0, key.2 * sewer_core::CHUNK - origin.1);
         let f = self.forward2();
         let running: Vec<usize> = self.pipes.flows_in(*key).into_iter().map(|(_, _, n)| n).collect();
-        let mut best: Option<(f32, usize)> = None;
+        let mut best: Option<(f32, usize, u32)> = None;
         for (n, spec) in ch.breakables.iter().enumerate() {
             let Extras::Pipe(p) = &spec.extras else { continue };
             if running.contains(&n) {
                 continue;
             }
+            let need = pipes::rules().strikes_to_burst(p.pipe);
             for c in &p.cells {
                 let at = ((base.0 + c.x) as f32 + 0.5, (base.1 + c.y) as f32 + 0.5);
                 let (dx, dz) = (at.0 - self.p.pos.0, at.1 - self.p.pos.1);
@@ -199,11 +201,23 @@ impl Game {
                     continue;
                 }
                 if best.is_none_or(|b| d < b.0) {
-                    best = Some((d, n));
+                    best = Some((d, n, need));
                 }
             }
         }
-        best.map(|b| (*key, b.1))
+        best.map(|b| (*key, b.1, b.2))
+    }
+
+    /// One Axe swing at the unburst pipe `n` of `chunk`, which takes `need` strikes to burst: a dent, or the burst on
+    /// the strike that breaks it (`burst_pipe`). Returns whether it burst.
+    pub(super) fn strike_pipe(&mut self, chunk: pipes::Chunk, n: usize, need: u32) -> bool {
+        let id = format!("{}{n}", pipes::flow_prefix(chunk));
+        if self.pipes.strike(&id, need) {
+            self.burst_pipe(chunk, n);
+            true
+        } else {
+            false
+        }
     }
 
     /// Host: a guest's Axe breach (`NetSession::take_burst_requests`). `at` and `depth` are the guest's last sample
@@ -424,6 +438,59 @@ mod tests {
         assert_eq!(out, vec![((6, 10), 0), ((7, 10), 1), ((8, 10), 2)]);
         assert_eq!(cells_for_flow(&[(1, 1), (2, 2)], &[5], (0, 0)), vec![((1, 1), 5)]);
         assert!(cells_for_flow(&[], &[1], (0, 0)).is_empty());
+    }
+
+    #[test]
+    fn an_axe_pipe_takes_its_durability_in_strikes_before_it_bursts() {
+        let (mut g, id) = game_with_pipe(&[(3, 3)]);
+        let key = g.water_cache.as_ref().unwrap().0;
+        let n: usize = id.rsplit(':').next().unwrap().parse().unwrap();
+        let need = pipes::rules().strikes_to_burst("outflow");
+        for _ in 1..need {
+            assert!(!g.strike_pipe(key, n, need), "a dent, not a burst");
+        }
+        assert!(g.pipes.run(&id).is_none(), "still whole after the dents");
+        assert!(g.strike_pipe(key, n, need), "the strike that reaches its durability bursts it");
+        assert!(g.pipes.run(&id).is_some(), "and its flow runs");
+    }
+
+    /// A broken big orange pipe (a sewer outflow main) still stands in its chunk, keeps its prop, and leaks water
+    /// past its own cells onto the walkway once it bursts.
+    #[test]
+    fn a_burst_big_outflow_pipe_stays_in_the_world_and_leaks_past_its_own_cells() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-SWIM-7", sewer_core::LEVEL, &content, &catalog);
+        let center = g.inf.as_ref().unwrap().center;
+        let seed = g.inf.as_ref().unwrap().seed.clone();
+        let mut found = None;
+        'search: for dx in -8..=8 {
+            for dz in -8..=8 {
+                let key = (center.0 + dx, sewer_core::LEVEL, center.1 + dz);
+                let Some(ch) = sewer::chunk(Coord::new(key.0, key.1, key.2), &sewer::Inputs { world: &seed }) else { continue };
+                if let Some(n) = ch.breakables.iter().position(|b| matches!(&b.extras, Extras::Pipe(p) if p.pipe == "outflow")) {
+                    found = Some((key, ch, n));
+                    break 'search;
+                }
+            }
+        }
+        let (key, ch, n) = found.expect("a big outflow pipe within 8 chunks of the centre");
+        let Extras::Pipe(p) = &ch.breakables[n].extras else { unreachable!("a pipe breakable") };
+        let (own, prop_ids) = (p.cells.len(), p.props.clone());
+        assert!(!prop_ids.is_empty(), "the pipe still names its prop");
+        g.water_cache = Some((key, Some(Box::new(ch))));
+        let need = pipes::rules().strikes_to_burst("outflow");
+        for _ in 1..need {
+            g.strike_pipe(key, n, need);
+        }
+        assert!(g.strike_pipe(key, n, need), "it bursts");
+        let id = format!("{}{n}", pipes::flow_prefix(key));
+        let outlet = g.pipes.run(&id).expect("the flow runs").outlet;
+        let flood = cells(&g).into_iter().find(|f| f.id == id).expect("the burst floods its cells");
+        assert!(flood.cells.len() > own, "it leaks past its own {own} cells (it floods {})", flood.cells.len());
+        g.time += 10.0;
+        assert!(g.pipe_depth(&id, 1, outlet) > 0.0, "the walkway next to the pipe takes water");
+        assert_eq!(g.pipes.run(&id).map(|r| r.outlet), Some(outlet), "the flow is still there, not drained or removed");
     }
 
     #[test]

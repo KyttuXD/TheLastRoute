@@ -24,7 +24,7 @@ use std::time::Duration;
 pub const SCHEMA: &str = "lr.hunter_events/1";
 
 /// The event kinds the data file may tune.
-pub const EVENT_KINDS: [&str; 9] = [
+pub const EVENT_KINDS: [&str; 10] = [
     "hunter_state",
     "hunter_grab",
     "hunter_door",
@@ -34,6 +34,7 @@ pub const EVENT_KINDS: [&str; 9] = [
     "sabotage",
     "stream_valve",
     "stream_pipe_burst",
+    "stream_safe_room",
 ];
 
 /// The capture timeout when the data file has no `capture` block.

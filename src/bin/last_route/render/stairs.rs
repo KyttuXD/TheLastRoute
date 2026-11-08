@@ -1,6 +1,6 @@
 //! Stair flights and ladder wells as geometry: a flight is a smooth ramp (sloped tiles sampled from the flight's surface,
 //! no tread blocks) going down through an open well, with its fit-out (handrails, the landing guards, the centre post,
-//! the "LEVEL n" signs and the light), and a ladder in its shaft. The pieces come out as quads and boxes that
+//! the light), and a ladder in its shaft. The pieces come out as quads and boxes that
 //! `world_mesh` files under the level's floor and wall pictures, so the shaft carries the wall's picture. The flight's
 //! footprint, surface and walk code live in `world::facility` / `world::flight`: this is only what is drawn. The numbers
 //! of the fit-out are data (`dressing` in data/flights.json); the geometry of each piece is `world::flight`'s
@@ -8,16 +8,16 @@
 //!
 //! Which level draws what. The lower level (`dir > 0`) owns the ramp and everything standing on it: the tiles, the solid
 //! divider and wall faces of a switchback or straight flight, the floor under a spiral's helicoid, the post, the
-//! handrails (up to the upper floor), its "LEVEL n" sign and the well's light. The upper level (`dir < 0`) draws no floor
+//! handrails (up to the upper floor) and the well's light. The upper level (`dir < 0`) draws no floor
 //! over the well, only its guard rails round the rim (posts, a top and a knee rail; a spiral's run the whole rim the
 //! collision closes, `spiral_rim_guards`), the spiral's slab rail, the part of the handrails that stands above the upper
-//! floor and its own sign. A spiral has no "LEVEL n" sign (`signs_with` gives it none).
+//! floor. The "LEVEL n" sign plate is not drawn here; its lettering was removed.
 
 use super::shader::{Flicker, Lamp};
 use crate::world::facility::{Cell, Cover, LinkKind, Stair};
 use crate::world::flight::{
-    divider_width, flight_surface_y_with, flights, handrails_with, lamp_place_with, landing_guards_with, lane_dividers, signs_with,
-    spiral_post_with, spiral_slab_rail_with, Dressing, Flight, FlightShape, Sign,
+    divider_width, flight_surface_y_with, flights, handrails_with, lamp_place_with, landing_guards_with, lane_dividers,
+    spiral_post_with, spiral_slab_rail_with, Dressing, Flight, FlightShape,
 };
 use crate::world::vertical::STOREY;
 use macroquad::prelude::*;
@@ -133,11 +133,24 @@ pub const HATCH: Color = Color::new(0.62, 0.6, 0.56, 1.0);
 /// floor is orange-brown, and a picture-painted ramp blended into it; a light flat stone reads apart from any floor.
 pub const TREAD_STONE: Color = Color::new(0.74, 0.72, 0.68, 1.0);
 
+/// The ramp's shade steps per unit: the depth shade is rounded to these, so the stone reads as three flat tones (75 %,
+/// 87.5 %, 100 % of the stone) rather than a gradient from tread to tread.
+const SHADE_STEPS: f32 = 8.0;
+
 /// The ramp fades with depth, but never to black: the lowest tile is still 75 % of the picture.
 fn shade(y: f32, h: f32) -> Color {
     let f = if y < 0.0 { 1.0 - 0.25 * (-y / h).min(1.0) } else { 1.0 - 0.2 * (y / h).min(1.0) };
+    let f = (f * SHADE_STEPS).round() / SHADE_STEPS;
     Color::new(f, f, f, 1.0)
 }
+
+/// A tread's nosing: the bright lip along the lower edge of each tread, where the tread drops off into the next riser.
+/// Flat and unshaded, so every step reads at its edge.
+pub const NOSING: Color = Color::new(0.96, 0.94, 0.9, 1.0);
+/// The share of a tread's depth the nosing band takes, measured in from its lower edge.
+const NOSING_W: f32 = 0.2;
+/// The nosing stands this far above its tread so the two never share a plane (clamped under the storey).
+const NOSING_LIFT: f32 = 0.002;
 
 /// A tile's colour: its depth shade times the stone.
 fn tread_tint(s: Color) -> Color {
@@ -217,15 +230,37 @@ pub fn tiles(s: Stair, level: i32, c: (i32, i32)) -> Vec<Tile> {
 /// difference is a drop in the surface the tile straddles, and the corner is not read across it.
 const TILE_JUMP: f32 = 0.6;
 
-/// The tile's top face, and for a hollow ramp (a spiral's helicoid is a thin shell) its darker underside too.
+/// The tile's top face, its nosing band, and for a hollow ramp (a spiral's helicoid is a thin shell) its darker underside.
 fn tile_quads(out: &mut Parts, t: &Tile, hollow: bool, site: &Site) {
     let p = t.corners();
     let col = tread_tint(shade(t.mean(), site.h));
     let n = t.normal();
     push(out, Face::Plain, p, [Vec2::ZERO; 4], n, col);
+    nosing_band(out, t, n, site);
     if hollow {
         push(out, Face::Plain, [p[3], p[2], p[1], p[0]], [Vec2::ZERO; 4], -n, dim(col, 0.8));
     }
+}
+
+/// The nosing of a tile: a band of `NOSING_W` of its depth along the edge that stands lowest (the lip the walker steps
+/// off), on the tile's top face, in `NOSING`. Its vertices are kept under the storey.
+fn nosing_band(out: &mut Parts, t: &Tile, n: Vec3, site: &Site) {
+    let p = t.corners();
+    let edges = [(0, 1), (1, 2), (2, 3), (3, 0)];
+    let (a, b) = edges
+        .into_iter()
+        .min_by(|e, f| (p[e.0].y + p[e.1].y).total_cmp(&(p[f.0].y + p[f.1].y)))
+        .map(|(i, j)| (p[i], p[j]))
+        .unwrap_or((p[0], p[1]));
+    let m = (p[0] + p[1] + p[2] + p[3]) * 0.25;
+    let inner = |v: Vec3| v + (m - v) * NOSING_W;
+    let lifted = |v: Vec3| {
+        let mut v = v + vec3(0.0, NOSING_LIFT, 0.0);
+        v.y = v.y.min(site.h);
+        v
+    };
+    let (a2, b2) = (inner(a), inner(b));
+    push(out, Face::Plain, [lifted(a), lifted(b), lifted(b2), lifted(a2)], [Vec2::ZERO; 4], n, NOSING);
 }
 
 /// The face of a vertical edge between `a` and `b` (ground points with the tile height at each), from the floor up to
@@ -327,9 +362,6 @@ fn lower_dressing(out: &mut Parts, f: &Flight, site: &Site) {
             rail_bar(out, a, b);
         }
     }
-    for sign in signs_with(flights(), f).iter().filter(|s| !s.upper) {
-        sign_lettering(out, sign);
-    }
 }
 
 /// The upper level's fittings of one stair, once: the guards round the rim, the slab rail, the part of the handrails that
@@ -354,9 +386,6 @@ fn upper_dressing(out: &mut Parts, f: &Flight, site: &Site) {
         for (a, b) in clip_segments(&r.points, site.shaft_top() + m, f32::MAX) {
             rail_bar(out, [a[0], a[1] - site.shaft_top(), a[2]], [b[0], b[1] - site.shaft_top(), b[2]]);
         }
-    }
-    for sign in signs_with(rules, f).iter().filter(|s| s.upper) {
-        sign_lettering(out, sign);
     }
 }
 
@@ -486,11 +515,12 @@ fn post(out: &mut Parts, f: &Flight, site: &Site) {
 const POST_SIDES: usize = 12;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The "LEVEL n" sign
+// The "LEVEL n" sign font (test-only: the sign's lettering is no longer drawn; the font stays under test)
 // ---------------------------------------------------------------------------------------------------------------------
 
 /// The rows of a glyph of the sign's 5 x 7 face, top to bottom, bit 4 the left column. Only the letters and signs the
 /// sign says ("LEVEL +n", "LEVEL 0", "LEVEL -n") and the digits.
+#[cfg(test)]
 fn glyph(c: char) -> [u8; 7] {
     match c {
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
@@ -514,6 +544,7 @@ fn glyph(c: char) -> [u8; 7] {
 
 /// The lit runs of a sign's lettering as (offset along the reading direction from the sign's middle, run length, height
 /// over the sign's middle, in metres): each row of each glyph, runs of lit dots joined.
+#[cfg(test)]
 pub fn sign_runs(text: &str, text_height: f32) -> Vec<(f32, f32, f32)> {
     let dot = text_height / 7.0;
     let n = text.chars().count() as f32;
@@ -539,27 +570,6 @@ pub fn sign_runs(text: &str, text_height: f32) -> Vec<(f32, f32, f32)> {
         }
     }
     out
-}
-
-/// A sign's lettering as unlit boxes in the sign's colour, standing on the wall plane facing into the well.
-fn sign_lettering(out: &mut Parts, s: &Sign) {
-    let d = &flights().dressing;
-    let (th, depth) = (d.sign_text_height(), 0.02);
-    let dot = th / 7.0;
-    let col = colour3(d.sign_colour);
-    for (along, len, y) in sign_runs(&s.text, th) {
-        let c = vec3(
-            s.at.0 + s.right.0 * along + s.normal.0 * depth * 0.5,
-            s.y + y,
-            s.at.1 + s.right.1 * along + s.normal.1 * depth * 0.5,
-        );
-        let size = vec3(
-            s.right.0.abs() * len * 0.98 + s.normal.0.abs() * depth,
-            dot * 0.92,
-            s.right.1.abs() * len * 0.98 + s.normal.1.abs() * depth,
-        );
-        out.glow.push((c, size, col));
-    }
 }
 
 /// A ladder's two rails and its rungs fixed against side `m` of cell `c`, from height `y0` to `y1`, rungs at `rungs`.
@@ -829,6 +839,56 @@ mod tests {
         level_of(s) as f32 * H
     }
 
+    fn same(a: Color, b: Color) -> bool {
+        a.r == b.r && a.g == b.g && a.b == b.b
+    }
+
+    fn is_nosing(q: &Quad) -> bool {
+        same(q.col, NOSING)
+    }
+
+    /// Every quad's vertices and colour as raw bits, in order: two builds that agree give equal bytes.
+    fn quad_bytes(p: &Parts) -> Vec<u32> {
+        let mut out = Vec::new();
+        for q in &p.quads {
+            for v in q.c.iter().chain(std::iter::once(&q.n)) {
+                out.extend([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]);
+            }
+            out.extend([q.col.r.to_bits(), q.col.g.to_bits(), q.col.b.to_bits(), q.col.a.to_bits(), q.face as u32]);
+        }
+        out
+    }
+
+    /// Each stair texture (switchback, straight, spiral) is a few flat tones: 3 to 6 distinct colours on its top faces
+    /// including the nosing, one nosing band per tread along the tread's lower edge, a nosing clearly lighter than every
+    /// tread tone, and the same bytes on every build.
+    #[test]
+    fn each_stair_texture_is_a_few_flat_tones_with_a_visible_nosing() {
+        for shape in SHAPES {
+            for run in RUNS {
+                let s = stair(1, run, shape);
+                let p = build(s);
+                let tops = top_faces(&p);
+                let mut tones: Vec<[u32; 3]> = tops.iter().map(|q| [q.col.r.to_bits(), q.col.g.to_bits(), q.col.b.to_bits()]).collect();
+                tones.sort();
+                tones.dedup();
+                assert!((3..=6).contains(&tones.len()), "{shape:?} {run:?}: {} colours", tones.len());
+
+                let tiles_n = all_tiles(s).len();
+                let nosing: Vec<&&Quad> = tops.iter().filter(|q| is_nosing(q)).collect();
+                assert_eq!(nosing.len(), tiles_n, "{shape:?} {run:?}: one nosing band per tread");
+                let tread_max = tops.iter().filter(|q| !is_nosing(q)).map(|q| q.col.g).fold(0.0f32, f32::max);
+                assert!(NOSING.g - tread_max >= 0.15, "{shape:?} {run:?}: the nosing {} against the tread {tread_max}", NOSING.g);
+                for q in nosing {
+                    // the band is a strip of real width, not a sliver
+                    assert!((q.c[0] - q.c[3]).length() >= 0.02, "{shape:?} {run:?}: a nosing band of {:?}", q.c);
+                }
+
+                assert_eq!(quad_bytes(&p), quad_bytes(&build(s)), "{shape:?} {run:?}: the texture repeats exactly");
+            }
+        }
+    }
+
     #[test]
     fn flight_tiles_follow_the_surface() {
         for shape in SHAPES {
@@ -928,7 +988,8 @@ mod tests {
                         // the upper level owns no tiles: the well is open
                         assert!(ramp_quads(&p).is_empty(), "{shape:?} {dir} {run:?}");
                     } else {
-                        assert_eq!(top_faces(&p).len(), all_tiles(s).len(), "{shape:?} {dir} {run:?}");
+                        let treads = top_faces(&p).into_iter().filter(|q| !is_nosing(q)).count();
+                        assert_eq!(treads, all_tiles(s).len(), "{shape:?} {dir} {run:?}");
                     }
                     for q in &p.quads {
                         for v in q.c {
@@ -996,7 +1057,7 @@ mod tests {
             let floors = p.quads.iter().filter(|q| q.face == Face::Floor).count();
             assert_eq!(floors, s.well_cells().len(), "{run:?}: a floor quad per well cell, no bottomless void");
             assert!(p.quads.iter().filter(|q| q.face == Face::Floor).all(|q| q.c.iter().all(|v| v.y.abs() < EPS) && q.n.y > 0.5));
-            let tops = top_faces(&p).len();
+            let tops = top_faces(&p).into_iter().filter(|q| !is_nosing(q)).count();
             let unders = ramp_quads(&p).iter().filter(|q| q.n.y < 0.0).count();
             assert_eq!(tops, unders, "{run:?}: every tile has its underside");
             let w = build(stair(1, run, FlightShape::Switchback));
@@ -1204,41 +1265,15 @@ mod tests {
     }
 
     #[test]
-    fn each_level_has_its_sign_in_godots_gold_over_its_own_floor() {
+    fn no_stair_draws_level_lettering() {
+        // the sign's "LEVEL n" lettering is no longer drawn on any flight, spiral or not
         let rules = flights();
         let gold = colour3(rules.dressing.sign_colour);
         for shape in SHAPES {
-            if shape == FlightShape::Spiral {
-                for run in RUNS {
-                    for dir in [-1, 1] {
-                        assert!(build(stair(dir, run, shape)).glow.is_empty(), "no LEVEL lettering on a spiral staircase ({run:?} {dir})");
-                    }
-                }
-                continue;
-            }
             for run in RUNS {
                 for dir in [-1, 1] {
-                    let s = stair(dir, run, shape);
-                    let f = s.flight(level_of(s)).unwrap();
-                    let p = build(s);
-                    let sign = signs_with(rules, &f).into_iter().find(|g| g.upper == (dir < 0)).unwrap();
-                    let lit: Vec<_> = p.glow.iter().filter(|(_, _, c)| *c == gold).collect();
-                    let runs = sign_runs(&sign.text, rules.dressing.sign_text_height());
-                    assert_eq!(lit.len(), runs.len(), "{shape:?} {run:?} dir {dir}: a box per lit run of {}", sign.text);
-                    assert!(lit.len() > 20);
-                    // the lettering is centred 2.625 m over the floor, on the wall plane, 2 cm deep
-                    let ys: Vec<f32> = lit.iter().map(|(c, _, _)| c.y).collect();
-                    let mid = (ys.iter().cloned().fold(f32::MAX, f32::min) + ys.iter().cloned().fold(f32::MIN, f32::max)) * 0.5;
-                    assert!((mid - rules.dressing.sign_y()).abs() < 0.1, "{shape:?} {run:?} dir {dir}: lettering at {mid}");
-                    for (c, sz, _) in &lit {
-                        let off = (c.x - sign.at.0) * sign.normal.0 + (c.z - sign.at.1) * sign.normal.1;
-                        assert!(off > 0.0 && off < 0.03, "stands off the wall by {off}");
-                        assert!((sz.x * sign.normal.0.abs() + sz.z * sign.normal.1.abs() - 0.02).abs() < EPS);
-                    }
-                    // and reads along `right`: the extent along it is the text's width, wider than tall
-                    let along: Vec<f32> = lit.iter().map(|(c, _, _)| (c.x - sign.at.0) * sign.right.0 + (c.z - sign.at.1) * sign.right.1).collect();
-                    let span = along.iter().cloned().fold(f32::MIN, f32::max) - along.iter().cloned().fold(f32::MAX, f32::min);
-                    assert!(span > 4.0 * rules.dressing.sign_text_height(), "{shape:?} {run:?}: {} is {span} m wide", sign.text);
+                    let p = build(stair(dir, run, shape));
+                    assert!(p.glow.iter().all(|(_, _, c)| *c != gold), "{shape:?} {run:?} dir {dir}: no gold lettering");
                 }
             }
         }

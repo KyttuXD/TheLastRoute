@@ -439,7 +439,7 @@ type Tls = ();
 
 /// The rustls client settings every https request uses: the `ring` provider, TLS 1.2 and 1.3, the Mozilla roots.
 #[cfg(not(target_arch = "wasm32"))]
-fn tls_config() -> Arc<Tls> {
+pub(super) fn tls_config() -> Arc<Tls> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {

@@ -19,8 +19,8 @@
 //!
 //! Limits (see headless/dedicated.rs): relays, pickups and doors are still local to each client, so the room's relay
 //! count (and with it the hunter population) is set at the start ([`Game::relays_collected`]) and does not grow; a guest
-//! in a safe room is protected only where `fac.safe_zone` says so; the sample does not carry the flashlight, so a guest
-//! is seen as unlit.
+//! in a safe room is protected only where `fac.safe_zone` says so; a guest's flashlight is read from its sample, so a lit guest
+//! is seen with the beam its sample says.
 
 use super::{pdist, Game};
 use crate::audio::Sounds;
@@ -451,6 +451,35 @@ mod tests {
             "first {first:.1}, later {later:.1}, state {:?}",
             g.hunters[0].state
         );
+    }
+
+    #[test]
+    fn an_admin_summoned_hunter_hunts_a_guest_like_any_other_hunter() {
+        let (mut g, content, catalog) = room();
+        let start = g.fac.start.center();
+        // the admin summons a hunter into the empty room, then a guest arrives
+        assert!(crate::app::stress::summon(&mut g, "elise", &content, 0, 0));
+        g.set_remote_targets(vec![guest(&g, 2, start)], Some(2));
+        step(&mut g, &content, &catalog, 20);
+        assert_eq!(g.hunter_aim[0], Some(2), "a summoned hunter hunts the guest");
+        // NO TARGET does not change the summoned hunter's targeting: guests are still hunted, as for any hunter
+        g.admin.no_target = true;
+        step(&mut g, &content, &catalog, 20);
+        assert_eq!(g.hunter_aim[0], Some(2), "a summoned hunter under NO TARGET hunts the guest like an ordinary one");
+    }
+
+    #[test]
+    fn a_hunter_targeting_one_guest_switches_to_a_nearer_guest() {
+        let (mut g, content, catalog) = room();
+        let start = g.fac.start.center();
+        g.set_remote_targets(vec![guest(&g, 2, start)], Some(2));
+        step(&mut g, &content, &catalog, 20);
+        assert_eq!(g.hunter_aim[0], Some(2), "the only guest is the target");
+        // guest 3 steps onto the hunter, nearer than guest 2: the hunter re-picks it on the next frame
+        let at = g.hunters[0].pos;
+        g.set_remote_targets(vec![guest(&g, 2, start), guest(&g, 3, at)], Some(2));
+        step(&mut g, &content, &catalog, 1);
+        assert_eq!(g.hunter_aim[0], Some(3), "the nearer guest in range is chased");
     }
 
     #[test]

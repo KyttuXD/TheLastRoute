@@ -40,6 +40,8 @@ pub mod npc;
 pub mod player;
 pub mod preload;
 pub mod progression;
+pub mod revive;
+pub mod spectate;
 pub(crate) mod transition;
 mod void_player;
 
@@ -206,6 +208,12 @@ pub struct Game {
     /// that list is rebuilt.
     pub director: Director,
     pub escape: Option<Escape>,
+    /// The runner's downed state (game/revive.rs): Some while it lies down, not yet revived and not dead.
+    pub downed: Option<revive::Downed>,
+    /// The bots that are down, by `Npc::id` (game/revive.rs).
+    pub downed_npcs: std::collections::BTreeMap<u32, revive::Downed>,
+    /// The spectator state of a downed or dead runner (game/spectate.rs): Some while it watches another runner.
+    pub spectate: Option<spectate::Spectate>,
     escape_cooldown: f32,
     escape_cooldown_scale: f32,
     escape_grace: f32,
@@ -347,6 +355,9 @@ impl Game {
             hunters: vec![],
             director: Director::new(difficulty, &format!("{run_seed}-director")),
             escape: None,
+            downed: None,
+            downed_npcs: std::collections::BTreeMap::new(),
+            spectate: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,
@@ -486,6 +497,9 @@ impl Game {
             hunters: vec![],
             director: Director::new(difficulty, &format!("{run_seed}-director")),
             escape: None,
+            downed: None,
+            downed_npcs: std::collections::BTreeMap::new(),
+            spectate: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,
@@ -619,11 +633,12 @@ impl Game {
             ("solyth", 3.199963, 2.75, "SOLYTH"),
         ] {
             if let Some(def) = content.hunter(id) {
-                let p = self.fac.nearest_open_or(
-                    spawn.0 + angle.cos() * d,
-                    spawn.1 + angle.sin() * d,
-                    HUNTER_RADIUS,
-                );
+                // a spawn beside the hunter is put down dry, never in channel water (the hunter's own spawn is dry already)
+                let (sx, sy) = (spawn.0 + angle.cos() * d, spawn.1 + angle.sin() * d);
+                let p = self
+                    .fac
+                    .nearest_dry_open(sx, sy, HUNTER_RADIUS)
+                    .unwrap_or_else(|| self.fac.nearest_open_or(sx, sy, HUNTER_RADIUS));
                 let mut b = Brain::new(def.clone(), p, &format!("{seed}:{tag}"), self.difficulty);
                 if let Gimmick::Solyth(s) = &mut b.gimmick {
                     s.heat_locked = self.meters.heat_locked;
@@ -857,6 +872,9 @@ impl Game {
             self.step_dedicated(dt, content, catalog, sounds);
             return;
         }
+        // a spectator gets no controls (game/spectate.rs); the world still runs for it below
+        let c_eff = self.effective_controls(c);
+        let c = &c_eff;
         // Void effect timers (outage, radar, fake steps) run here so the agent path (headless/sim.rs calls `step`
         // directly) ticks them too, not only the window's `update`.
         self.tick_void_effects(dt);
@@ -864,7 +882,7 @@ impl Game {
         self.fade = (self.fade - dt * 1.5).max(0.0);
         self.toast_t = (self.toast_t - dt).max(0.0);
         self.message_t = (self.message_t - dt).max(0.0);
-        if self.report.is_some() {
+        if self.report.is_some() && !self.spectating() {
             return;
         }
         let prof = self.prof();
@@ -934,6 +952,8 @@ impl Game {
         }
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
         self.update_npcs(dt);
+        // a downed runner or bot is revived by a teammate's hold, or dies at the timeout (game/revive.rs)
+        self.tick_revives(dt, c);
         let level = self.runner_level();
         // hunters pull the doors they reach open; the runner and the player bots (NPC teammates) never do, they press
         // interact on the door (Focus::Door, npc.rs), but every body keeps a leaf from swinging shut through it
@@ -950,7 +970,9 @@ impl Game {
             return;
         }
 
-        if self.ladder.is_some() {
+        if self.downed.is_some() {
+            // a downed runner lies still: no move, no ladder, no interact. The hunters and the teammates carry on below.
+        } else if self.ladder.is_some() {
             // a climb is continuous in y: the label follows the body's height every frame, like a walked flight
             self.advance_ladder(dt, c, content, catalog);
             self.update_water_sink(dt, false);

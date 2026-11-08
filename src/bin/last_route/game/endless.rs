@@ -1090,7 +1090,8 @@ impl Game {
                 }
             }
         }
-        let breachers = if inside {
+        // a guest's hunters are the host's frames: the host batters the room and publishes it (`publish_safe_room`)
+        let breachers = if inside && !self.remote_hunters {
             self.hunters
                 .iter()
                 .filter(|h| pdist(h.pos, centre) <= SAFE_ROOM_BREACH_REACH)
@@ -1133,10 +1134,44 @@ impl Game {
         let was = inf.safe.status(room).breached;
         let status = inf.safe.damage(room, amount);
         self.sync_safe_zone();
+        self.publish_safe_room(&room.id, status);
         if status.breached && !was {
             self.say("SAFE ROOM BREACHED");
         }
         status
+    }
+
+    /// Host: publishes a room's status to every guest as a `stream_safe_room` world event, so every player sees the
+    /// room the same way. A guest's game does nothing here: its room changes only when the host's event arrives.
+    fn publish_safe_room(&mut self, room_id: &str, status: Status) {
+        if self.remote_hunters {
+            return;
+        }
+        self.hunter_out.emit(
+            crate::net::hunter_events::rules(),
+            self.difficulty,
+            crate::shared::safe_room::EVENT,
+            crate::shared::safe_room::event_fields(room_id, status),
+            crate::shared::clock::Instant::now(),
+        );
+    }
+
+    /// Every machine: applies a host's `stream_safe_room` event to the room it names. Returns whether the event was a
+    /// safe-room event. A fresh breach of the runner's own room is said here, as the host's breach is.
+    pub fn apply_safe_room_event(&mut self, ev: &serde_json::Map<String, serde_json::Value>) -> bool {
+        if ev.get("what").and_then(serde_json::Value::as_str) != Some(crate::shared::safe_room::EVENT) {
+            return false;
+        }
+        // a malformed status changes nothing, but it is still this kind of event
+        let Some((room_id, status)) = crate::shared::safe_room::parse_event(ev) else { return true };
+        let Some(inf) = self.inf.as_mut() else { return true };
+        let was = inf.safe.set_by_id(&room_id, status);
+        let own = inf.room.as_ref().is_some_and(|r| r.id == room_id);
+        self.sync_safe_zone();
+        if own && status.breached && !was {
+            self.say("SAFE ROOM BREACHED");
+        }
+        true
     }
 
     /// Godot `_admin_edit_checkpoint` (infinite_route_test.gd): DAMAGE CHECKPOINT takes 25 off the runner's safe room,
@@ -1146,6 +1181,7 @@ impl Game {
         if amount >= 0 {
             let status = self.inf.as_mut()?.safe.repair(&room, amount);
             self.sync_safe_zone();
+            self.publish_safe_room(&room.id, status);
             Some(status)
         } else {
             Some(self.damage_live_room(&room, -amount))
@@ -1184,6 +1220,7 @@ impl Game {
         let Some(inf) = self.inf.as_mut() else { return false };
         let status = inf.safe.repair(&room, amount);
         self.sync_safe_zone();
+        self.publish_safe_room(&room.id, status);
         self.say(&format!("SAFE ROOM REPAIRED // {}%", status.integrity));
         true
     }
@@ -2725,8 +2762,9 @@ mod tests {
         assert!(g.autosave("quit"));
         assert_eq!(g.last_autosave, "quit");
         g.last_autosave = "";
-        g.end_run(0, "caught");
-        assert!(g.report.is_some(), "the catch ends the run");
+        // a dead runner's run is over (a catch only takes the runner down first: game/revive.rs)
+        g.finish_run(0, "caught");
+        assert!(g.report.is_some(), "the death ends the run");
         assert!(!g.autosave("quit"), "a caught runner's run has ended");
         assert_eq!(g.last_autosave, "");
     }
@@ -2758,6 +2796,33 @@ mod tests {
         assert_eq!(g.checkpoints_activated(), 1);
         assert_eq!(g.p.stamina, 1.0);
         assert!(g.message.is_empty());
+    }
+
+    #[test]
+    fn a_breach_on_the_host_is_published_and_a_guest_applies_it_without_battering_on_its_own() {
+        let (mut host, _, _) = in_room();
+        host.safe_room_step(0.0);
+        host.admin_edit_checkpoint(-100);
+        let events = host.hunter_out.take();
+        let breach = events
+            .iter()
+            .find(|e| e.get("what").and_then(|w| w.as_str()) == Some(crate::shared::safe_room::EVENT))
+            .expect("the host publishes the room's status");
+        assert!(status_of(&host).breached);
+
+        let (mut guest, _, _) = in_room();
+        guest.remote_hunters = true;
+        let c = middle_safe_centre();
+        guest.hunters[0].pos = (c.0 + 2.0, c.1);
+        for _ in 0..60 {
+            guest.safe_room_step(1.0 / 30.0);
+        }
+        assert_eq!(status_of(&guest).integrity, 100, "a guest does not batter the room from the host's hunters");
+        assert!(guest.apply_safe_room_event(breach));
+        assert!(status_of(&guest).breached);
+        assert_eq!(guest.fac.safe_zone, None, "the guest sees the room fall");
+        assert_eq!(guest.message, "SAFE ROOM BREACHED");
+        assert!(!guest.apply_safe_room_event(&serde_json::Map::new()), "other events are not room events");
     }
 
     #[test]

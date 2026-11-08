@@ -137,6 +137,9 @@ pub struct Sample {
     /// The item the runner holds (`held`, see `net::held_wire`); None when it holds nothing, from an older client, or
     /// when the id is one this build does not know.
     pub held: Option<Item>,
+    /// The runner's flashlight: `Some(pitch)` while its beam is lit (the aim is its yaw and this pitch, radians), None
+    /// when it is off or the sender is older. Wire: `"flash": true` and `"pitch"` (only when not level).
+    pub flash_pitch: Option<f32>,
 }
 
 impl Sample {
@@ -164,6 +167,7 @@ impl Sample {
             slim: false,
             hide: None,
             held: None,
+            flash_pitch: p.beam_lit().then_some(p.pitch),
         }
     }
 
@@ -220,6 +224,13 @@ impl Sample {
             if let Some(i) = self.held {
                 o.insert("held".into(), json!(super::held_wire::wire(i)));
             }
+            // the flashlight is optional too: a lit beam sends its flag and, when it is not level, its pitch
+            if let Some(pitch) = self.flash_pitch {
+                o.insert("flash".into(), json!(true));
+                if pitch != 0.0 {
+                    o.insert("pitch".into(), json!(pitch));
+                }
+            }
         }
         v
     }
@@ -252,9 +263,14 @@ impl Sample {
             slim: flag("slim"),
             hide: o.get("hide").and_then(hide_spot_from_json),
             held: o.get("held").and_then(Value::as_str).and_then(super::held_wire::from_wire),
+            // a pitch past straight up or down is clamped: a hostile sample cannot aim the beam through the floor
+            flash_pitch: flag("flash").then(|| num("pitch").unwrap_or(0.0).clamp(-FLASH_PITCH_LIMIT, FLASH_PITCH_LIMIT)),
         })
     }
 }
+
+/// The steepest pitch a received flashlight aim may have (radians, about 70 degrees).
+pub const FLASH_PITCH_LIMIT: f32 = 1.2;
 
 /// `[cell x, cell y, facing x, facing y]`; anything else is no locker.
 fn hide_spot_from_json(v: &Value) -> Option<HideSpot> {
@@ -338,6 +354,8 @@ pub struct RemoteView {
     pub hide: Option<HideSpot>,
     /// The item the runner holds in its hand, if any.
     pub held: Option<Item>,
+    /// `Some(pitch)` while the runner's flashlight is lit (its sample's aim); None when it is off.
+    pub flash_pitch: Option<f32>,
     /// Whether the runner was out in the open `HIDE_MOVE_SECONDS` ago: a runner going into a locker stays visible while
     /// it slides in (Godot remote_players.gd 542-563). Set by [`NetSession::remotes_at`].
     pub hide_since: Option<std::time::Duration>,
@@ -363,6 +381,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
         slim: shown.slim,
         clip: shown.clip,
         held: shown.held,
+        flash_pitch: shown.flash_pitch,
         hide: shown.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
         hide_since: r.hide_since.map(|t| now.duration_since(t)),
         speed: if !shown.moving {
@@ -397,6 +416,8 @@ pub struct GuestPose {
     pub crouching: bool,
     pub hidden: bool,
     pub huntable: bool,
+    /// The guest's flashlight is lit (its sample's `flash`): a hunter sees the beam, as it sees the local runner's.
+    pub flashlight: bool,
 }
 
 /// What the room tells the game. The app acts on these between frames.
@@ -976,7 +997,8 @@ fn join_found(cfg: BackendConfig, code: String, room: api::RoomEndpoint, name: S
         let link = WsLink::guest(&code, ticket, &cfg.base_url);
         #[cfg(not(target_arch = "wasm32"))]
         let link = super::ws_native::NativeWsLink::guest(&code, ticket, &cfg.base_url);
-        Box::new(link.map_err(|e| NetError::Transport(e.to_string()))?)
+        // the connect's own reason (COULD NOT REACH THE SERVER (...), SECURE CONNECTION FAILED) is shown instead of the generic join text
+        Box::new(link.map_err(|e| NetError::Refused(e.to_string()))?)
     } else {
         Box::new(RelayLink::guest(&code, &room.address, room.port, ticket).map_err(|e| NetError::Transport(e.to_string()))?)
     };
@@ -1550,6 +1572,7 @@ impl NetSession {
                     hidden: s.hide.is_some(),
                     // spectating, over, or already in a hunter's grip: not a target
                     huntable: !(s.spectating || s.game_over || s.escape_active),
+                    flashlight: s.flash_pitch.is_some(),
                 }
             })
             .collect();
@@ -2414,6 +2437,7 @@ mod tests {
             slim: false,
             hide: None,
             held: None,
+            flash_pitch: None,
         }
     }
 
@@ -2484,6 +2508,28 @@ mod tests {
     }
 
     #[test]
+    fn a_lit_flashlight_rides_the_sample_with_its_aim() {
+        // off: no key, so an older peer sees the old packet
+        let off = sample(5, 1.0, 2.0);
+        assert!(off.to_json().get("flash").is_none());
+        assert_eq!(Sample::from_json(&off.to_json()).unwrap().flash_pitch, None);
+        // lit and level: the flag only
+        let mut lit = sample(6, 1.0, 2.0);
+        lit.flash_pitch = Some(0.0);
+        let v = lit.to_json();
+        assert_eq!(v["flash"], json!(true));
+        assert!(v.get("pitch").is_none(), "a level aim sends no pitch");
+        assert_eq!(Sample::from_json(&v).unwrap().flash_pitch, Some(0.0));
+        // lit and aimed up: the pitch rides along
+        lit.flash_pitch = Some(0.4);
+        assert_eq!(Sample::from_json(&lit.to_json()).unwrap().flash_pitch, Some(0.4));
+        // a hostile pitch is clamped to the limit
+        let mut hostile = lit.to_json();
+        hostile["pitch"] = json!(99.0);
+        assert_eq!(Sample::from_json(&hostile).unwrap().flash_pitch, Some(FLASH_PITCH_LIMIT));
+    }
+
+    #[test]
     fn sample_json_round_trips_and_ignores_keep_alives() {
         let s = Sample {
             seq: 9,
@@ -2505,6 +2551,7 @@ mod tests {
             slim: true,
             hide: Some(HideSpot { cell: (-40, 17), facing: (0, -1) }),
             held: Some(Item::Crowbar),
+            flash_pitch: Some(-0.25),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");

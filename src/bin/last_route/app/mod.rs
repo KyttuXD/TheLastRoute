@@ -650,6 +650,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     // a skin was worn and DEFAULT was chosen since: the website's copy is cleared once the account is signed in
     let mut had_skin = false;
     let mut clear_pending = false;
+    // the account's website skin, checked in the background on sign-in (a second computer wears the same skin)
+    let mut sign_in_sync: Option<skins::SignInSync> = None;
     // when the worn skin is next offered to the website (a new hash at once, a refused one again after a delay)
     let mut upload_plan = skins::UploadPlan::default();
     let upload_retry = skins::config().map_or(60.0, |c| c.upload_retry_secs);
@@ -772,6 +774,20 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             clear_pending = false;
             skins::clear_in_background(net_cfg.clone(), backend.account.session_token.clone());
         }
+        // the account's website skin, once its sign-in check has answered: adopted (and saved) unless the local skin changed
+        // since the check began. The website copy is never cleared from here.
+        let sign_in_answer = sign_in_sync.as_mut().and_then(|sync| sync.poll(&settings.skin));
+        if let Some(decision) = sign_in_answer {
+            sign_in_sync = None;
+            if let skins::SignInSkin::Adopt(hash, slim) = decision {
+                skins::mark_account_holds(&hash);
+                settings.skin = hash;
+                settings.skin_slim = slim;
+                if !stress_on {
+                    settings.save();
+                }
+            }
+        }
 
         // the account answers: the profile name is set only when the server confirms it
         for event in backend.update() {
@@ -781,6 +797,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if !stress_on {
                         settings.save();
                     }
+                    // a restored session at startup answers the same way, so this covers it too
+                    sign_in_sync = skins::SignInSync::start(
+                        net_cfg.clone(),
+                        settings.username.clone(),
+                        skins::LocalSkin { skin: settings.skin.clone(), slim: settings.skin_slim, worn_hash: worn.get().hash },
+                    );
                     ui.acct_user.clear();
                     ui.acct_pass.clear();
                     ui.acct_status.clear();
@@ -1134,7 +1156,10 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 NetEvent::WorldEvent(event) => {
                     // a valve turn or a burst pipe changes the sewer water here too; anything else may be a notice
-                    let piped = playing.as_mut().is_some_and(|g| g.apply_pipe_event(&event));
+                    // the host's safe-room status (`stream_safe_room`) is applied here too: every machine shows the same room
+                    let piped = playing
+                        .as_mut()
+                        .is_some_and(|g| g.apply_pipe_event(&event) | g.apply_safe_room_event(&event));
                     if !piped {
                         if let Some(text) = crate::net::hunter_events::notice(&event) {
                             show_room_notice(playing.as_mut(), &mut ui, &text);
@@ -1544,6 +1569,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
             }
             let seed_text = g.room_text.clone();
+            // the other runners of the room, for SPECTATE (game/spectate.rs); none outside a multiplayer or public room
+            let spectate_roster: Vec<(u32, String)> = net.as_ref().map(|n| n.roster_peers()).unwrap_or_default();
+            let spectate_peers: Vec<u32> = spectate_roster.iter().map(|(p, _)| *p).collect();
+            // set by the card and the spectator keys after the death match, which holds `death` borrowed
+            let mut spectate_now = false;
+            let mut back_to_card = false;
             let mut leave = false;
             // online same-seed reload: clear the run after this borrow of `playing` ends, without Title/net.leave
             let mut reload_keep_net = false;
@@ -1556,7 +1587,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 std::process::exit(0);
             }
             if g.report.is_some() {
-                if death.is_none() {
+                if death.is_none() && !g.spectating() {
                     let r = g.report.as_ref().unwrap();
                     let category = w
                         .content
@@ -1594,7 +1625,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 }
                 Some(Death::Card { focus }) => {
                     let can_respawn = last_save.is_some();
-                    if let Some(card) = report::card_for(g, &seed_text, can_respawn) {
+                    if let Some(card) = report::card_for(g, &seed_text, can_respawn, !spectate_peers.is_empty()) {
                         if is_key_pressed(KeyCode::Left)
                             || is_key_pressed(KeyCode::Right)
                             || is_key_pressed(KeyCode::Tab)
@@ -1644,6 +1675,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                                     }
                                 }
                             }
+                            // SPECTATE: the dead runner watches the room (game/spectate.rs); the card closes
+                            Some(2) => {
+                                g.spectate_enter(&spectate_peers);
+                                spectate_now = true;
+                            }
                             Some(_) => leave = true,
                             None => {}
                         }
@@ -1657,6 +1693,23 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
                         hud::draw_hud_with_runners(g, &w.assets, fps, s, &marks);
+                    }
+                    // a spectator: LEFT and RIGHT cycle the runners it watches, Escape after the run's end goes back to the card
+                    if g.spectating() {
+                        if is_key_pressed(KeyCode::Left) {
+                            g.spectate_cycle(&spectate_peers, -1);
+                        }
+                        if is_key_pressed(KeyCode::Right) {
+                            g.spectate_cycle(&spectate_peers, 1);
+                        }
+                        if g.report.is_some() && is_key_pressed(KeyCode::Escape) {
+                            back_to_card = true;
+                        }
+                        let target = g.spectate_target();
+                        let name = spectate_roster.iter().find(|(p, _)| Some(*p) == target).map(|(_, n)| n.as_str());
+                        report::draw_watching(&w.assets, name);
+                    } else if g.runner_downed() && !spectate_peers.is_empty() && report::draw_downed_prompt(&w.assets) {
+                        g.spectate_enter(&spectate_peers);
                     }
                     if !hud_hidden {
                         hud::draw_crosshair(g, grabbed);
@@ -1750,6 +1803,13 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         }
                     }
                 }
+            }
+            // a dead runner that chose SPECTATE leaves the card; Escape while watching brings the card back
+            if spectate_now {
+                death = None;
+            }
+            if back_to_card {
+                death = Some(Death::Card { focus: 1 });
             }
             if leave {
                 playing = None;
@@ -2274,7 +2334,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, hide: None, hide_since: None }
+        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, hide: None, hide_since: None }
     }
 
     #[test]
@@ -2352,6 +2412,7 @@ fn shot_remote(g: &Game) -> RemoteView {
         clip: None,
         hide: None,
         held: None,
+        flash_pitch: None,
         hide_since: None,
     }
 }

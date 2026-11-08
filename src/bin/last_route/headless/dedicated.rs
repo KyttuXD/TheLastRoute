@@ -512,7 +512,9 @@ pub fn directory_check(cfg: BackendConfig, token: String) -> TicketCheck {
 
 /// A guest's pose as the hunters' target (absolute cells).
 fn target_of(p: &GuestPose) -> RemoteTarget {
-    RemoteTarget::new(p.peer, (p.x, p.y), p.h, p.level, p.yaw, p.moving, p.sprinting, p.crouching, p.hidden, p.huntable)
+    let mut t = RemoteTarget::new(p.peer, (p.x, p.y), p.h, p.level, p.yaw, p.moving, p.sprinting, p.crouching, p.hidden, p.huntable);
+    t.target.flashlight_on = p.flashlight;
+    t
 }
 
 /// How long the public room waits between two tries to take the room (a runner holds it, or the directory is down).

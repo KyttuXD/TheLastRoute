@@ -921,16 +921,85 @@ fn route_for(fac: &Facility, from: Cell, to: Cell, deep: &[(i32, i32)], fleeing:
     if dry.is_empty() { direct } else { dry }
 }
 
+/// The way out of a cell the hunters' grid closes (channel water behind a railing, say): the search from such a cell finds
+/// nothing, so the bot first walks out by its own footing, never across a railing, to the nearest cell the grid opens
+/// (a dry one first, else any), and routes on from there. Empty when no way out exists.
+fn leave_closed(fac: &Facility, from: Cell, to: Cell, deep: &[(i32, i32)], fleeing: bool) -> Vec<Cell> {
+    let out = closed_exit(fac, from, |c| fac.hunter_open(c) && !deep.contains(&(c.x, c.y)))
+        .or_else(|| closed_exit(fac, from, |c| fac.hunter_open(c)));
+    let Some(out) = out else { return vec![] };
+    let mut came: std::collections::HashMap<Cell, Cell> = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::from([from]);
+    let mut queue = std::collections::VecDeque::from([from]);
+    let mut found = false;
+    while let Some(c) = queue.pop_front() {
+        if c == out {
+            found = true;
+            break;
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nb = Cell::new(c.x + dx, c.y + dy);
+            if seen.contains(&nb) || !step_free(fac, c, nb) {
+                continue;
+            }
+            seen.insert(nb);
+            came.insert(nb, c);
+            queue.push_back(nb);
+        }
+    }
+    if !found {
+        return vec![];
+    }
+    let mut path = vec![out];
+    let mut at = out;
+    while let Some(p) = came.get(&at) {
+        at = *p;
+        path.push(at);
+    }
+    path.reverse();
+    path.extend(route_for(fac, out, to, deep, fleeing).into_iter().skip(1));
+    path
+}
+
+/// The nearest cell reached from `from` by footing alone (`step_free`) that `accept` takes, not counting `from`.
+fn closed_exit(fac: &Facility, from: Cell, accept: impl Fn(Cell) -> bool) -> Option<Cell> {
+    let mut seen = std::collections::HashSet::from([from]);
+    let mut queue = std::collections::VecDeque::from([from]);
+    while let Some(c) = queue.pop_front() {
+        if c != from && accept(c) {
+            return Some(c);
+        }
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let nb = Cell::new(c.x + dx, c.y + dy);
+            if !seen.contains(&nb) && step_free(fac, c, nb) {
+                seen.insert(nb);
+                queue.push_back(nb);
+            }
+        }
+    }
+    None
+}
+
+/// Whether a bot's body of `NAV_RADIUS` can step from cell `a` into the orthogonal neighbour `b` by its footing: `b` fits,
+/// and no railing or crawl pipe is on the edge between them. Water is floor for the body, so this crosses it.
+fn step_free(fac: &Facility, a: Cell, b: Cell) -> bool {
+    !fac.rail_between(a, b)
+        && fac.body_fits(b.x as f32 + 0.5, b.y as f32 + 0.5, NAV_RADIUS)
+        && !fac.crawl_stops(b.x as f32 + 0.5, b.y as f32 + 0.5, NAV_RADIUS, crate::config::PLAYER_HEIGHT)
+}
+
 /// Plans a route from the bot's cell to the open cell nearest `goal`, and drops the cell the bot stands in.
 fn plan(n: &mut Npc, fac: &Facility, goal: (f32, f32)) {
     n.path_age = 0.0;
     let from = Cell::new(n.at.0.floor() as i32, n.at.1.floor() as i32);
     let to = fac.nearest_open(goal.0, goal.1, NAV_RADIUS).unwrap_or(goal);
     let to = Cell::new(to.0.floor() as i32, to.1.floor() as i32);
-    n.path = route_for(fac, from, to, &n.deep_cells, n.fleeing)
-        .into_iter()
-        .map(|c| (c.x, c.y))
-        .collect();
+    let route = if fac.hunter_open(from) {
+        route_for(fac, from, to, &n.deep_cells, n.fleeing)
+    } else {
+        leave_closed(fac, from, to, &n.deep_cells, n.fleeing)
+    };
+    n.path = route.into_iter().map(|c| (c.x, c.y)).collect();
     if !n.path.is_empty() {
         n.path.remove(0);
     }
@@ -1029,8 +1098,22 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
                 wait_at_door(n, fac, door, t, dt, presses);
                 return;
             }
-            // a wall in the way: no slide along it, a fresh route, and the next step waits for it
+            // a wall in the way: no slide along it, a fresh route, and the next step waits for it. A step cut across a corner
+            // (a railing's end beside a gap) is the one a body off its cell's centre line cannot take: it first moves
+            // sideways, across the step, to that centre line, and the straight step through the gap is then clear.
             Sweep::Blocked if fits => {
+                let centre = cell_at(here).center();
+                let across = (centre.0 - here.0) * -dir.1 + (centre.1 - here.1) * dir.0;
+                if len > 1e-6 && across.abs() > 0.01 {
+                    let s = (if running { PLAYER_SPRINT_SPEED } else { PLAYER_WALK_SPEED } * dt).min(across.abs());
+                    let side = (-dir.1 * s * across.signum(), dir.0 * s * across.signum());
+                    let to = (here.0 + side.0, here.1 + side.1);
+                    if matches!(sweep(fac, here, to), Sweep::Clear) {
+                        n.at = to;
+                        n.walking = true;
+                        return;
+                    }
+                }
                 plan(n, fac, goal);
                 n.walking = false;
                 return;
@@ -1859,26 +1942,36 @@ impl Game {
         }
         let runner = self.p.pos;
         let floor_y = (self.p.height + self.p.feet_y).max(0.0);
+        // a bot is only ever put down on a dry, walkable spot (never channel water, never a cell the grid closes)
         let spot = match self.npc_crosshair_floor(eye, dir, floor_y) {
-            Some(p) if pdist(p, runner) < SPAWN_NEAR_ADMIN && self.fac.body_fits(p.0, p.1, NAV_RADIUS) => {
+            Some(p)
+                if pdist(p, runner) < SPAWN_NEAR_ADMIN
+                    && self.fac.body_fits(p.0, p.1, NAV_RADIUS)
+                    && self.fac.hunter_may_spawn(cell_at(p)) =>
+            {
                 p
             }
             _ => runner,
         };
         let level = self.runner_level();
+        let mut made = 0;
         for _ in 0..count {
             let slot = self.npc_next + 1;
             // Godot: one NPC stands on the spot itself, more fan out round it
             let ring = if count == 1 { 0.0 } else { slot_radius(slot) };
             let want = slot_point(spot, slot, ring);
-            let at = self
+            let Some(at) = self
                 .fac
-                .nearest_open(want.0, want.1, NAV_RADIUS)
-                .or_else(|| self.fac.nearest_open(spot.0, spot.1, NAV_RADIUS))
-                .unwrap_or(spot);
+                .nearest_dry_open(want.0, want.1, NAV_RADIUS)
+                .or_else(|| self.fac.nearest_dry_open(spot.0, spot.1, NAV_RADIUS))
+            else {
+                // no dry spot on this floor at all: no bot is put in the water
+                break;
+            };
             self.push_npc(at, level, smart, None, 0.0);
+            made += 1;
         }
-        count as usize
+        made
     }
 
     /// Makes one NPC at `at` (id, slot, name and repath phase as Godot's `spawn`) and returns its id. A `key` marks a
@@ -1956,13 +2049,14 @@ impl Game {
                     let d = pdist(p, runner);
                     d >= rules.min_distance
                         && d <= rules.max_distance
+                        && self.fac.hunter_may_spawn(*c)
                         && self.fac.body_fits(p.0, p.1, NAV_RADIUS)
                         && !self.fac.has_line_of_sight(p, runner)
                 })
                 .collect();
             let at = if cands.is_empty() {
                 // a window with no hidden open cell in range: stand beside the runner, still deterministic
-                self.fac.nearest_open(runner.0 + rules.min_distance, runner.1, NAV_RADIUS).unwrap_or(runner)
+                self.fac.nearest_dry_open(runner.0 + rules.min_distance, runner.1, NAV_RADIUS).unwrap_or(runner)
             } else {
                 cands[rng.next_index(cands.len())].center()
             };
@@ -2007,8 +2101,8 @@ impl Game {
             let ring = if total == 1 { 0.0 } else { slot_radius(n.slot) };
             let want = slot_point(spot, n.slot, ring);
             n.at = fac
-                .nearest_open(want.0, want.1, NAV_RADIUS)
-                .or_else(|| fac.nearest_open(spot.0, spot.1, NAV_RADIUS))
+                .nearest_dry_open(want.0, want.1, NAV_RADIUS)
+                .or_else(|| fac.nearest_dry_open(spot.0, spot.1, NAV_RADIUS))
                 .unwrap_or(spot);
             n.level = level;
             n.y = y;
@@ -2524,6 +2618,33 @@ mod tests {
         }
         assert_eq!(g.npcs[0].at, before, "an NPC on another level does not move");
         assert!(!g.npcs[0].walking);
+    }
+
+    /// A spawn never lands on channel water: with every floor cell near the runner made water, every bot is put on a dry,
+    /// routable cell further out, and a floor with no dry cell at all makes no bot rather than one in the water.
+    #[test]
+    fn a_spawned_bot_never_lands_in_water() {
+        let (mut g, _, _) = offline_game();
+        let runner = g.p.pos;
+        let wet: Vec<Cell> = g.fac.floor_cells().into_iter().filter(|c| pdist(c.center(), runner) <= 12.0).collect();
+        assert!(!wet.is_empty(), "the runner has floor round it");
+        g.fac.set_water_cells(&wet);
+        g.fac.rebuild_grids();
+        let (e, d) = down_at(runner);
+        let made = g.npc_spawn(4, 50, e, d);
+        assert_eq!(made, 4, "four dry spots are found further out");
+        for n in &g.npcs {
+            let c = cell_at(n.at);
+            assert!(!g.fac.is_water(c), "a bot at {:?} is in the water", n.at);
+            assert!(g.fac.hunter_open(c), "a bot at {:?} stands on a cell the grid opens", n.at);
+        }
+        // no dry spot anywhere: nothing is spawned into the water
+        let all: Vec<Cell> = g.fac.floor_cells();
+        g.fac.set_water_cells(&all);
+        g.fac.rebuild_grids();
+        let before = g.npcs.len();
+        assert_eq!(g.npc_spawn(2, 50, e, d), 0);
+        assert_eq!(g.npcs.len(), before);
     }
 
     #[test]
@@ -3857,6 +3978,37 @@ mod water_tests {
         let depths = [((1, 1), 0.2), ((2, 1), t.water_avoid_depth), ((3, 1), t.water_avoid_depth + 0.5)];
         assert_eq!(deep_cells_of(&depths, t.water_avoid_depth), vec![(2, 1), (3, 1)]);
         assert!(deep_cells_of(&depths, 99.0).is_empty(), "a changed data value changes which cells are deep");
+    }
+
+    /// A bot already in deep channel water behind a railing (a cell the hunters' grid closes) walks out to the walkway by
+    /// the gap, and never crosses the railing. Before the fix its route search started from the closed cell and found
+    /// nothing, so it stood still in the water.
+    #[test]
+    fn a_bot_in_deep_railed_water_walks_out_to_the_walkway() {
+        let fac = crate::world::facility::railed_pool();
+        let start = Cell::new(9, 11);
+        assert!(!fac.hunter_open(start), "the water behind the railing is closed to the grid");
+        assert!(fac.body_fits(9.5, 11.5, NAV_RADIUS), "a body fits in the water: it is not a wall");
+        let pool: Vec<(i32, i32)> = (8..=14).map(|x| (x, 11)).collect();
+        let mut n = Npc {
+            id: 0, name: String::new(), slot: 1, at: (9.5, 11.5), level: 0, y: 0.0, walk: None, edge_clock: 0.0, hop: None, facing: 0.0, turn_v: 0.0, heading: (0.0, 0.0),
+            path: vec![], path_age: 0.0, walking: false, stride: 0.0, smart: 50, key: None, joined: true,
+            join_radius: 0.0, door: None, hidden: None, errand: None, dwell: 0.0, visited: vec![], clear_time: 0.0,
+            claim: None,
+            searched: vec![], last_door: None, deep_cells: pool, fleeing: false, heard: None, goal: GoalState::default(), flee: FleeState::default(),
+        };
+        let t = Tuning::get();
+        let mut presses = vec![];
+        let goal = (9.5, 10.5);
+        for _ in 0..400 {
+            walk_toward(&mut n, &fac, goal, false, t, 0.1, &mut presses);
+            if n.at.1 < 11.0 {
+                break;
+            }
+        }
+        assert!(n.at.1 < 11.0, "the bot is out of the water and on the walkway, at {:?}", n.at);
+        assert!(fac.hunter_open(cell_at(n.at)), "it stands on a cell the grid opens");
+        assert!(!fac.is_water(cell_at(n.at)));
     }
 
     #[test]

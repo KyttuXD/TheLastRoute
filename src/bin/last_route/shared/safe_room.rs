@@ -7,9 +7,41 @@
 //! (`InfiniteRouteTest._update_safe_room_breaches`).
 //!
 //! The state lives with the run (`InfState` in `game::endless`), so it survives the window moving
-//! away and back, as Godot's world state does. It is solo for now: nothing is sent to other players.
+//! away and back, as Godot's world state does. In a co-op room the host alone breaches rooms and publishes each room's
+//! status as a `stream_safe_room` world event (`event_fields` / `parse_event`); every machine applies it.
 
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+
+/// The `what` of the host's published safe-room status (every machine applies it, `Game::apply_safe_room_event`).
+pub const EVENT: &str = "stream_safe_room";
+
+/// The fields of a `stream_safe_room` event for `Outbox::emit`: the room id and its status.
+pub fn event_fields(room_id: &str, status: Status) -> Vec<(&'static str, Value)> {
+    vec![
+        ("room_id", json!(room_id)),
+        ("integrity", json!(status.integrity)),
+        ("breached", json!(status.breached)),
+    ]
+}
+
+/// A published room status, read back. `None` for another kind, an id that is not a `:SAFE` room id, or a status
+/// that does not agree with itself (a breached room is at 0 integrity).
+pub fn parse_event(o: &Map<String, Value>) -> Option<(String, Status)> {
+    if o.get("what").and_then(Value::as_str) != Some(EVENT) {
+        return None;
+    }
+    let id = o.get("room_id").and_then(Value::as_str)?;
+    if id.is_empty() || id.len() > 64 || !id.ends_with(":SAFE") {
+        return None;
+    }
+    let integrity = i32::try_from(o.get("integrity").and_then(Value::as_i64)?).ok()?;
+    let breached = o.get("breached").and_then(Value::as_bool)?;
+    if integrity < 0 || breached != (integrity <= 0) {
+        return None;
+    }
+    Some((id.to_string(), Status { integrity, breached }))
+}
 
 /// A safe room's spec: the Godot `safe_room_data` dictionary.
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +100,14 @@ impl SafeRooms {
         s.breached = s.integrity <= 0;
         self.rooms.insert(room.id.clone(), s);
         s
+    }
+
+    /// Applies a room status the host published, by room id (every machine). Returns whether the room was breached
+    /// before, so the caller can tell a fresh breach.
+    pub fn set_by_id(&mut self, id: &str, status: Status) -> bool {
+        let was = self.rooms.get(id).is_some_and(|s| s.breached);
+        self.rooms.insert(id.to_string(), status);
+        was
     }
 
     /// A crowbar or rescue axe repairs the room: integrity up by `amount` (capped at the spec max).
@@ -176,6 +216,33 @@ mod tests {
         let other = SafeRoom { checkpoint_id: "1:0:0:CHECKPOINT".into(), ..room() };
         assert!(!s.activate(&other), "the same room, breached, activates nothing");
         assert_eq!(s.active_checkpoint(), "0:0:0:CHECKPOINT");
+    }
+
+    #[test]
+    fn a_published_room_status_round_trips_and_a_bad_one_is_refused() {
+        let st = Status { integrity: 0, breached: true };
+        let mut o = Map::new();
+        for (k, v) in event_fields("0:0:0:SAFE", st) {
+            o.insert(k.into(), v);
+        }
+        assert!(parse_event(&o).is_none(), "an event with no kind is not a room status");
+        o.insert("what".into(), json!(EVENT));
+        assert_eq!(parse_event(&o), Some(("0:0:0:SAFE".to_string(), st)));
+        o.insert("breached".into(), json!(false));
+        assert!(parse_event(&o).is_none(), "a breached-flag that disagrees with integrity is dropped");
+        o.insert("breached".into(), json!(true));
+        o.insert("room_id".into(), json!("0:0:0:CHECKPOINT"));
+        assert!(parse_event(&o).is_none(), "only a SAFE room id is a room");
+    }
+
+    #[test]
+    fn a_host_status_replaces_a_guests_room_and_reports_a_fresh_breach() {
+        let mut s = SafeRooms::default();
+        let r = room();
+        assert!(!s.set_by_id(&r.id, Status { integrity: 40, breached: false }));
+        assert_eq!(s.status(&r), Status { integrity: 40, breached: false });
+        assert!(!s.set_by_id(&r.id, Status { integrity: 0, breached: true }), "the first breach is fresh");
+        assert!(s.set_by_id(&r.id, Status { integrity: 0, breached: true }), "already breached before this one");
     }
 
     #[test]

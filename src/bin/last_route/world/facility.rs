@@ -199,6 +199,25 @@ fn rail_side_step(bit: u8) -> (i32, i32) {
     }
 }
 
+/// Test level for the railed channel: a walkway row y = 10 (x 8..=14) over a walled pool of channel water at y = 11, fenced
+/// on its south side except at the gap x = 11. The pool's cells are the water (`set_water_cells`), so a body in them is in
+/// the water and the grid closes them behind the railing.
+#[cfg(test)]
+pub(crate) fn railed_pool() -> Facility {
+    let mut f = Facility::open_test_level(0);
+    f.wall[11][7] = true;
+    f.wall[11][15] = true;
+    for x in 8..=14usize {
+        f.wall[12][x] = true;
+    }
+    let edges: Vec<(Cell, u8)> = (8..=14).filter(|x| *x != 11).map(|x| (Cell::new(x, 10), RAIL_S)).collect();
+    f.set_rails(&edges, 0.06, 0.07);
+    let water: Vec<Cell> = (8..=14).map(|x| Cell::new(x, 11)).collect();
+    f.set_water_cells(&water);
+    f.rebuild_grids();
+    f
+}
+
 /// The solid railings of a level: a thin wall along a cell edge, on the walkway side of it (the sewer's channel
 /// railings, `render::sewer_rails`). `edges` is each (cell, one side bit); `grid` the side bits per cell, indexed by
 /// `Facility::index_rails`. A railing runs the whole edge, `inset` in from it, and is `half` thick on either side of that line.
@@ -2046,6 +2065,18 @@ impl Facility {
     /// nearest_open_position: BFS over floor cells from the point's cell to the first cell a
     /// body of `r` fits in.
     pub fn nearest_open(&self, x: f32, y: f32, r: f32) -> Option<(f32, f32)> {
+        self.nearest_open_where(x, y, r, |_| true)
+    }
+
+    /// `nearest_open` for a place a bot or hunter is put down: the nearest spot that is dry (not channel water) and that the
+    /// hunters' grid opens, so a body set down there can route out at once. Spawns use this, never `nearest_open`.
+    pub fn nearest_dry_open(&self, x: f32, y: f32, r: f32) -> Option<(f32, f32)> {
+        let grid_ready = self.hunter_open.len() == (self.cols * self.rows) as usize;
+        self.nearest_open_where(x, y, r, |c| !self.is_water(c) && (!grid_ready || self.hunter_open(c)))
+    }
+
+    /// The BFS of `nearest_open`, taking only the cells `accept` allows as the spot.
+    fn nearest_open_where(&self, x: f32, y: f32, r: f32, accept: impl Fn(Cell) -> bool) -> Option<(f32, f32)> {
         let s = Cell::new(x.floor() as i32, y.floor() as i32);
         let mut seen = HashSet::from([s]);
         let mut q = VecDeque::from([s]);
@@ -2055,7 +2086,7 @@ impl Facility {
             let closed_well = self.hunter_open.len() == (self.cols * self.rows) as usize
                 && self.is_stair_hole(c.x, c.y)
                 && !self.hunter_open[(c.y * self.cols + c.x) as usize];
-            if !closed_well && self.body_fits_tall(wx, wy, r) {
+            if !closed_well && accept(c) && self.body_fits_tall(wx, wy, r) {
                 return Some((wx, wy));
             }
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -2734,7 +2765,7 @@ impl Facility {
 
     /// A generated facility of `level` whose cells 4..30 are open floor with no props.
     #[cfg(test)]
-    fn open_test_level(level: i32) -> Facility {
+    pub(crate) fn open_test_level(level: i32) -> Facility {
         let cat = crate::world::catalog::Catalog::load();
         let mut f = Facility::generate("NAV-1", &Options::default(), &cat);
         f.level = level;
