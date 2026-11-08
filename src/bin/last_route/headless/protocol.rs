@@ -959,6 +959,7 @@ impl Session {
                     clip: c.get("clip").and_then(|v| v.as_str()).and_then(crate::render::anim::runner::Pose::from_wire),
                     held: c.get("held").and_then(|v| v.as_str()).and_then(crate::net::held_wire::from_wire),
                     flash_pitch: None,
+                    look_pitch: c.get("look").and_then(|v| v.as_f64()).map(|x| (x as f32).clamp(-crate::net::world_sync::LOOK_PITCH_LIMIT, crate::net::world_sync::LOOK_PITCH_LIMIT)).unwrap_or(0.0),
                     hide,
                     hide_since: hide.map(|_| std::time::Duration::from_secs_f32(f(c, "hide_for").unwrap_or(10.0))),
                 };

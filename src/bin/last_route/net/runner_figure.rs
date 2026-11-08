@@ -250,12 +250,14 @@ struct Figure {
     slim: bool,
     /// A bot's last floor position, for its speed.
     last_at: Option<(f32, f32)>,
+    /// The body's last facing, for the head's lag behind a turn.
+    last_yaw: Option<f32>,
     seen: u64,
 }
 
 impl Figure {
     fn new(epoch: u64, slim: bool) -> Figure {
-        Figure { view: RunnerView::load(slim), slim, last_at: None, seen: epoch }
+        Figure { view: RunnerView::load(slim), slim, last_at: None, last_yaw: None, seen: epoch }
     }
 }
 
@@ -315,9 +317,10 @@ fn body_root(look: &Look, unit: f32) -> Mat4 {
 }
 
 /// Builds and draws one figure. `pose` is the rig and its local bone pose; None leaves the body in its rest pose.
-fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>, held: Option<Item>) {
+/// Returns the world point of a held flashlight's lamp (where its beam starts), None when no flashlight is drawn.
+fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig, &[Local])>, held: Option<Item>) -> Option<Vec3> {
     let Some(regular) = a.npc_body.as_ref() else {
-        return;
+        return None;
     };
     let spec = runner_spec();
     let slim_model = if slim { slim_body(a, spec) } else { None };
@@ -344,9 +347,15 @@ fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig
     // the held item rides the hand bone (no rig, no hand, no item)
     if let (Some(item), Some((rig, m)), Some(d)) = (held, mats.as_ref(), held_wire::data()) {
         if let (Some(b), Some(model)) = (rig.bone(&d.bone), scene::item_model(a, scene::item_file(item))) {
-            model.draw_faded(held_wire::item_transform(d, item, root, m[b], unit), tint);
+            let xf = held_wire::item_transform(d, item, root, m[b], unit);
+            model.draw_faded(xf, tint);
+            // a flashlight's beam starts at its lamp, out at the end of the model, not at the feet
+            if item == Item::Flashlight {
+                return Some(xf.transform_point3(held_wire::lamp_point(model.min, model.max)));
+            }
         }
     }
+    None
 }
 
 /// Draws one still figure: the same body a runner wears, at `pos` (feet) and `yaw`, in `pose` at `phase` (0..1) of its
@@ -355,7 +364,7 @@ pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose
     let rig = driver::player_rig(slim);
     let locals = rig.as_ref().map(|r| still_pose(r, pose, phase));
     let posed = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
-    draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed, None);
+    let _ = draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed, None);
 }
 
 /// Above this ground speed a step is a teleport (a respawn or a ladder snap), not a walk, so it never reads as backwards.
@@ -376,7 +385,9 @@ pub fn moving_backward(vel: (f32, f32), yaw: f32) -> bool {
 /// Runs the driver of `key` for this frame and draws the figure. The figure's own ground step since its last frame
 /// says whether a moving state is walking backwards (a remote runner's or a bot's facing is its yaw).
 #[allow(clippy::too_many_arguments)]
-fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, dt: f32, epoch: u64) {
+/// Draws one driven figure and returns its held flashlight's lamp point (see [`draw_body`]). `look_pitch` is the runner's
+/// aim (+ up) that tilts its head; a bot or an older peer passes 0.
+fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, dt: f32, epoch: u64) -> Option<Vec3> {
     let driven = FIGURES.with(|f| {
         let mut f = f.borrow_mut();
         let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch, slim));
@@ -384,6 +395,12 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, sli
             *fig = Figure { last_at: fig.last_at, ..Figure::new(epoch, slim) };
         }
         fig.seen = epoch;
+        // the body's turn rate (radians a second, + left), for the head's lag; 0 on the first frame
+        let turn = match (fig.last_yaw, dt > 1e-5) {
+            (Some(last), true) => ((yaw - last + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI) / dt,
+            _ => 0.0,
+        };
+        fig.last_yaw = Some(yaw);
         fig.view.as_mut().map(|v| {
             let here = (pos.x, pos.z);
             let mut state = *state;
@@ -393,6 +410,13 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, sli
             }
             v.last_pos = Some(here);
             v.update(&state, dt);
+            // a body down, stunned or on a ladder holds its head straight
+            let free = !matches!(state.pose(), Pose::Down | Pose::Stun | Pose::Climb);
+            if free {
+                v.aim_head(look_pitch, turn, dt);
+            } else {
+                v.aim_head(0.0, 0.0, dt);
+            }
             (v.rig.clone(), v.locals(), v.fade, v.pitch)
         })
     });
@@ -400,7 +424,7 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, pick: &Pick, sli
         Some((rig, locals, fade, pitch)) => {
             let alpha = body_alpha(fade);
             let held = held_wire::shown(held, false, state.pose(), alpha);
-            draw_body(a, Look { pos, yaw, pitch, alpha }, pick, slim, Some((&rig, &locals)), held);
+            draw_body(a, Look { pos, yaw, pitch, alpha }, pick, slim, Some((&rig, &locals)), held)
         }
         None => draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, pick, slim, None, None),
     }
@@ -510,10 +534,12 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
         let held = if r.hide.is_some() { None } else { r.held };
-        draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, &tex, r.slim, &remote_state(r), held, dt, epoch);
-        // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none
+        let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, r.look_pitch, &tex, r.slim, &remote_state(r), held, dt, epoch);
+        // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none.
+        // The beam leaves the lamp in the held flashlight's hand; without one drawn it leaves the usual lamp height.
         if let (Some(pitch), None) = (r.flash_pitch, r.hide) {
-            let mut beam = crate::render::beam::flashlight_cone(pos, r.yaw, pitch, r.crouching);
+            let apex = lamp.unwrap_or_else(|| crate::render::beam::flashlight_apex(pos, r.yaw, r.crouching));
+            let mut beam = crate::render::beam::flashlight_cone(apex, r.yaw, pitch);
             beam.texture = Some(a.white.clone());
             crate::render::draw_stats::draw_counted(&beam);
         }
@@ -582,7 +608,7 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         });
         let state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, &tex, false, &state, None, dt, epoch);
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, dt, epoch);
     }
     prune(epoch, true);
 }
@@ -621,6 +647,7 @@ mod tests {
             clip,
             held: None,
             flash_pitch: None,
+            look_pitch: 0.0,
             hide: None,
             hide_since: None,
         }

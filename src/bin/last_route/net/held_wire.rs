@@ -141,6 +141,12 @@ pub fn item_transform(d: &HeldData, item: Item, root: Mat4, hand: Mat4, unit: f3
     root * hand * anchor * Mat4::from_translation(grip) * basis
 }
 
+/// The lamp's tip of a flashlight model, in the model's own units: the middle of its end face along +Y, where the
+/// beam starts (the anchor points +Y forward along the hand, see [`item_transform`]).
+pub fn lamp_point(min: Vec3, max: Vec3) -> Vec3 {
+    vec3((min.x + max.x) * 0.5, max.y, (min.z + max.z) * 0.5)
+}
+
 /// Whether a runner's held item shows: not while it is in a locker, down, stunned-flat or on a ladder (both hands busy),
 /// and not once its body has faded out.
 pub fn shown(held: Option<Item>, hiding: bool, pose: crate::render::anim::runner::Pose, alpha: f32) -> Option<Item> {
@@ -177,6 +183,12 @@ mod tests {
         assert!(d.pose(Item::Crowbar).upright && !d.pose(Item::Flashlight).upright);
         assert!(HeldData::parse("{}").is_err());
         assert!(HeldData::parse("not json").is_err());
+    }
+
+    #[test]
+    fn the_lamp_is_the_middle_of_the_front_end() {
+        let tip = lamp_point(vec3(-0.1, -0.5, -0.2), vec3(0.1, 2.0, 0.2));
+        assert_eq!(tip, vec3(0.0, 2.0, 0.0));
     }
 
     #[test]

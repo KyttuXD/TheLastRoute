@@ -2334,7 +2334,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, hide: None, hide_since: None }
+        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, look_pitch: 0.0, hide: None, hide_since: None }
     }
 
     #[test]
@@ -2413,6 +2413,7 @@ fn shot_remote(g: &Game) -> RemoteView {
         hide: None,
         held: None,
         flash_pitch: None,
+        look_pitch: 0.0,
         hide_since: None,
     }
 }

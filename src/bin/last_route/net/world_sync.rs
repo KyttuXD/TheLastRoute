@@ -140,6 +140,9 @@ pub struct Sample {
     /// The runner's flashlight: `Some(pitch)` while its beam is lit (the aim is its yaw and this pitch, radians), None
     /// when it is off or the sender is older. Wire: `"flash": true` and `"pitch"` (only when not level).
     pub flash_pitch: Option<f32>,
+    /// The runner's aim pitch in radians (+ up), whatever its lamp does: it tilts the head. Wire: `"look"`, sent only
+    /// when not level. An older peer never sends it, so its head stays level.
+    pub look_pitch: f32,
 }
 
 impl Sample {
@@ -168,6 +171,7 @@ impl Sample {
             hide: None,
             held: None,
             flash_pitch: p.beam_lit().then_some(p.pitch),
+            look_pitch: p.pitch,
         }
     }
 
@@ -231,6 +235,10 @@ impl Sample {
                     o.insert("pitch".into(), json!(pitch));
                 }
             }
+            // the aim tilts the head whether or not the lamp is on; an older peer ignores the key
+            if self.look_pitch != 0.0 {
+                o.insert("look".into(), json!(self.look_pitch));
+            }
         }
         v
     }
@@ -265,12 +273,15 @@ impl Sample {
             held: o.get("held").and_then(Value::as_str).and_then(super::held_wire::from_wire),
             // a pitch past straight up or down is clamped: a hostile sample cannot aim the beam through the floor
             flash_pitch: flag("flash").then(|| num("pitch").unwrap_or(0.0).clamp(-FLASH_PITCH_LIMIT, FLASH_PITCH_LIMIT)),
+            look_pitch: num("look").unwrap_or(0.0).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT),
         })
     }
 }
 
 /// The steepest pitch a received flashlight aim may have (radians, about 70 degrees).
 pub const FLASH_PITCH_LIMIT: f32 = 1.2;
+/// The steepest aim pitch a received head may be given (radians): the same bound as the flashlight's.
+pub const LOOK_PITCH_LIMIT: f32 = FLASH_PITCH_LIMIT;
 
 /// `[cell x, cell y, facing x, facing y]`; anything else is no locker.
 fn hide_spot_from_json(v: &Value) -> Option<HideSpot> {
@@ -356,6 +367,8 @@ pub struct RemoteView {
     pub held: Option<Item>,
     /// `Some(pitch)` while the runner's flashlight is lit (its sample's aim); None when it is off.
     pub flash_pitch: Option<f32>,
+    /// The runner's aim pitch from its last sample (radians, + up): the head tilts to it.
+    pub look_pitch: f32,
     /// Whether the runner was out in the open `HIDE_MOVE_SECONDS` ago: a runner going into a locker stays visible while
     /// it slides in (Godot remote_players.gd 542-563). Set by [`NetSession::remotes_at`].
     pub hide_since: Option<std::time::Duration>,
@@ -382,6 +395,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
         clip: shown.clip,
         held: shown.held,
         flash_pitch: shown.flash_pitch,
+        look_pitch: shown.look_pitch,
         hide: shown.hide.map(|h| HideSpot { cell: (h.cell.0 - origin.0, h.cell.1 - origin.1), facing: h.facing }),
         hide_since: r.hide_since.map(|t| now.duration_since(t)),
         speed: if !shown.moving {
@@ -2438,6 +2452,7 @@ mod tests {
             hide: None,
             held: None,
             flash_pitch: None,
+            look_pitch: 0.0,
         }
     }
 
@@ -2530,6 +2545,25 @@ mod tests {
     }
 
     #[test]
+    fn an_aim_pitch_rides_the_sample_whether_or_not_the_lamp_is_on() {
+        // level and off: no key, so an older peer sees the old packet and the head stays level
+        let level = sample(7, 1.0, 2.0);
+        assert!(level.to_json().get("look").is_none());
+        assert_eq!(Sample::from_json(&level.to_json()).unwrap().look_pitch, 0.0);
+        // aimed up with the lamp off: the head still tilts
+        let mut up = sample(8, 1.0, 2.0);
+        up.look_pitch = 0.6;
+        let v = up.to_json();
+        assert!((v["look"].as_f64().unwrap() - 0.6).abs() < 1e-4, "{}", v["look"]);
+        assert!(v.get("flash").is_none(), "the lamp stays off");
+        assert_eq!(Sample::from_json(&v).unwrap().look_pitch, 0.6);
+        // a hostile aim is clamped like the flashlight's
+        let mut hostile = up.to_json();
+        hostile["look"] = json!(-99.0);
+        assert_eq!(Sample::from_json(&hostile).unwrap().look_pitch, -LOOK_PITCH_LIMIT);
+    }
+
+    #[test]
     fn sample_json_round_trips_and_ignores_keep_alives() {
         let s = Sample {
             seq: 9,
@@ -2552,6 +2586,7 @@ mod tests {
             hide: Some(HideSpot { cell: (-40, 17), facing: (0, -1) }),
             held: Some(Item::Crowbar),
             flash_pitch: Some(-0.25),
+            look_pitch: 0.3,
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");

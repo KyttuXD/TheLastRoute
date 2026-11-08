@@ -303,6 +303,7 @@ mod tests {
             clip: None,
             held: None,
             flash_pitch: None,
+            look_pitch: 0.0,
             hide: None,
             hide_since: None,
         }

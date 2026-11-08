@@ -12,6 +12,7 @@
 use super::clip::Rig;
 use super::player::{AnimPlayer, Local};
 use crate::content::embedded;
+use macroquad::prelude::Quat;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -55,6 +56,13 @@ pub struct Config {
     pub swim_pitch_rate: f32,
     /// height above the feet the swim lean pivots about, metres
     pub swim_pivot: f32,
+    /// the head's largest tilt up or down, and its largest turn left or right (radians)
+    pub head_pitch_limit: f32,
+    pub head_yaw_limit: f32,
+    /// how far the head trails a turn of the body, in seconds of turn rate
+    pub head_yaw_lag: f32,
+    /// how fast the head eases toward its aim, per second
+    pub head_smoothing: f32,
 }
 
 fn at<'a>(j: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value, String> {
@@ -153,6 +161,10 @@ impl Config {
             swim_pitch: num(&j, "swim.pitch_deg")?.to_radians(),
             swim_pitch_rate: num(&j, "swim.pitch_rate")?,
             swim_pivot: num(&j, "swim.pivot_m")?,
+            head_pitch_limit: num(&j, "head.pitch_limit_deg")?.to_radians(),
+            head_yaw_limit: num(&j, "head.yaw_limit_deg")?.to_radians(),
+            head_yaw_lag: num(&j, "head.yaw_lag_s")?,
+            head_smoothing: num(&j, "head.smoothing")?,
         };
         for pose in Pose::ALL {
             let key = pose.key();
@@ -436,6 +448,9 @@ pub struct RunnerView {
     pub fade: f32,
     /// forward lean of the body now, radians (eases toward the swim pitch)
     pub pitch: f32,
+    /// the head's tilt up (+) or down (-) and turn left (+) or right (-) now, radians, relative to the body
+    pub head_pitch: f32,
+    pub head_yaw: f32,
     primed: bool,
 }
 
@@ -449,8 +464,21 @@ impl RunnerView {
             pace: None,
             fade: 0.0,
             pitch: 0.0,
+            head_pitch: 0.0,
+            head_yaw: 0.0,
             primed: false,
         }
+    }
+
+    /// Eases the head toward its aim: `pitch` is the runner's aim (+ up), `turn_rate` the body's yaw rate in radians a
+    /// second (+ turning left). The head trails a turn, so its yaw goes against the turn and back to the front.
+    pub fn aim_head(&mut self, pitch: f32, turn_rate: f32, dt: f32) {
+        let c = config();
+        let goal_pitch = pitch.clamp(-c.head_pitch_limit, c.head_pitch_limit);
+        let goal_yaw = (-turn_rate * c.head_yaw_lag).clamp(-c.head_yaw_limit, c.head_yaw_limit);
+        let k = 1.0 - (-c.head_smoothing * dt.max(0.0)).exp();
+        self.head_pitch += (goal_pitch - self.head_pitch) * k;
+        self.head_yaw += (goal_yaw - self.head_yaw) * k;
     }
 
     /// A view for the player rig; None when the rig asset is missing.
@@ -524,9 +552,14 @@ impl RunnerView {
         }
     }
 
-    /// The mixed local pose of every rig bone, in rig bone order.
+    /// The mixed local pose of every rig bone, in rig bone order, with the head turned by its aim.
     pub fn locals(&self) -> Vec<Local> {
-        self.player.pose(&self.rig)
+        let mut pose = self.player.pose(&self.rig);
+        if let Some(head) = self.rig.bone("Head").and_then(|i| pose.get_mut(i)) {
+            // yaw about the head's own up axis, then pitch about its side axis: the head's rest frame is the body's
+            head.r *= Quat::from_rotation_y(self.head_yaw) * Quat::from_rotation_x(self.head_pitch);
+        }
+        pose
     }
 }
 
@@ -754,6 +787,41 @@ mod tests {
             view.update(&st(), 0.1);
         }
         assert_eq!(view.fade, 0.0);
+    }
+
+    #[test]
+    fn an_aimed_head_tilts_the_head_bone_up_and_clamps() {
+        let mut v = RunnerView::load(false).expect("the player rig is embedded");
+        let head = v.rig.bone("Head").expect("the rig has a Head bone");
+        let rest = v.locals()[head].r;
+        // a level head is the rest pose
+        assert!(v.locals()[head].r.angle_between(rest) < 1e-6);
+        // aimed up: the head's forward (the body's -Z) rises
+        for _ in 0..200 {
+            v.aim_head(0.6, 0.0, 1.0 / 60.0);
+        }
+        let forward = v.locals()[head].r * macroquad::prelude::vec3(0.0, 0.0, -1.0);
+        assert!(forward.y > 0.4, "the head looks up: {forward:?}");
+        // a hostile aim is clamped to the limit, so the head never flips over
+        for _ in 0..600 {
+            v.aim_head(9.0, 0.0, 1.0 / 60.0);
+        }
+        assert!(v.head_pitch <= config().head_pitch_limit + 1e-4);
+        assert!((v.head_pitch - config().head_pitch_limit).abs() < 1e-2, "{}", v.head_pitch);
+    }
+
+    #[test]
+    fn the_head_trails_a_turn_then_comes_back_to_the_front() {
+        let mut v = RunnerView::load(false).expect("the player rig is embedded");
+        for _ in 0..30 {
+            v.aim_head(0.0, 4.0, 1.0 / 60.0); // turning left fast
+        }
+        assert!(v.head_yaw < -0.05, "the head lags the turn, looking back: {}", v.head_yaw);
+        assert!(v.head_yaw >= -config().head_yaw_limit - 1e-4, "the turn is capped");
+        for _ in 0..300 {
+            v.aim_head(0.0, 0.0, 1.0 / 60.0);
+        }
+        assert!(v.head_yaw.abs() < 1e-3, "a still body brings the head to the front");
     }
 
     #[test]

@@ -91,13 +91,20 @@ pub fn kathy_beam_shown(gimmick: &Gimmick, active: bool, held: bool, faded: bool
     matches!(gimmick, Gimmick::Kathy) && active && !held && !faded && stun <= 0.0
 }
 
-/// A runner's flashlight beam from its feet at `feet`, aimed by its yaw and pitch the way its camera looks
-/// (`game/player.rs` camera_basis). The beam reaches the flashlight's throw (data/render/ambient.json).
-pub fn flashlight_cone(feet: Vec3, yaw: f32, pitch: f32, crouching: bool) -> Mesh {
+/// Where a runner's lamp is when no held flashlight model gives its tip (no item in the hand, or the body hidden): from
+/// its feet at `feet`, forward along its yaw, at the height it holds the lamp (standing or crouched).
+pub fn flashlight_apex(feet: Vec3, yaw: f32, crouching: bool) -> Vec3 {
+    let (fx, fz) = (-yaw.sin(), -yaw.cos());
+    let height = if crouching { FLASHLIGHT_HEIGHT_CROUCH } else { FLASHLIGHT_HEIGHT };
+    feet + vec3(fx * FLASHLIGHT_FORWARD, height, fz * FLASHLIGHT_FORWARD)
+}
+
+/// A runner's flashlight beam leaving its lamp at `apex` (the tip of the flashlight it holds, `net/held_wire.rs`), aimed
+/// by its yaw and pitch the way its camera looks (`game/player.rs` camera_basis). The beam reaches the flashlight's
+/// throw (data/render/ambient.json).
+pub fn flashlight_cone(apex: Vec3, yaw: f32, pitch: f32) -> Mesh {
     let (fx, fz) = (-yaw.sin(), -yaw.cos());
     let dir = vec3(fx * pitch.cos(), pitch.sin(), fz * pitch.cos());
-    let height = if crouching { FLASHLIGHT_HEIGHT_CROUCH } else { FLASHLIGHT_HEIGHT };
-    let apex = feet + vec3(fx * FLASHLIGHT_FORWARD, height, fz * FLASHLIGHT_FORWARD);
     let range = super::ambient::table().flashlight().range;
     cone_mesh(apex, dir, range, range * FLASHLIGHT_HALF_ANGLE.tan(), FLASHLIGHT_RGB, FLASHLIGHT_ALPHA)
 }
@@ -150,16 +157,25 @@ mod tests {
 
     #[test]
     fn a_flashlight_beam_follows_the_aim_and_the_crouch() {
-        // yaw 0 faces -Z; level aim
-        let m = flashlight_cone(Vec3::ZERO, 0.0, 0.0, false);
+        // yaw 0 faces -Z; level aim from the standing lamp
+        let lamp = flashlight_apex(Vec3::ZERO, 0.0, false);
+        assert!((lamp.y - FLASHLIGHT_HEIGHT).abs() < 1e-4, "held at standing height: {lamp:?}");
+        let m = flashlight_cone(lamp, 0.0, 0.0);
         let apex = m.vertices[0].position;
-        assert!((apex.y - FLASHLIGHT_HEIGHT).abs() < 1e-4, "held at standing height: {apex:?}");
+        assert!((apex - lamp).length() < 1e-5, "the beam leaves the lamp");
         assert!((centre_of_rim(&m) - apex).normalize().dot(vec3(0.0, 0.0, -1.0)) > 0.999);
         // looking up 45 degrees: the beam climbs
-        let up = flashlight_cone(Vec3::ZERO, 0.0, std::f32::consts::FRAC_PI_4, false);
+        let up = flashlight_cone(lamp, 0.0, std::f32::consts::FRAC_PI_4);
         assert!(centre_of_rim(&up).y > up.vertices[0].position.y + 1.0, "an upward aim lifts the beam");
         // crouched: the lamp is lower
-        let low = flashlight_cone(Vec3::ZERO, 0.0, 0.0, true);
-        assert!(low.vertices[0].position.y < apex.y);
+        assert!(flashlight_apex(Vec3::ZERO, 0.0, true).y < lamp.y);
+    }
+
+    #[test]
+    fn a_beam_leaves_the_lamp_it_is_given_not_the_feet() {
+        // the held flashlight's tip, out at the hand, is where the light starts
+        let tip = vec3(0.4, 1.1, -0.3);
+        let m = flashlight_cone(tip, 1.0, 0.2);
+        assert!((m.vertices[0].position - tip).length() < 1e-5);
     }
 }

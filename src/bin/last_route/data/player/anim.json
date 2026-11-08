@@ -37,6 +37,13 @@
     "pitch_rate": 6.0,
     "pivot_m": 0.9
   },
+  "_head": "The head turns in the body's frame (the rig's Head bone): up and down follows the runner's aim pitch, clamped to pitch_limit_deg; left and right is a small lag behind the body's turns (the head trails a turn by yaw_lag_s seconds of turn rate, clamped to yaw_limit_deg). Both ease at smoothing per second. Down, stunned and climbing runners hold the head straight.",
+  "head": {
+    "pitch_limit_deg": 50.0,
+    "yaw_limit_deg": 12.0,
+    "yaw_lag_s": 0.12,
+    "smoothing": 10.0
+  },
   "_crouch": "Crouching plays IDLE (the imported crouch pose folds knees and elbows backward) and fades the body to this alpha; fade_rate is move_toward units per second.",
   "crouch_alpha": 0.55,
   "fade_rate": 2.8,

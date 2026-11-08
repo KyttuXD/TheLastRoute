@@ -337,6 +337,7 @@ mod tests {
             hide: None,
             held: None,
             flash_pitch: None,
+            look_pitch: 0.0,
         }
     }
 
