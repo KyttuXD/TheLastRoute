@@ -265,6 +265,57 @@ fn switchbacks_and_straights_walk_into_the_level_below_too() {
     assert_all_walked(sweep(&[(-1, 1), (-2, 1)], 10, Gait::new(FlightShape::Straight, 0.0, false)));
 }
 
+/// DRY-START WALK (mark for the test-and-fix agent: if this fails, the message names the seed, spiral and frame). The
+/// runner is left where `enter_infinite` puts it on the sewer level (-1, `dry_start`) and walks to each downward spiral's
+/// landing by A* over the walking grid, as a player would. A stall at the landing or "body does not fit" here is a real
+/// path-following problem near landings; passing means `dry_start` is joined to the flights.
+#[test]
+fn a_walk_from_the_dry_start_reaches_every_spiral_landing_on_the_sewer_level() {
+    let (c, cat) = (Content::load(), Catalog::load());
+    let gait = Gait::new(FlightShape::Spiral, 0.0, false);
+    let mut bad = vec![];
+    let mut walked = 0;
+    for k in 0..8 {
+        let seed = format!("ROOM-SPIRAL-{k}");
+        let mut idx = 0;
+        loop {
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, &seed, -1, &c, &cat);
+            g.step(FRAME, &Controls::default(), &c, &cat, &Sounds::default());
+            let Some(s) = g
+                .fac
+                .stairs
+                .iter()
+                .filter(|s| s.dir < 0 && matches!(s.kind, LinkKind::Stairs) && s.shape == gait.shape)
+                .nth(idx)
+                .copied()
+            else {
+                break;
+            };
+            idx += 1;
+            let o0 = origin(&g);
+            let from = Cell::new(g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32);
+            let path = g.fac.find_path(from, s.cell);
+            if path.is_empty() {
+                // not joined by the grid: the generator-level check in endless.rs covers the start; a landing on another island is not this walk's business
+                continue;
+            }
+            for _ in 0..8 {
+                g.keep_stack(&c, &cat);
+            }
+            let hall: Vec<(f32, f32)> = path.iter().map(|p| (p.center().0 + o0.0 as f32, p.center().1 + o0.1 as f32)).collect();
+            let mut o = Out::default();
+            walked += 1;
+            if !follow(&mut g, &hall, &mut o, 6000, gait, &c, &cat, "dry-start hall") || o.unfit > 0 {
+                bad.push(format!("{seed} spiral {idx}: {}", o.why));
+            }
+        }
+    }
+    if std::env::var_os("LR_TEST_VERBOSE").is_some() {
+        eprintln!("dry-start walks: {walked} spiral landings reached");
+    }
+    assert!(bad.is_empty(), "{} walks failed:\n{}", bad.len(), bad.join("\n"));
+}
+
 /// The secret creature appears on the frame its dwell clock runs out, pushed onto the hunter list from inside the
 /// hunter frame: the lists sized per hunter before that must not be indexed past their end (it panicked: 30 seconds
 /// into every Inferno).

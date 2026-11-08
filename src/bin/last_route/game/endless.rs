@@ -485,15 +485,44 @@ pub const SAFE_ROOM_LURE_REACH: f32 = 18.0;
 /// Largest step the safe-room rules take in one go (a hitch must not do a second's breach damage at once).
 const SAFE_ROOM_MAX_DT: f32 = 0.25;
 
-/// The centre of the window's middle chunk, where the runner's safe room is: the chunk's centre cell (22) in
-/// window cells, plus the half cell that `Cell::center` adds (Godot `(coord + .5) * CHUNK_SIZE`).
 /// Where a runner entering the window stands: the window's start cell, or (on a sewer level, where the centre is the
 /// channel crossing) the nearest dry cell the walking grid keeps open. The channel's water is fenced by railings, so a
 /// runner put in it could never climb out to the walkways.
+/// On a level with a flight the cell must also reach one by a dry route (no water, railing or well), so it is never a
+/// pocket the railings cut off.
 pub(crate) fn dry_start(f: &Facility) -> (f32, f32) {
     let s = f.start;
     let ok = |c: Cell| !f.is_water(c) && f.hunter_open(c) && f.body_fits(c.x as f32 + 0.5, c.y as f32 + 0.5, PLAYER_RADIUS);
-    if ok(s) {
+    // A dry cell the railings or a well have cut off from every flight is a pocket the runner could never leave (the walk to
+    // a landing found no route or stalled at its fence). `joined` says whether the dry region of a cell holds a flight's
+    // cell; the regions already seen to hold none are remembered so each is flooded once. A level with no flight takes any.
+    let anchors: HashSet<Cell> = f.stairs.iter().map(|st| st.cell).filter(|c| f.hunter_open(*c)).collect();
+    let mut pockets: HashSet<Cell> = HashSet::new();
+    let mut joined = |c: Cell| -> bool {
+        if anchors.is_empty() {
+            return true;
+        }
+        if pockets.contains(&c) {
+            return false;
+        }
+        let mut seen: HashSet<Cell> = HashSet::from([c]);
+        let mut q = vec![c];
+        while let Some(at) = q.pop() {
+            if anchors.contains(&at) {
+                return true;
+            }
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = Cell::new(at.x + dx, at.y + dy);
+                if !seen.contains(&n) && f.hunter_open(n) && !f.is_water(n) && !f.rail_between(at, n) {
+                    seen.insert(n);
+                    q.push(n);
+                }
+            }
+        }
+        pockets.extend(seen);
+        false
+    };
+    if ok(s) && joined(s) {
         return s.center();
     }
     for r in 1..=12i32 {
@@ -505,7 +534,7 @@ pub(crate) fn dry_start(f: &Facility) -> (f32, f32) {
                 }
                 let c = Cell::new(s.x + dx, s.y + dy);
                 let d = ((dx * dx + dy * dy) as f32).sqrt();
-                if ok(c) && best.map_or(true, |b| d < b.0) {
+                if best.map_or(true, |b| d < b.0) && ok(c) && joined(c) {
                     best = Some((d, c));
                 }
             }
@@ -517,6 +546,8 @@ pub(crate) fn dry_start(f: &Facility) -> (f32, f32) {
     s.center()
 }
 
+/// The centre of the window's middle chunk, where the runner's safe room is: the chunk's centre cell (22) in
+/// window cells, plus the half cell that `Cell::center` adds (Godot `(coord + .5) * CHUNK_SIZE`).
 fn middle_safe_centre() -> (f32, f32) {
     let c = (CHUNK + live::CENTRE) as f32 + 0.5;
     (c, c)
@@ -1294,7 +1325,6 @@ impl Game {
                 shift_brain(h, (-sx, -sy));
             }
             self.shift_resident_hunters((-sx, -sy));
-            self.fit_resident_lists_into_window();
         }
         // NPC teammates share the window frame, so they shift with it (game/npc.rs)
         for n in self.npcs.iter_mut() {
@@ -1311,6 +1341,12 @@ impl Game {
         if stair_height_at(&self.fac, self.p.pos).is_some() {
             // on a flight the neighbour is built at the new centre this frame (one hitch; the chunk cache makes it cheap)
             self.keep_stack(content, catalog);
+        }
+        // a resident list is fitted into the window by the facility built for the new centre: the old one is stale (its
+        // cells are the old window's), and a spot drawn from it can be a drop or a wall in the new one. A level that left
+        // the stack has no facility here and is stored by the next `keep_stack`.
+        if !self.remote_hunters {
+            self.fit_resident_lists_into_window();
         }
         // bots that travelled coarsely outside the old window are set down on the floor they now stand on
         self.npc_rejoin_window();
@@ -4652,5 +4688,42 @@ mod dry_start_tests {
         assert!(!g.fac.is_water(c), "the runner starts out of the water");
         assert!(g.fac.hunter_open(c), "the runner starts on the walking grid");
         assert!(pdist(g.p.pos, g.fac.start.center()) <= 12.0 * std::f32::consts::SQRT_2, "near the window's start");
+    }
+
+    /// The dry start is never a pocket the railings cut off from every flight: a dry route (no water, no railing, no
+    /// well) leads from it to a stair's cell wherever the level has a flight.
+    #[test]
+    fn the_dry_start_is_joined_to_a_flight_by_a_dry_route() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut checked = 0;
+        for k in 0..6 {
+            let g = Game::new_infinite_sim(Difficulty::Standard, 7, &format!("ROOM-SPIRAL-{k}"), -1, &content, &catalog);
+            // what dry_start itself picks for this window
+            let at = dry_start(&g.fac);
+            let start = Cell::new(at.0.floor() as i32, at.1.floor() as i32);
+            assert_eq!(at, start.center(), "seed {k}: the start is a cell's centre");
+            assert!(!g.fac.is_water(start) && g.fac.hunter_open(start), "seed {k}: a dry cell on the walking grid");
+            assert!(g.fac.body_fits(at.0, at.1, PLAYER_RADIUS), "seed {k}: the runner's body fits there");
+            let off = (start.x - g.fac.start.x).abs().max((start.y - g.fac.start.y).abs());
+            assert!(off <= 12, "seed {k}: within the search ring of the window's start ({off} cells)");
+            let anchors: Vec<Cell> = g.fac.stairs.iter().map(|s| s.cell).filter(|c| g.fac.hunter_open(*c)).collect();
+            if anchors.is_empty() {
+                continue;
+            }
+            checked += 1;
+            let mut seen: HashSet<Cell> = HashSet::from([start]);
+            let mut q = vec![start];
+            while let Some(at) = q.pop() {
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let n = Cell::new(at.x + dx, at.y + dy);
+                    if !seen.contains(&n) && g.fac.hunter_open(n) && !g.fac.is_water(n) && !g.fac.rail_between(at, n) {
+                        seen.insert(n);
+                        q.push(n);
+                    }
+                }
+            }
+            assert!(anchors.iter().any(|a| seen.contains(a)), "seed {k}: the dry start {start:?} is cut off from every flight");
+        }
+        assert!(checked > 0, "some window had a flight to reach");
     }
 }

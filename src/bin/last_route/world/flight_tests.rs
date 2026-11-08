@@ -697,7 +697,10 @@ fn a_straight_flight_is_railed_on_both_sides_and_guarded_but_at_the_landing() {
     assert_eq!(handrails_with(rules, &f).len(), 2);
     let guards = landing_guards_with(rules, &f);
     assert!(!guards.is_empty());
-    assert!(guards.iter().all(|g| g.outside != well_footprint_with(rules, &f).landing));
+    // the head of the stairs is the gap, but for the two caps across the closed side slivers (`straight_head_cap`)
+    let landing = well_footprint_with(rules, &f).landing;
+    assert!(guards.iter().all(|g| g.outside != landing || straight_head_cap(rules, &f, g)));
+    assert!(guards.iter().filter(|g| g.outside == landing).count() <= 2, "at most one cap per side");
 }
 
 #[test]
@@ -1103,9 +1106,49 @@ fn a_wide_straight_flight_has_no_railing_across_its_head() {
         for g in &guards {
             let mid = ((g.seg.a.0 + g.seg.b.0) * 0.5, (g.seg.a.1 + g.seg.b.1) * 0.5);
             let (u, _) = to_local(&f, mid.0, mid.1);
-            // a head edge (u = 0) is open for every lane of the flight
-            assert!(u.abs() > 1e-3 || to_local(&f, g.seg.a.0, g.seg.a.1).1 < 0.0, "{run:?}: a railing across the head at {mid:?}");
-            assert!((g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= STRAIGHT_MIN_GUARD - 1e-4);
+            // a head edge (u = 0) is open for every lane of the flight, but for the caps across the closed side slivers
+            assert!(u.abs() > 1e-3 || to_local(&f, g.seg.a.0, g.seg.a.1).1 < 0.0 || straight_head_cap(rules, &f, g), "{run:?}: a railing across the head at {mid:?}");
+            assert!((g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= rules.st_min_guard - 1e-4);
         }
     }
+}
+
+/// A body at the head of a straight flight cannot step onto the open side of the ramp from the upper floor: the sliver is
+/// closed to the collision rule, a rail stands along it, and the walked route down the lane still fits.
+#[test]
+fn the_head_of_a_straight_flights_open_side_is_closed_and_railed_but_the_walk_path_fits() {
+    let rules = flights();
+    let head = crate::world::facility::FLIGHT_FIT_TOL * rules.st_length as f32 / rules.rise_total;
+    let wide = rules.st_width as f32;
+    for run in RUNS {
+        let f = stairs(FlightShape::Straight, run, false);
+        let at = |u: f32, v: f32| {
+            let (x, z) = to_world(&f, u, v);
+            flight_walk_y_with(rules, &f, x, z, false)
+        };
+        // the first metre of the side is shut, at both sides; the middle of the lane and the far reach are walkable
+        let inside = rules.st_head_margin * 0.5;
+        assert!(at(head * 0.5, inside).is_none() && at(head * 0.5, wide - inside).is_none(), "{run:?}: sides shut");
+        assert!(at(head * 0.5, 0.5).is_some(), "{run:?}: the lane stays open");
+        assert!(at(head * 0.5, rules.st_head_margin + 0.05).is_some());
+        // the data switches it off
+        let off = tweak(|v| v["straight"]["head_side_margin"] = serde_json::json!(0.0)).unwrap();
+        let (x, z) = to_world(&f, head * 0.5, inside);
+        assert!(flight_walk_y_with(&off, &f, x, z, false).is_some());
+        // a rail stands on each side from the head for the length of the closed sliver
+        let guards = landing_guards_with(rules, &f);
+        for v in [0.0, wide] {
+            let covered = guards.iter().any(|g| {
+                let (ua, va) = to_local(&f, g.seg.a.0, g.seg.a.1);
+                let (ub, vb) = to_local(&f, g.seg.b.0, g.seg.b.1);
+                (va - v).abs() < 1e-3 && (vb - v).abs() < 1e-3 && ua.min(ub) < 0.06 && ua.max(ub) > head - 0.1
+            });
+            assert!(covered, "{run:?}: a rail along the head of the side at v {v}");
+        }
+        // the walked route from the foot to the landing never meets the closed sliver
+        for (x, z) in walk_path_with(rules, &f, 0.05) {
+            assert!(!straight_head_closed(rules, &f, x, z), "{run:?}: the walk path crosses the closed sliver at {x},{z}");
+        }
+    }
+    assert!(tweak(|v| v["straight"]["head_side_margin"] = serde_json::json!(0.3)).is_err(), "a margin a body cannot pass is refused");
 }

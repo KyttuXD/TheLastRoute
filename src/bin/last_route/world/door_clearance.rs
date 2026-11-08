@@ -24,7 +24,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use super::facility::{Cell, Facility, Prop, DEFAULT_AGENT_RADIUS};
+use super::facility::{Cell, Facility, Prop};
 use super::fixtures::Fixtures;
 use crate::config::HUNTER_RADIUS;
 
@@ -656,6 +656,7 @@ pub fn approach_problems(f: &Facility, clear: &Clearance) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::facility::DEFAULT_AGENT_RADIUS;
     use std::sync::OnceLock;
 
     fn site(cells: &[(i32, i32)], vertical: bool) -> DoorSite {

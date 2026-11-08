@@ -1084,6 +1084,15 @@ fn stair_steps(f: &Facility) -> HashMap<(i32, i32), Stair> {
     m
 }
 
+/// Cells a hall's floor kind spans each way: one pick per chunk of the infinite world.
+const HALL_FLOOR_SPAN: i64 = CHUNK as i64;
+
+/// The RefTextures floor kind the world mesh draws on cell `(x, y)` (a room's one kind, the hall's per chunk, the carpet
+/// runner), without the safe-room pad; `cache` holds the texture picks per room or hall key between calls.
+pub(crate) fn floor_kind_at(f: &Facility, x: i32, y: i32, cache: &mut HashMap<(String, String, bool), TextureChoice>) -> &'static str {
+    cell_surfaces(f, x, y, false, cache).1.kind
+}
+
 /// The original's surfaces for the space a cell is in (a room by its region and type, else the
 /// hall of its district) and the floor kind of that cell: the room's one kind, the district's
 /// hall kind per chunk with the carpet runner where the district lays one, the safe-room pad.
@@ -1111,7 +1120,7 @@ fn cell_surfaces<'c>(
             (f.rooms[i].x + f.origin.0) as i64,
             (f.rooms[i].y + f.origin.1) as i64,
         ),
-        None => choice.floor_at(gx.div_euclid(45), gy.div_euclid(45)),
+        None => choice.floor_at(gx.div_euclid(HALL_FLOOR_SPAN), gy.div_euclid(HALL_FLOOR_SPAN)),
     };
     if choice.runner {
         let open = |a: i32, b: i32| {

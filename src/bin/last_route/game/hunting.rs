@@ -73,6 +73,29 @@ const MAX_ORIGIN_SHIFT: i64 = 1_000_000;
 /// The most storeys a host frame's hunter level may lie from the viewer's (the stack spans a few storeys each way).
 const MAX_LEVEL_GAP: i64 = 64;
 
+/// The knock tuning from data/hunters/knock_sound.json: (base volume, falloff distance in metres).
+fn knock_rules() -> (f32, f32) {
+    static RULES: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    *RULES.get_or_init(|| parse_knock_rules(include_str!("../data/hunters/knock_sound.json")))
+}
+
+fn parse_knock_rules(text: &str) -> (f32, f32) {
+    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    let base = v["base_volume"].as_f64().unwrap_or(0.05) as f32;
+    let falloff = v["falloff_distance"].as_f64().unwrap_or(20.0) as f32;
+    (base.max(0.0), falloff.max(0.001))
+}
+
+/// Volume of a hunter's knock heard `d` metres from the runner.
+fn knock_volume(d: f32) -> f32 {
+    let (base, falloff) = knock_rules();
+    knock_volume_with(base, falloff, d)
+}
+
+fn knock_volume_with(base: f32, falloff: f32, d: f32) -> f32 {
+    (base * (1.0 - d / falloff)).max(0.0)
+}
+
 impl Game {
     /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter of every list, with its id,
     /// position, facing, state name, active flag, stun, slow factor and disguise, and the `level` it stands on and its
@@ -403,13 +426,30 @@ impl Game {
                     self.fac.toggle_door(cell, &[at]);
                 }
                 if act == crate::hunters::activities::Activity::Knock {
-                    // about 0.05 near the runner, fading with distance like a hunter step
+                    // loudest near the runner, fading with distance like a hunter step (data/hunters/knock_sound.json)
                     let d = pdist(self.hunters[i].pos, self.p.pos);
-                    let volume = (0.05 * (1.0 - d / 20.0)).max(0.0);
+                    let volume = knock_volume(d);
                     if volume > 0.0 {
                         crate::audio::sound::hunter_knock(0.0, volume);
                     }
                 }
+            }
+            // A sniff is a world sound: heard by distance like her step (data/audio/cues.json `hunter_step`), whoever she
+            // hunts, since a sniffing hunter is searching and no chase or danger cue. It plays once per sniff
+            // (`take_sniff_cue`), on the side that simulates her; a guest hears the host's hunters by their frames only.
+            if self.hunters[i].take_sniff_cue() {
+                let (eye, (fwd, right, up)) = (self.eye(), self.camera_basis());
+                let l = crate::audio::world::Listener {
+                    pos: self.p.pos,
+                    facing: self.forward2(),
+                    eye: eye.to_array(),
+                    right: right.to_array(),
+                    up: up.to_array(),
+                    forward: fwd.to_array(),
+                    hidden: self.p.hidden.is_some(),
+                    in_safe_zone: self.in_safe_zone(),
+                };
+                crate::audio::world::hunter_event_at("hunter_sniff", self.hunters[i].pos, &l);
             }
             // Verrine's duct thumps and burst raise a noise the other hunters can hear
             let mut thump_at: Vec<(f32, f32)> = vec![];
@@ -2032,5 +2072,27 @@ mod resident_floor_tests {
         assert!(!guest.resident_hunters.has(-1), "the guest drops the list instead of storing it");
         assert!(guest.inf.as_mut().unwrap().floor_hunters_mut().is_empty(), "a guest stores nothing");
         assert!(guest.inf.as_mut().unwrap().stored_mut().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod knock_tuning_tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_knock_data_holds_the_standard_values() {
+        let (base, falloff) = parse_knock_rules(include_str!("../data/hunters/knock_sound.json"));
+        assert_eq!((base, falloff), (0.05, 20.0));
+        assert!((knock_volume(0.0) - 0.05).abs() < 1e-6);
+        assert!((knock_volume(10.0) - 0.025).abs() < 1e-6);
+        assert_eq!(knock_volume(20.0), 0.0);
+        assert_eq!(knock_volume(50.0), 0.0);
+    }
+
+    #[test]
+    fn changed_knock_data_changes_the_volume() {
+        let (base, falloff) = parse_knock_rules(r#"{"base_volume": 0.1, "falloff_distance": 40.0}"#);
+        assert!(knock_volume_with(base, falloff, 20.0) > 0.0, "a longer falloff still carries at 20 m");
+        assert!((knock_volume_with(base, falloff, 0.0) - 0.1).abs() < 1e-6);
     }
 }

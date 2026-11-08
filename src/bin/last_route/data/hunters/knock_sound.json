@@ -1,0 +1,5 @@
+{
+  "_note": "How loud a hunter's door knock is for the runner (game/hunting.rs). volume = base_volume x (1 - distance / falloff_distance), never below 0; no sound at or past the falloff distance. Distance in metres.",
+  "base_volume": 0.05,
+  "falloff_distance": 20.0
+}

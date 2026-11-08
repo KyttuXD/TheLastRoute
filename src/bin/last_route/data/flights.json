@@ -36,7 +36,9 @@
   },
   "straight": {
     "length": 8,
-    "width": 2
+    "width": 2,
+    "min_guard": 0.075,
+    "head_side_margin": 0.2
   },
   "spiral": {
     "half": 2,

@@ -283,8 +283,6 @@ pub enum Press {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Use {
     Nothing,
-    /// The music box left the slot; the game winds it.
-    WindBox,
     Toggled(Mode),
 }
 
@@ -549,7 +547,6 @@ impl Game {
         }
         match self.specialty.use_selected() {
             Use::Nothing => {}
-            Use::WindBox => self.wind_music_box(),
             Use::Toggled(m) => self.say_temperature(m),
         }
     }

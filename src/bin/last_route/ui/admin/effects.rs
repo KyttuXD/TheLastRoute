@@ -8,7 +8,7 @@
 
 use super::actions::safe_landing;
 use super::look::*;
-use super::{Admin, View};
+use super::Admin;
 use crate::app::assets::Assets;
 use crate::config::*;
 use crate::content::Content;

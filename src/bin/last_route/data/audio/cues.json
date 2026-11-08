@@ -1,6 +1,12 @@
 {
 	"schema": "lr.cues/1",
 	"note": "Extra one-shot cues the Godot project has no dedicated Sound method for, built from the same tone / thump / noise primitives as sound.gd. Component keys: kind (tone|thump|noise), hz, dur, vol, delay, wave (tone only), rate (noise only). The call intensity multiplies vol. An optional file on a cue names an embedded asset under assets/audio/ (none ship: the Godot project has no sound files). Events say how a game event plays a cue; scaled=true plays it at the caller volume like a hunter step.",
+	"hunter_step": {
+		"range": 9.0,
+		"pan_span": 4.5,
+		"volume": 0.09,
+		"_source": "Godot main_3d.gd 1729-1735: a hunter's step (and the hunter cues heard like one, sniff and knock) is heard within range cells, panned fully to a side at pan_span cells of sideways offset, at volume * (1 - d / range); Pink's false steps are that curve x 0.55 (audio/cues/rules.rs HunterStepHearing)"
+	},
 	"cues": {
 		"locker_open": [
 			{ "kind": "noise", "hz": 900, "dur": 0.12, "vol": 0.06, "delay": 0.0, "rate": 0.8 },

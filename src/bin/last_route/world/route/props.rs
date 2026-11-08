@@ -534,7 +534,6 @@ pub(super) fn chunk_tag(c: Coord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::route::layout::chunk_layout;
 
     /// The draw reads the row it is given: a changed size and solid flag in the data reach the entries, in file order.
     #[test]

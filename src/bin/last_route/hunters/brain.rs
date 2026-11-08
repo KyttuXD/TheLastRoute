@@ -528,6 +528,8 @@ pub struct Brain {
     locker_found: Option<usize>,
     /// A shut door the hunter knocked on or pushed this frame, for `take_door_action`.
     door_action: Option<(Cell, Activity)>,
+    /// A sniff began this tick, for `take_sniff_cue` (the simulating side plays the cue).
+    sniff_cue: bool,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -685,6 +687,7 @@ impl Brain {
             locker_check: None,
             locker_found: None,
             door_action: None,
+            sniff_cue: false,
         }
     }
 
@@ -949,6 +952,7 @@ impl Brain {
         let mut events = vec![];
         self.locker_check = None;
         self.door_action = None;
+        self.sniff_cue = false;
         self.tick_slow(dt);
         self.tick_cue(dt);
         let state_before = self.state;
@@ -2202,6 +2206,11 @@ impl Brain {
         self.door_action.take()
     }
 
+    /// True once when a sniff has just begun; read once.
+    pub fn take_sniff_cue(&mut self) -> bool {
+        std::mem::take(&mut self.sniff_cue)
+    }
+
     /// Whether an activity is running now.
     pub fn doing_activity(&self) -> bool {
         self.activity.is_some()
@@ -2284,6 +2293,10 @@ impl Brain {
                 self.facing = activities::sweep_facing(run.base, p, rules.sweep_degrees, rules.sweeps);
             }
             Activity::Sniff => {
+                if !run.fired {
+                    run.fired = true;
+                    self.sniff_cue = true;
+                }
                 let ahead = (self.pos.0 + run.base.0, self.pos.1 + run.base.1);
                 self.step_toward(ahead, rules.sniff_creep_speed * dt, fac, dt);
                 self.facing = run.base;

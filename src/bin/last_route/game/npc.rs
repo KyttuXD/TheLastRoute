@@ -1294,6 +1294,13 @@ pub struct LifePoi {
 pub struct LifeTuning {
     /// Metres from the runner a bot goes to at most. Past it the follow intent walks the bot back.
     pub range: f32,
+    /// Metres from the runner at which a returning bot is back (also capped by the follow range).
+    pub return_distance: f32,
+    /// Seconds a bot may stay returning; after that it follows plainly until it is back inside `range`.
+    pub return_timeout: f32,
+    /// Seconds a plain follow (`follow_only`) may go without closing in on the runner by `goals.stuck.progress` before
+    /// it is dropped with a fresh route.
+    pub follow_only_timeout: f32,
     /// Metres a spot must be from the bot to be picked.
     pub min_distance: f32,
     /// Metres from a spot at which the bot is there.
@@ -1321,6 +1328,9 @@ impl Default for LifeTuning {
     fn default() -> LifeTuning {
         LifeTuning {
             range: 9.0,
+            return_distance: 6.0,
+            return_timeout: 8.0,
+            follow_only_timeout: 10.0,
             min_distance: 2.0,
             arrive: 0.7,
             walk_timeout: 14.0,
@@ -1357,6 +1367,9 @@ impl LifeTuning {
         };
         LifeTuning {
             range: num(v, "range", d.range),
+            return_distance: num(v, "return_distance", d.return_distance),
+            return_timeout: num(v, "return_timeout", d.return_timeout),
+            follow_only_timeout: num(v, "follow_only_timeout", d.follow_only_timeout),
             min_distance: num(v, "min_distance", d.min_distance),
             arrive: num(v, "arrive", d.arrive),
             walk_timeout: num(v, "walk_timeout", d.walk_timeout),
@@ -1423,6 +1436,12 @@ pub struct LifeState {
     pub recent: Vec<(i32, i32)>,
     /// True while the bot is past `life.range` and the follow intent walks it back.
     pub returning: bool,
+    /// Seconds spent returning, and whether the timeout passed (plain follow until back inside `life.range`).
+    pub return_clock: f32,
+    pub follow_only: bool,
+    /// While `follow_only`: the closest the bot has come to the runner, and seconds since it last closed in.
+    pub follow_best: f32,
+    pub follow_still: f32,
     pub crouching: bool,
     /// The emote playing now, and how many the bot has started (a repeat of one id is told apart by the count).
     pub emote: Option<String>,
@@ -1448,6 +1467,10 @@ impl Default for LifeState {
             count: 0,
             recent: vec![],
             returning: false,
+            return_clock: 0.0,
+            follow_only: false,
+            follow_best: 0.0,
+            follow_still: 0.0,
             crouching: false,
             emote: None,
             emote_seq: 0,
@@ -1613,10 +1636,43 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
         return false;
     }
     let d = pdist(n.at, sc.leader);
+    if n.life.follow_only {
+        if d <= l.range {
+            n.life.follow_only = false;
+            n.life.follow_still = 0.0;
+        } else {
+            // a plain follow that cannot close in (no route, a jam) is dropped after `follow_only_timeout` with a fresh
+            // route: bots have no teleport to the runner, so this keeps follow_only from holding a bot for good
+            if d < n.life.follow_best - t.goals.stuck.progress {
+                n.life.follow_best = d;
+                n.life.follow_still = 0.0;
+            } else {
+                n.life.follow_still += dt;
+            }
+            if n.life.follow_still >= l.follow_only_timeout {
+                n.life.follow_only = false;
+                n.life.follow_still = 0.0;
+                n.path.clear();
+                n.hop = None;
+                n.path_age = REPATH;
+            }
+            return false;
+        }
+    }
     if n.life.returning {
         let follow_range = t.follow_radius + slot_radius(n.slot) - SLOT_RADIUS;
-        if d <= follow_range.min(l.range) && n.path.is_empty() {
+        n.life.return_clock += dt;
+        if d <= follow_range.min(l.return_distance).min(l.range) && n.path.is_empty() {
             n.life.returning = false;
+            n.life.return_clock = 0.0;
+        } else if n.life.return_clock >= l.return_timeout {
+            // the timeout: plain follow until the bot is back inside the life range
+            n.life.returning = false;
+            n.life.return_clock = 0.0;
+            n.life.follow_only = d > l.range;
+            n.life.follow_best = d;
+            n.life.follow_still = 0.0;
+            return false;
         } else {
             return false;
         }
@@ -1624,6 +1680,7 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
     if d > l.range {
         n.life.interrupt(l.pause.0);
         n.life.returning = true;
+        n.life.return_clock = 0.0;
         return false;
     }
     n.life.since_emote = (n.life.since_emote + dt).min(f32::MAX / 2.0);
@@ -2725,7 +2782,9 @@ impl Game {
     /// Bots are re-placed beside the runner only by a floor rebuild (`start_floor_sim`), never by a level change.
     /// `t` is the tuning, so the tests can vary one value of the data.
     pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
-        if self.npcs.is_empty() {
+        // The host runs the bots and sends their places (net/npc_sync.rs `_xnpc_place`); a guest only draws the host's
+        // copies, so it never moves a bot of its own list or changes its life (returning, its clocks, follow_only) here.
+        if self.npcs.is_empty() || self.remote_hunters {
             return;
         }
         self.npc_sync_water(t);
@@ -5507,5 +5566,104 @@ mod life_tests {
         run(&mut g, &t, 40.0);
         assert!(g.npcs[0].life.returning || pdist(g.npcs[0].at, runner) < before, "the bot closed in");
         assert!(pdist(g.npcs[0].at, runner) <= t.life.range + 2.0);
+    }
+
+    #[test]
+    fn the_standard_data_gives_returning_its_own_distance_inside_the_follow_range() {
+        let t = Tuning::get();
+        assert!(t.life.return_distance > 0.0 && t.life.return_distance <= t.life.range);
+        assert!(t.life.return_timeout > 0.0);
+    }
+
+    #[test]
+    fn a_bot_in_the_widest_ring_slot_leaves_returning_within_the_timeout() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |v| {
+            v["life"]["range"] = Value::from(3.0);
+            v["life"]["return_distance"] = Value::from(2.0);
+            v["life"]["return_timeout"] = Value::from(4.0);
+        });
+        g.npcs[0].slot = 200;
+        let runner = g.p.pos;
+        g.npcs[0].life.returning = true;
+        g.npcs[0].at = (runner.0 + 7.0, runner.1);
+        let mut left = None;
+        for i in 0..(30 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            if !g.npcs[0].life.returning {
+                left = Some(i as f32 / 60.0);
+                break;
+            }
+        }
+        let left = left.expect("returning ended");
+        assert!(left <= t.life.return_timeout + 0.1, "left after {left}");
+    }
+
+    #[test]
+    fn returning_ends_inside_its_own_distance() {
+        let mut g = with_bot();
+        let t = tuned(&["life", "follow"], |v| {
+            v["life"]["return_distance"] = Value::from(1.5);
+            v["life"]["return_timeout"] = Value::from(1000.0);
+        });
+        let runner = g.p.pos;
+        g.npcs[0].life.returning = true;
+        g.npcs[0].at = (runner.0 + 1.0, runner.1);
+        g.update_npcs_with(1.0 / 60.0, &t);
+        assert!(!g.npcs[0].life.returning, "a bot inside its return distance is back");
+    }
+
+    /// A plain follow that cannot close in (here no follow intent at all, so nothing walks the bot) is dropped after
+    /// `life.follow_only_timeout`; a follow that keeps the timeout far off still holds.
+    #[test]
+    fn follow_only_that_cannot_close_in_is_dropped_after_its_timeout() {
+        let t = tuned(&["life"], |v| v["life"]["follow_only_timeout"] = Value::from(2.0));
+        let mut g = with_bot();
+        let runner = g.p.pos;
+        let far = (runner.0 + t.life.range + 6.0, runner.1);
+        g.npcs[0].at = far;
+        g.npcs[0].life.follow_only = true;
+        g.npcs[0].life.follow_best = t.life.range + 6.0;
+        let mut dropped = None;
+        for i in 0..(10 * 60) {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            if !g.npcs[0].life.follow_only {
+                dropped = Some(i as f32 / 60.0);
+                break;
+            }
+        }
+        let dropped = dropped.expect("follow_only was dropped");
+        assert!(dropped <= t.life.follow_only_timeout + 0.1, "dropped after {dropped} s");
+        assert!(pdist(g.npcs[0].at, runner) > t.life.range, "the bot was never walked in: the timeout dropped it");
+
+        let held = tuned(&["life"], |v| v["life"]["follow_only_timeout"] = Value::from(1000.0));
+        let mut g = with_bot();
+        g.npcs[0].at = far;
+        g.npcs[0].life.follow_only = true;
+        g.npcs[0].life.follow_best = t.life.range + 6.0;
+        run(&mut g, &held, 5.0);
+        assert!(g.npcs[0].life.follow_only, "inside its timeout a plain follow holds");
+    }
+
+    /// Guest rule: a guest draws the host's bots (net/npc_sync.rs), so its own update moves no bot and changes no life
+    /// state, however far the bot stands and however long it has been returning.
+    #[test]
+    fn a_guest_never_steps_a_bot_or_its_life() {
+        let t = Tuning::get();
+        let mut g = with_bot();
+        g.remote_hunters = true;
+        let runner = g.p.pos;
+        g.npcs[0].at = (runner.0 + t.life.range + 4.0, runner.1);
+        g.npcs[0].life.returning = true;
+        g.npcs[0].life.return_clock = t.life.return_timeout - 0.01;
+        let before = (g.npcs[0].at, g.npcs[0].life.returning, g.npcs[0].life.return_clock, g.npcs[0].life.follow_only, g.npcs[0].path.len());
+        run(&mut g, t, 2.0);
+        let after = (g.npcs[0].at, g.npcs[0].life.returning, g.npcs[0].life.return_clock, g.npcs[0].life.follow_only, g.npcs[0].path.len());
+        assert_eq!(before, after, "a guest left the bot as the host last set it");
+        // the same game as the host steps it: the timeout ends returning
+        g.remote_hunters = false;
+        run(&mut g, t, 0.5);
+        let host = (g.npcs[0].at, g.npcs[0].life.returning, g.npcs[0].life.return_clock, g.npcs[0].life.follow_only, g.npcs[0].path.len());
+        assert_ne!(before, host, "the host steps the bot");
     }
 }

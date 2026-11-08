@@ -443,7 +443,6 @@ mod tests {
 #[cfg(test)]
 mod parity_tests {
     use super::*;
-    use crate::world::route::layout::chunk_layout;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};

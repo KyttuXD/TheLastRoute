@@ -439,17 +439,66 @@ pub fn heartbeat_danger(
     danger
 }
 
-/// Hunter footstep pan and volume (main_3d.gd 1729-1735): only within 9 cells; pan is the offset along the player's
-/// right (facing rotated, `right = (-facing.y, facing.x)`) over 4.5 cells; volume `.09 * (1 - d / 9)`.
-/// `offset` = hunter grid position - player grid position, `facing` = the player's 2D facing (x, z).
+/// How far a hunter's step (and the hunter cues heard like one: sniff, knock) carries, from data/audio/cues.json
+/// `hunter_step` (Godot main_3d.gd 1729-1735: 9 cells, panned over 4.5, 0.09 at her feet).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HunterStepHearing {
+    /// Cells past which the step is silent.
+    pub range: f64,
+    /// Cells of sideways offset that pan the step fully to one side.
+    pub pan_span: f64,
+    /// Volume at the hunter's feet; it falls linearly to 0 at `range`.
+    pub volume: f64,
+}
+
+impl Default for HunterStepHearing {
+    fn default() -> Self {
+        HunterStepHearing { range: 9.0, pan_span: 4.5, volume: 0.09 }
+    }
+}
+
+impl HunterStepHearing {
+    /// The `hunter_step` block of a cues.json text; a missing or bad value keeps the Godot figure.
+    pub fn parse(text: &str) -> HunterStepHearing {
+        let d = HunterStepHearing::default();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+        let h = &v["hunter_step"];
+        let pos = |key: &str, d: f64| h[key].as_f64().filter(|x| x.is_finite() && *x > 0.0).unwrap_or(d);
+        HunterStepHearing { range: pos("range", d.range), pan_span: pos("pan_span", d.pan_span), volume: pos("volume", d.volume) }
+    }
+
+    /// The embedded data's hearing.
+    pub fn get() -> HunterStepHearing {
+        static H: std::sync::OnceLock<HunterStepHearing> = std::sync::OnceLock::new();
+        *H.get_or_init(|| {
+            let text = crate::content::embedded::data_under("audio/cues.json").next().map(|x| x.1).unwrap_or("{}");
+            HunterStepHearing::parse(text)
+        })
+    }
+
+    /// The step volume `d` cells away: `volume * (1 - d / range)`, 0 at and past `range`.
+    pub fn volume_at(&self, d: f64) -> f64 {
+        self.volume * (1.0 - d.clamp(0.0, self.range) / self.range)
+    }
+}
+
+/// Hunter footstep pan and volume (main_3d.gd 1729-1735): only within `hunter_step.range` cells (9); pan is the offset
+/// along the player's right (facing rotated, `right = (-facing.y, facing.x)`) over `pan_span` cells (4.5); volume
+/// `volume * (1 - d / range)` (.09). `offset` = hunter grid position - player grid position, `facing` = the player's 2D
+/// facing (x, z). The figures are data (`HunterStepHearing`).
 pub fn hunter_step_pan_volume(offset: (f64, f64), facing: (f64, f64)) -> Option<(f64, f64)> {
+    hunter_step_pan_volume_with(&HunterStepHearing::get(), offset, facing)
+}
+
+/// [`hunter_step_pan_volume`] with the hearing given.
+pub fn hunter_step_pan_volume_with(h: &HunterStepHearing, offset: (f64, f64), facing: (f64, f64)) -> Option<(f64, f64)> {
     let distance = (offset.0 * offset.0 + offset.1 * offset.1).sqrt();
-    if distance > 9.0 {
+    if distance > h.range {
         return None;
     }
     let right = (-facing.1, facing.0);
-    let pan = ((offset.0 * right.0 + offset.1 * right.1) / 4.5).clamp(-1.0, 1.0);
-    Some((pan, 0.09 * (1.0 - distance / 9.0)))
+    let pan = ((offset.0 * right.0 + offset.1 * right.1) / h.pan_span).clamp(-1.0, 1.0);
+    Some((pan, h.volume_at(distance)))
 }
 
 /// The hunter step clock (main_3d.gd 1721-1728): one step per footfall of the nearest non-idle active hunter's gait.
@@ -503,5 +552,29 @@ pub fn thessine_mimic(rare: bool, choice: f64, cueable: &[&str]) -> Play {
 
 /// Pink's false footsteps (void_player_effects.gd 88): the real-hunter curve x 0.55, never below 0.005.
 pub fn fake_step_volume(distance: f64) -> f64 {
-    (0.09 * (1.0 - distance.clamp(0.0, 9.0) / 9.0) * 0.55).max(0.005)
+    (HunterStepHearing::get().volume_at(distance) * 0.55).max(0.005)
+}
+
+#[cfg(test)]
+mod hunter_step_hearing_tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_hunter_step_holds_the_godot_figures() {
+        assert_eq!(HunterStepHearing::get(), HunterStepHearing::default());
+        let (pan, vol) = hunter_step_pan_volume((4.5, 0.0), (0.0, -1.0)).unwrap();
+        assert!((pan.abs() - 1.0).abs() < 1e-9 && (vol - 0.045).abs() < 1e-9, "{pan} {vol}");
+        assert!(hunter_step_pan_volume((9.01, 0.0), (0.0, 1.0)).is_none());
+        assert!((fake_step_volume(0.0) - 0.09 * 0.55).abs() < 1e-9);
+    }
+
+    #[test]
+    fn changed_data_changes_the_reach_pan_and_volume() {
+        let h = HunterStepHearing::parse(r#"{"hunter_step": {"range": 18.0, "pan_span": 9.0, "volume": 0.18}}"#);
+        assert_eq!(h, HunterStepHearing { range: 18.0, pan_span: 9.0, volume: 0.18 });
+        let (pan, vol) = hunter_step_pan_volume_with(&h, (0.0, 12.0), (1.0, 0.0)).expect("heard at 12 m");
+        assert!((pan - 1.0).abs() < 1e-9 && (vol - 0.06).abs() < 1e-9, "{pan} {vol}");
+        // a bad value keeps the Godot figure
+        assert_eq!(HunterStepHearing::parse(r#"{"hunter_step": {"range": -1}}"#).range, 9.0);
+    }
 }

@@ -1,6 +1,8 @@
 {
 	"schema": "lr.ambience/2",
 	"note": "Per-region ambience beds. Layer kinds are the Godot AmbienceSynth kinds (noise, hum, pulse, chirp, wind, thump, creak, groan, water, crackle). The beds for the map-concept regions plus sewer and inferno are ports of the Godot district and level beds. Volumes are linear multipliers on the bed; loop and fade times are in seconds.",
+	"synth": { "rate": 22050.0, "max_tone_hz": 1600.0, "dc_cutoff_hz": 30.0, "level_seconds": 0.03 },
+	"render": { "cache_beds": 4, "bed_budget_ms": 2.0, "synth_chunk": 65536, "upsample_chunk": 16384, "box_budget_ms": 2.0, "box_slice_frames": 4096 },
 	"loop_seconds": 10.0,
 	"crossfade_seconds": 1.0,
 	"target_rms_db": -54.0,

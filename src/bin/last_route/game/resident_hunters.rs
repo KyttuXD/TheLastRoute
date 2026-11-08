@@ -26,7 +26,7 @@ use crate::net::hunter_events;
 use crate::world::fixtures::Fixtures;
 use crate::world::infinite::CHUNK;
 use crate::world::rng::Rng;
-use crate::world::Facility;
+use crate::world::{Cell, Facility};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -413,8 +413,9 @@ impl Game {
         let mut rng = Rng::new(&format!("{}:L{}:RESIDENT:{}", inf.seed, level, self.time as i32));
         for s in slots.iter_mut() {
             let p = s.brain.pos;
-            // the plain footprint test: a hunter beside a stair well is not over its hole
-            let fits = fac.hunter_fits(p.0, p.1);
+            // the plain footprint test: a hunter beside a stair well is not over its hole, and none stands in a drop (open
+            // air down to the level below, which the runner cannot stand on)
+            let fits = fac.hunter_fits(p.0, p.1) && !fac.is_drop(Cell::new(p.0.floor() as i32, p.1.floor() as i32));
             let out = p.0 < 0.0 || p.1 < 0.0 || p.0 >= size || p.1 >= size || !fits;
             if out && !s.brain.on_edge() {
                 if let Some(spot) = spawn_spot_in(fac, self.p.pos, &mut rng) {

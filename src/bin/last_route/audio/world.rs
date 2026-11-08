@@ -118,24 +118,22 @@ struct WorldState {
 const AMBIENCE_VOICES: [&str; 2] = ["ambience_a", "ambience_b"];
 
 thread_local! {
-    /// The beds already rendered (a bed is a few seconds of synth maths): at most `AMBIENCE_CACHE` are kept.
-    static BEDS: RefCell<Vec<(&'static str, Vec<[f32; 2]>)>> = RefCell::new(Vec::new());
+    /// The rendered beds (a bed is a few seconds of synth maths): rendered a time-budgeted slice a frame, at most
+    /// `render.cache_beds` kept (data/audio/ambience.json), least recently used evicted. Survives `reset`.
+    static BEDS: RefCell<super::cues::ambience::BedStreamer> = RefCell::new(super::cues::ambience::BedStreamer::default());
 }
-const AMBIENCE_CACHE: usize = 4;
 
 fn bed_frames(id: &'static str) -> Vec<[f32; 2]> {
-    BEDS.with(|c| {
-        let mut c = c.borrow_mut();
-        if let Some((_, f)) = c.iter().find(|(k, _)| *k == id) {
-            return f.clone();
-        }
-        let frames = super::cues::ambience(id, super::cues::ambience::settings().loop_seconds);
-        if c.len() >= AMBIENCE_CACHE {
-            c.remove(0);
-        }
-        c.push((id, frames.clone()));
-        frames
-    })
+    BEDS.with(|c| c.borrow_mut().frames(id)).unwrap_or_default()
+}
+
+/// Renders the bed for `region` into the cache for up to `budget` (call it each frame of the loading screen with the
+/// spawn region so the first ambience has no hitch). True when the bed is ready.
+pub fn ambience_prewarm(region: &str, budget: std::time::Duration) -> bool {
+    match ambience_bed(region) {
+        Some(id) => BEDS.with(|c| c.borrow_mut().warm(id, budget)),
+        None => true,
+    }
 }
 
 /// The region ambience: call once per game frame with the id of the region the runner stands in (`None` in menus or
@@ -149,7 +147,10 @@ pub fn ambience(dt: f32, region: Option<&str>, duck: f32) {
             if !e.ready {
                 return;
             }
-            let out = w.ambience.step_ducked(dt, region, duck);
+            // render the wanted bed a slice a frame; the mixer keeps the previous bed until the new one is ready
+            let want = region.and_then(ambience_bed);
+            let shown = BEDS.with(|c| c.borrow_mut().update(want, super::cues::ambience::bed_budget()));
+            let out = w.ambience.step_ducked(dt, shown, duck);
             for (n, (voice, slot)) in AMBIENCE_VOICES.iter().zip(out.iter()).enumerate() {
                 if w.ambience_playing[n].is_some() && w.ambience_playing[n] != slot.bed {
                     e.set_loop(*voice, Bus::Sfx, None, Vec::new);
@@ -183,14 +184,31 @@ pub fn set_hunter_surface(id: &str, surface: &str) {
     });
 }
 
+/// A hunter's step by the floor kind under her (a RefTextures floor kind such as "parquet0"; unknown kinds are
+/// concrete): the same as `set_hunter_surface` with the surface that kind maps to. "" clears it.
+pub fn set_hunter_floor(id: &str, floor_kind: &str) {
+    let surface = if floor_kind.is_empty() { "" } else { super::cues::surface_for_floor(floor_kind) };
+    set_hunter_surface(id, surface);
+}
+
+/// A one-shot hunter cue from data/audio/cues.json ("hunter_sniff", "hunter_knock") heard from where she stands: pan and
+/// loudness from her offset to the runner, like a footstep. Silent when she is out of earshot.
+pub fn hunter_event_at(name: &str, hunter_pos: (f32, f32), l: &Listener) {
+    let offset = ((hunter_pos.0 - l.pos.0) as f64, (hunter_pos.1 - l.pos.1) as f64);
+    if let Some((pan, volume)) = rules::hunter_step_pan_volume(offset, (l.facing.0 as f64, l.facing.1 as f64)) {
+        super::sound::event(name, pan as f32, volume as f32);
+    }
+}
+
 /// The voice of the wound music box's tune (one pre-rendered run, see `music_box`).
 const BOX_VOICE: &str = "music_box_run";
 
-/// The music box run is rendered in slices of this many frames, until this much time of a game frame is spent: the render
-/// is a few million frames, which on one wasm thread would stall a frame for tenths of a second if done at once. The
-/// finished run is the same samples either way (`RunRender`).
-const BOX_RENDER_SLICE: usize = 4096;
-const BOX_RENDER_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
+/// The music box run is rendered in slices of `render.box_slice_frames` frames, until `render.box_budget_ms` of a game
+/// frame is spent (data/audio/ambience.json): the render is a few million frames, which on one wasm thread would stall a
+/// frame for tenths of a second if done at once. The finished run is the same samples either way (`RunRender`).
+fn box_budget() -> std::time::Duration {
+    std::time::Duration::from_secs_f64(super::cues::ambience::settings().box_budget_ms / 1000.0)
+}
 
 /// The wound music box's sound (music_box.rs): its tune, steady at normal speed while the wind is above the slowdown line
 /// (70 % by default), then slower and lower as it drains, stopped when it is empty. The loops cannot change pitch while
@@ -228,8 +246,9 @@ pub fn music_box(left: f32, wound: f32) {
             if let Some(render) = w.box_render.as_mut() {
                 let t0 = crate::shared::clock::Instant::now();
                 let mut done = false;
-                while !done && t0.elapsed() < BOX_RENDER_BUDGET {
-                    done = render.step(BOX_RENDER_SLICE);
+                let (budget, slice) = (box_budget(), super::cues::ambience::settings().box_slice_frames);
+                while !done && t0.elapsed() < budget {
+                    done = render.step(slice);
                 }
                 if done {
                     if let Some(render) = w.box_render.take() {
@@ -345,4 +364,171 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod bed_stream_tests {
+    use super::super::cues::ambience::{self, BedRender, BedStreamer};
+    use std::time::Duration;
+
+    #[test]
+    fn synth_and_render_tunables_come_from_data() {
+        let s = ambience::settings();
+        // Standard values match the original synth
+        assert_eq!(s.rate, 22050.0);
+        assert_eq!(s.max_tone_hz, 1600.0);
+        assert_eq!(s.dc_cutoff_hz, 30.0);
+        assert_eq!(s.level_seconds, 0.03);
+        assert!(s.cache_beds >= 2 && s.upsample_chunk >= 256 && s.box_slice_frames >= 256);
+        assert!(s.bed_budget_ms >= 0.0 && s.box_budget_ms >= 0.0);
+        assert_eq!(ambience::bed_budget(), Duration::from_secs_f64(s.bed_budget_ms / 1000.0));
+    }
+
+    #[test]
+    fn stepping_a_bed_gives_the_same_samples_as_rendering_it_at_once() {
+        let mut r = BedRender::new("lab", 1.0);
+        while !r.step() {}
+        assert_eq!(r.finish(), ambience::ambience("lab", 1.0));
+    }
+
+    #[test]
+    fn no_frame_renders_more_than_one_stage_with_no_budget() {
+        let chunk = ambience::settings().upsample_chunk;
+        let seconds = 2.0f32;
+        let mut r = BedRender::new("lab", seconds);
+        let mut calls = 0;
+        let mut last_frames = 0;
+        while !r.is_done() {
+            let before = r.stages_done;
+            r.step_for(Duration::ZERO);
+            calls += 1;
+            assert_eq!(r.stages_done, before + 1, "a zero budget runs exactly one stage");
+            assert!(r.frames_ready() - last_frames <= chunk, "the up-sample stays within its chunk");
+            last_frames = r.frames_ready();
+            assert!(calls < 10_000);
+        }
+        assert!(calls > 3, "a bed takes several frames");
+        // the whole loop at the engine's output rate
+        let rate = super::super::cues::SAMPLE_RATE as f64;
+        assert_eq!(last_frames, (seconds as f64 * rate).round() as usize);
+    }
+
+    /// A step never works more than one chunk (`render.synth_chunk` synth samples of a layer or finishing pass, an
+    /// up-sample step `render.upsample_chunk` output frames), so a frame's budget is passed by one chunk at most: every
+    /// bed, every layer kind, a loop long enough that a whole layer is many chunks.
+    #[test]
+    fn no_step_works_more_than_one_chunk() {
+        let s = ambience::settings();
+        assert!(s.synth_chunk as f64 >= ambience::LONGEST_EVENT_SECONDS * s.rate, "a chunk holds the longest event");
+        let mut ids: Vec<&String> = s.beds.keys().collect();
+        ids.sort();
+        let mut layer_steps = 0;
+        for id in ids {
+            let mut r = BedRender::new(id, s.loop_seconds);
+            let mut steps = 0;
+            loop {
+                let up = r.upsampling();
+                let done = r.step();
+                steps += 1;
+                let cap = if up { s.upsample_chunk } else { s.synth_chunk };
+                assert!(r.last_work <= cap, "{id}: step {steps} worked {} samples (cap {cap})", r.last_work);
+                if !up {
+                    layer_steps += 1;
+                }
+                if done {
+                    break;
+                }
+                assert!(steps < 100_000);
+            }
+            let layers = s.beds[id].layers.len();
+            assert!(steps > layers + 6, "{id}: the render is cut into chunks ({steps} steps for {layers} layers)");
+        }
+        assert!(layer_steps > 0);
+    }
+
+    /// The chunked render gives the same samples as a render at once for every bed (`finish` steps too, so this holds a
+    /// stepped render against the chunk-free walk of the same loop lengths).
+    #[test]
+    fn every_bed_steps_to_the_same_samples() {
+        let s = ambience::settings();
+        let mut ids: Vec<&String> = s.beds.keys().collect();
+        ids.sort();
+        for id in ids {
+            let mut r = BedRender::new(id, 3.0);
+            while !r.step_for(Duration::ZERO) {}
+            assert_eq!(r.finish(), ambience::ambience(id, 3.0), "{id}");
+        }
+    }
+
+    fn settle(st: &mut BedStreamer, want: &'static str) -> usize {
+        let mut frames = 0;
+        while st.update(Some(want), Duration::ZERO) != Some(want) {
+            frames += 1;
+            assert!(frames < 10_000);
+        }
+        frames
+    }
+
+    #[test]
+    fn a_region_switch_keeps_the_old_bed_until_the_new_one_is_ready() {
+        let a = ambience::bed_for("lab");
+        let b = ambience::bed_for("sewer");
+        assert_ne!(a, b);
+        let mut st = BedStreamer::default();
+        // the first bed has nothing before it: silence until ready
+        assert_eq!(st.update(Some(a), Duration::ZERO), None);
+        settle(&mut st, a);
+        let mut waited = 0;
+        loop {
+            let shown = st.update(Some(b), Duration::ZERO);
+            if shown == Some(b) {
+                break;
+            }
+            assert_eq!(shown, Some(a), "the old bed plays while the new one renders");
+            waited += 1;
+            assert!(waited < 10_000);
+        }
+        assert!(waited >= 1, "the switch took more than one frame");
+        assert!(st.is_cached(a) && st.is_cached(b));
+        // leaving every region silences it and drops the half-rendered bed
+        assert_eq!(st.update(None, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn the_cache_keeps_the_most_recent_beds() {
+        let cap = ambience::settings().cache_beds;
+        let ids: [&'static str; 8] = ["b0", "b1", "b2", "b3", "b4", "b5", "b6", "b7"];
+        let mut st = BedStreamer::default();
+        for id in ids.iter().take(cap) {
+            st.insert(id, vec![[0.0, 0.0]]);
+        }
+        assert!(st.frames(ids[0]).is_some(), "using the oldest makes it the newest");
+        st.insert(ids[cap], vec![[0.0, 0.0]]);
+        assert!(st.is_cached(ids[0]), "the recently used bed survives");
+        assert!(!st.is_cached(ids[1]), "the least recently used bed was evicted");
+        assert_eq!(st.cached_ids().len(), cap);
+        assert_eq!(*st.cached_ids().last().unwrap(), ids[cap]);
+    }
+
+    #[test]
+    fn warming_fills_the_cache_without_showing_the_bed() {
+        let id = ambience::bed_for("lab");
+        let mut st = BedStreamer::default();
+        let mut n = 0;
+        while !st.warm(id, Duration::ZERO) {
+            n += 1;
+            assert!(n < 10_000);
+        }
+        assert!(st.is_cached(id));
+        assert_eq!(st.shown(), None);
+        assert_eq!(st.update(Some(id), Duration::ZERO), Some(id), "a warmed bed plays at once");
+    }
+
+    #[test]
+    fn a_hunter_floor_kind_maps_to_a_surface_step() {
+        super::set_hunter_floor("tester_h", "parquet0");
+        super::WORLD.with(|w| assert_eq!(w.borrow().surfaces.get("tester_h").map(String::as_str), Some("wood")));
+        super::set_hunter_floor("tester_h", "");
+        super::WORLD.with(|w| assert!(w.borrow().surfaces.get("tester_h").is_none()));
+    }
 }

@@ -142,6 +142,14 @@ pub struct Report {
     pub difficulty: Difficulty,
 }
 
+/// The floor kind under each hunter (by id) at the absolute cell `(level, x, y)` it was worked out for, and the texture
+/// picks per room or hall key it came from (`Game::sync_hunter_floors`).
+#[derive(Default)]
+struct HunterFloors {
+    by_hunter: std::collections::HashMap<String, ((i32, i32, i32), &'static str)>,
+    choices: std::collections::HashMap<(String, String, bool), crate::render::textures::TextureChoice>,
+}
+
 pub struct Game {
     pub difficulty: Difficulty,
     pub run_seed: u32,
@@ -164,6 +172,8 @@ pub struct Game {
     /// Guest: the host simulates the hunters and its frames set them (hunting.rs `apply_hunter_frame`), so this game
     /// runs no hunter simulation. The app sets it each frame from the room's role.
     pub remote_hunters: bool,
+    /// The floor kind last worked out under each hunter, for her step sound (`sync_hunter_floors`).
+    hunter_floors: HunterFloors,
     /// The room is the PUBLIC route and this game simulates its hunters: idle hunters patrol near a runner (app/public_route.rs).
     pub public_route: bool,
     pub(crate) patrol_book: crate::app::public_route::PatrolBook,
@@ -334,6 +344,7 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            hunter_floors: HunterFloors::default(),
             public_route: false,
             patrol_book: Default::default(),
             no_local_runner: false,
@@ -483,6 +494,7 @@ impl Game {
             relays_taken: vec![],
             sabotage: None,
             remote_hunters: false,
+            hunter_floors: HunterFloors::default(),
             public_route: false,
             patrol_book: Default::default(),
             no_local_runner: false,
@@ -773,6 +785,31 @@ impl Game {
             .unwrap_or(false)
     }
 
+    /// Sets each hunter's step surface from the RefTextures floor kind the world mesh draws under her
+    /// (`world_mesh::floor_kind_at`: a room's one kind, the hall's per chunk). It is worked out again only when her cell
+    /// (absolute, with the level) changes, so a frame costs one map lookup per hunter.
+    fn sync_hunter_floors(&mut self) {
+        let f = &self.fac;
+        let floors = &mut self.hunter_floors;
+        for h in self.hunters.iter() {
+            let (x, y) = (h.pos.0.floor() as i32, h.pos.1.floor() as i32);
+            let at = (f.level, x + f.origin.0, y + f.origin.1);
+            match floors.by_hunter.get_mut(&h.def.id) {
+                Some(seen) if seen.0 == at => continue,
+                Some(seen) => {
+                    seen.0 = at;
+                    seen.1 = crate::render::world_mesh::floor_kind_at(f, x, y, &mut floors.choices);
+                    crate::audio::world::set_hunter_floor(&h.def.id, seen.1);
+                }
+                None => {
+                    let kind = crate::render::world_mesh::floor_kind_at(f, x, y, &mut floors.choices);
+                    floors.by_hunter.insert(h.def.id.clone(), (at, kind));
+                    crate::audio::world::set_hunter_floor(&h.def.id, kind);
+                }
+            }
+        }
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.p.eye()
     }
@@ -966,6 +1003,10 @@ impl Game {
                 hidden: self.p.hidden.is_some(),
                 in_safe_zone: self.in_safe_zone(),
             };
+            if !self.remote_hunters {
+                // the floor under each hunter picks her step sound
+                self.sync_hunter_floors();
+            }
             let hunters: Vec<crate::audio::world::HunterAudio> = self.hunters.iter().map(|h| crate::audio::world::HunterAudio {
                 id: &h.def.id,
                 pos: h.pos,

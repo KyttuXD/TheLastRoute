@@ -285,15 +285,6 @@ impl Game {
         }
     }
 
-    /// The box's use: it winds for its difficulty's time (game/music_box.rs) and the winding phrase sounds
-    /// (route_interactable_3d.gd 818). The caller spends the box, from the pack or from specialty slot 6. The room
-    /// effect is the clock `run_music_box` reads.
-    pub(super) fn wind_music_box(&mut self) {
-        self.music_box_left = super::music_box::wound_seconds(self.difficulty.id());
-        crate::audio::sound::music_box();
-        self.say("Music box wound. The room settles.");
-    }
-
     /// A tap of the drop key: one item of the selected stack (a non-stackable item drops whole).
     pub(super) fn drop_selected(&mut self) {
         self.drop_selected_amount(false);

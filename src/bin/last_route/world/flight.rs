@@ -261,6 +261,10 @@ pub struct FlightRules {
     pub sb_mid_len: i32,
     pub st_length: i32,
     pub st_width: i32,
+    /// A straight flight's shortest rail (m): a closed stretch shorter than this is a sliver of the fit tolerance.
+    pub st_min_guard: f32,
+    /// How far in from a straight flight's side edges the head of the ramp is closed to a body (m); 0 leaves it open.
+    pub st_head_margin: f32,
     /// Half the side of the spiral's square well, in cells (the square is `2 * half + 1` across, the post in its middle).
     pub sp_half_cells: i32,
     /// Cells across the doorway-wide landing row of a spiral (odd).
@@ -428,6 +432,8 @@ impl FlightRules {
             sb_mid_len: jint(&v, &["switchback", "mid_landing_len"])?,
             st_length: jint(&v, &["straight", "length"])?,
             st_width: jint(&v, &["straight", "width"])?,
+            st_min_guard: jnum(&v, &["straight", "min_guard"])?,
+            st_head_margin: jnum(&v, &["straight", "head_side_margin"])?,
             sp_half_cells: jint(&v, &["spiral", "half"])?,
             sp_landing_cells: jint(&v, &["spiral", "landing_cells"])?,
             sp_inner: jnum(&v, &["spiral", "inner_radius"])?,
@@ -498,6 +504,13 @@ impl FlightRules {
         }
         ranged("straight.length", self.st_length as f32, &l.st_length)?;
         ranged("straight.width", self.st_width as f32, &l.st_width)?;
+        if self.st_min_guard < 0.0 || !self.st_min_guard.is_finite() {
+            return Err(format!("flights.json: straight.min_guard {} must not be negative", self.st_min_guard));
+        }
+        // a body (0.46 m across) must still pass down the middle of a one-cell lane
+        if !(0.0..0.25).contains(&self.st_head_margin) {
+            return Err(format!("flights.json: straight.head_side_margin {} must be from 0 to under 0.25 m", self.st_head_margin));
+        }
         ranged("spiral.half", self.sp_half_cells as f32, &l.sp_half)?;
         ranged("spiral.landing_cells", self.sp_landing_cells as f32, &l.sp_landing_cells)?;
         if self.sp_landing_cells % 2 == 0 || self.sp_landing_cells > 2 * self.sp_half_cells + 1 {
@@ -992,8 +1005,44 @@ pub fn flight_surface_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32) ->
 /// to [`flight_surface_y_with`] except in a spiral's wedge between the end radials, where the slab is overhead for the
 /// lower level (its floor is the plain floor, held flat at the lower floor, so the walker arriving at the foot of the
 /// helicoid steps off onto it) and the open corner on the arc's end side is floor, not a drop.
+///
+/// A straight flight's ramp is closed to a body along its two sides over the head ([`straight_head_closed`]): the first
+/// metre of the ramp is within the fit tolerance of the upper floor, and without this a body steps onto it from the floor
+/// beside it. The walked route down the middle of the lane is unaffected.
 pub fn flight_walk_y_with(rules: &FlightRules, f: &Flight, x: f32, z: f32, lower: bool) -> Option<f32> {
+    if !lower && straight_head_closed(rules, f, x, z) {
+        return None;
+    }
     surface_with(rules, f, x, z, lower)
+}
+
+/// Whether `(x, z)` is on the sliver along the side of a straight flight's head that a body may not step onto from the
+/// upper floor: within `straight.head_side_margin` of either side edge, from the head down to where the ramp leaves the
+/// fit tolerance of the upper floor (past that the plain fit rule already stops a body).
+fn straight_head_closed(rules: &FlightRules, f: &Flight, x: f32, z: f32) -> bool {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Straight || rules.st_head_margin <= 0.0 {
+        return false;
+    }
+    let (u, v) = to_local(f, x, z);
+    let (len, width) = (rules.st_length as f32, rules.st_width as f32);
+    let head = super::facility::FLIGHT_FIT_TOL * len / rules.rise_total;
+    (0.0..=head).contains(&u) && (0.0..width).contains(&v) && (v < rules.st_head_margin || v > width - rules.st_head_margin)
+}
+
+/// Whether `g` is one of the two short caps across the head of a straight flight that close the side slivers of
+/// [`straight_head_closed`]: on the head edge (u = 0), no longer than `straight.head_side_margin`, and inside that margin
+/// of one side edge. The tests that keep the head of the stairs open allow exactly these.
+#[cfg(test)]
+pub(crate) fn straight_head_cap(rules: &FlightRules, f: &Flight, g: &Guard) -> bool {
+    if f.kind != FlightKind::Stairs || f.shape != FlightShape::Straight || rules.st_head_margin <= 0.0 {
+        return false;
+    }
+    const E: f32 = 1e-3;
+    let (ua, va) = to_local(f, g.seg.a.0, g.seg.a.1);
+    let (ub, vb) = to_local(f, g.seg.b.0, g.seg.b.1);
+    let (lo, hi) = (va.min(vb), va.max(vb));
+    let (w, m) = (rules.st_width as f32, rules.st_head_margin + E);
+    ua.abs() < E && ub.abs() < E && hi - lo > 0.0 && ((lo >= -E && hi <= m) || (lo >= w - m && hi <= w + E))
 }
 
 fn surface_with(rules: &FlightRules, f: &Flight, x: f32, z: f32, lower_view: bool) -> Option<f32> {
@@ -1213,14 +1262,11 @@ pub fn landing_guards_with(rules: &FlightRules, f: &Flight) -> Vec<Guard> {
             // specks a few cm long the fit tolerance leaves at a cell's end are no rail
             spiral_rim_guards(rules, f)
                 .into_iter()
-                .filter(|g| (g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= STRAIGHT_MIN_GUARD)
+                .filter(|g| (g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1) >= rules.st_min_guard)
                 .collect()
         }
     }
 }
-
-/// A straight flight's shortest rail (m): a closed stretch shorter than this is a sliver of the fit tolerance.
-const STRAIGHT_MIN_GUARD: f32 = 0.075;
 
 /// How finely a spiral's rim is read for the guards: samples per cell edge (a metre).
 const RIM_SAMPLES: usize = 20;

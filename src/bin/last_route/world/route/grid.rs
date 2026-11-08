@@ -551,7 +551,6 @@ pub fn remove_wall_humps(grid: &mut Grid, rooms: &[Room], doors: &[DoorProp]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::route::layout::chunk_layout;
     use crate::world::route::layout::Coord;
     use serde_json::Value;
 

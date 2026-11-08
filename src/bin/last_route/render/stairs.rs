@@ -1167,7 +1167,9 @@ mod tests {
                 assert_eq!(bars.len(), guards.len(), "{shape:?} {run:?}: a bar per guard edge");
                 // no guard over the landing cell A, nor the arriving flight's first cells
                 let fp = well_footprint(&f);
-                assert!(guards.iter().all(|g| g.outside != fp.landing), "{shape:?} {run:?}: the landing edge is the gap");
+                // a straight flight closes the side slivers at its head, so their two caps (and only those) stand there
+                let cap = |g: &crate::world::flight::Guard| crate::world::flight::straight_head_cap(rules, &f, g);
+                assert!(guards.iter().all(|g| g.outside != fp.landing || cap(g)), "{shape:?} {run:?}: the landing edge is the gap");
                 for g in &guards {
                     assert!(!fp.upper_hole.contains(&g.outside), "{shape:?} {run:?}: a guard stands on floor");
                 }
@@ -1261,7 +1263,33 @@ mod tests {
         for c in s.well_cells() {
             flight_cell(&mut p, (c.x, c.y), s, 0, &site);
         }
-        assert!(p.boxes.is_empty(), "every neighbour is a wall, so there is no floor edge to guard");
+        // every neighbour but the landing is a wall, so there is no floor edge to guard: the only guard left is a cap
+        // across a closed side sliver at the head (`straight_head_cap`, its outside the landing), drawn as its two bars and
+        // its posts, every piece on that short cap
+        let rules = flights();
+        let d = &rules.dressing;
+        let f = s.flight(0).unwrap();
+        let caps: Vec<_> = landing_guards_with(rules, &f)
+            .into_iter()
+            .filter(|g| g.outside == landing && crate::world::flight::straight_head_cap(rules, &f, g))
+            .collect();
+        assert!(caps.len() <= 2, "one cap per side at most");
+        let bars = p.boxes.iter().filter(|(_, sz, _)| (sz.y - d.rail_thickness).abs() < EPS).count();
+        assert_eq!(bars, 2 * caps.len(), "two bars per head cap and no other rail");
+        let off_seg = |c: Vec3, g: &crate::world::flight::Guard| {
+            let (ax, az, bx, bz) = (g.seg.a.0, g.seg.a.1, g.seg.b.0, g.seg.b.1);
+            let (dx, dz) = (bx - ax, bz - az);
+            let t = (((c.x - ax) * dx + (c.z - az) * dz) / (dx * dx + dz * dz).max(1e-9)).clamp(0.0, 1.0);
+            (c.x - (ax + dx * t)).hypot(c.z - (az + dz * t))
+        };
+        for (c, sz, _) in &p.boxes {
+            let len = sz.x.max(sz.z);
+            let on_cap = caps.iter().any(|g| {
+                let glen = (g.seg.b.0 - g.seg.a.0).hypot(g.seg.b.1 - g.seg.a.1);
+                off_seg(*c, g) < 0.02 + d.guard_thickness && len <= glen + d.rail_thickness.max(d.guard_thickness) + 0.05
+            });
+            assert!(on_cap, "a piece at {c:?} ({len} m) is not on a head cap");
+        }
     }
 
     #[test]
