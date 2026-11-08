@@ -1,0 +1,82 @@
+# LR Story builds (src/bin/lr_story). Manual only: run it from the Actions tab ("nightly-lrs", Run workflow).
+# Each build is published to the rolling pre-release "nightly-lrs", replaced in place like the main "nightly"
+# (packaging/nightly.sh). See src/bin/lr_story/docs/BUILD.md and docs/RELEASES.md.
+name: nightly-lrs
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  NIGHTLY_TAG: nightly-lrs
+  NIGHTLY_TITLE: Nightly LR Story
+  NIGHTLY_NOTES: LR Story, built by hand from the Actions tab (workflow nightly-lrs). The files are replaced in place on each run.
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lrs-windows
+      - run: cargo build --release --bin lr_story
+      - name: Publish to nightly-lrs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          cp target/release/lr_story.exe dist/lr_story-windows-x86_64.exe
+          sh packaging/nightly.sh dist/lr_story-windows-x86_64.exe
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lrs-linux
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - run: cargo build --release --bin lr_story
+      - name: Publish to nightly-lrs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          tar -czf dist/lr_story-linux-x86_64.tar.gz -C target/release lr_story
+          sh packaging/nightly.sh dist/lr_story-linux-x86_64.tar.gz
+
+  macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lrs-macos-${{ matrix.arch }}
+      - run: cargo build --release --bin lr_story
+      - name: Publish to nightly-lrs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          (cd target/release && zip -q "../../dist/lr_story-macos-${{ matrix.arch }}.zip" lr_story)
+          sh packaging/nightly.sh "dist/lr_story-macos-${{ matrix.arch }}.zip"

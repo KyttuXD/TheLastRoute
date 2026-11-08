@@ -1,0 +1,82 @@
+# Night Watch builds (src/bin/night_watch). Manual only: run it from the Actions tab ("nightly-nw", Run workflow).
+# Each build is published to the rolling pre-release "nightly-nw", replaced in place like the main "nightly"
+# (packaging/nightly.sh). See src/bin/night_watch/docs/BUILD.md and docs/RELEASES.md.
+name: nightly-nw
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  NIGHTLY_TAG: nightly-nw
+  NIGHTLY_TITLE: Nightly Night Watch
+  NIGHTLY_NOTES: Night Watch, built by hand from the Actions tab (workflow nightly-nw). The files are replaced in place on each run.
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nw-windows
+      - run: cargo build --release --bin night_watch
+      - name: Publish to nightly-nw
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          cp target/release/night_watch.exe dist/night_watch-windows-x86_64.exe
+          sh packaging/nightly.sh dist/night_watch-windows-x86_64.exe
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nw-linux
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+      - run: cargo build --release --bin night_watch
+      - name: Publish to nightly-nw
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          tar -czf dist/night_watch-linux-x86_64.tar.gz -C target/release night_watch
+          sh packaging/nightly.sh dist/night_watch-linux-x86_64.tar.gz
+
+  macos:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nw-macos-${{ matrix.arch }}
+      - run: cargo build --release --bin night_watch
+      - name: Publish to nightly-nw
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          (cd target/release && zip -q "../../dist/night_watch-macos-${{ matrix.arch }}.zip" night_watch)
+          sh packaging/nightly.sh "dist/night_watch-macos-${{ matrix.arch }}.zip"
