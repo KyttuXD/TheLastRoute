@@ -1,0 +1,57 @@
+{
+	"schema": "nw.calls/1",
+	"id": "lure",
+	"order": 2,
+	"levels": [
+		{
+			"level": "1",
+			"at": 6,
+			"lines": [
+				"Zellia. This is the attraction hall. Only one of them is active tonight, and she's harmless: she takes the cameras.",
+				"When something goes dark, reboot it from the monitor with Q, W or E.",
+				"A and D seal the vents. Space opens the monitor, and L plays a sound in the room you're watching.",
+				"Sealed vents make the air heavy, so don't leave them closed for long."
+			]
+		},
+		{
+			"level": "2",
+			"at": 6,
+			"lines": [
+				"Xivvy is awake now, and she's the real one. She picks a vent and keeps to it until something turns her away.",
+				"Use the lure sparingly. The speakers don't like being asked twice in a row."
+			]
+		},
+		{
+			"level": "3",
+			"at": 6,
+			"lines": [
+				"Briselle is in tonight. She takes the audio, and with no audio there's no lure. Reboot it on Q.",
+				"They take more than their usual now. Check what is down, not only what you expect."
+			]
+		},
+		{
+			"level": "4",
+			"at": 6,
+			"lines": [
+				"The building has a temperature tonight, and it is falling. That's Wynelle. There's a heater on H, and it reboots on R.",
+				"Don't leave the heater running for long. It costs air."
+			]
+		},
+		{
+			"level": "5",
+			"at": 6,
+			"lines": [
+				"Mavrine is in tonight. She takes the vents, and the heater with them. Keep an eye on the air.",
+				"That's five of them. The routine is the same. Keep the reboots going."
+			]
+		},
+		{
+			"level": "6",
+			"at": 6,
+			"lines": [
+				"Last night in the hall. Ferryn is resting, but the heat has someone of its own: Solyth. Too much heater and she cooks the office.",
+				"There's a fan on F, and it reboots on T. The cold bites hardest tonight and the hunter is quickest. I'll be on the line if you need me."
+			]
+		}
+	]
+}

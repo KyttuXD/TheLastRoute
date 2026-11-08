@@ -1,0 +1,47 @@
+{
+	"schema": "nw.calls/1",
+	"id": "dayshift",
+	"order": 6,
+	"levels": [
+		{
+			"level": "1",
+			"at": 5,
+			"lines": [
+				"Zellia. This is a work week, so the day comes first. Spend your budget in the shop, then start the shift.",
+				"At night, pick a piece on the rack (1 to 4, or click it) and hold Space to take it. The quota is shown at the top. Noise is a cost, and you'll want to keep an eye on it.",
+				"A and D are the side doors. Q and E are the lights, held. Ravelle comes to the left one, and if you close it she goes."
+			]
+		},
+		{
+			"level": "2",
+			"at": 5,
+			"lines": [
+				"There's a second visitor this week: Ceryth, at the right-hand door. The same doors and lights apply, and when one of them is turned away she warns the other.",
+				"A light on a doorway is enough to keep someone from moving. It uses power, so use it sparingly."
+			]
+		},
+		{
+			"level": "3",
+			"at": 5,
+			"lines": [
+				"The window at the back is used after closing. When you hear a knock, Ysolde is there.",
+				"Until she's gone, let go of the rack and keep the lights off. The doors make no sound, so shut one if someone's there."
+			]
+		},
+		{
+			"level": "4",
+			"at": 5,
+			"lines": [
+				"Everyone is on this week and the quota is higher. Any surplus from last week carries over, up to a point.",
+				"Choose the pieces you take. Not all of them are worth the noise."
+			]
+		},
+		{
+			"level": "5",
+			"at": 5,
+			"lines": [
+				"This is the last week of the schedule, and the highest quota. A prize is the quickest way there, if you can afford the noise."
+			]
+		}
+	]
+}

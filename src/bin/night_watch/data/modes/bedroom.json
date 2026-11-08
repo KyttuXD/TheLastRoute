@@ -1,0 +1,89 @@
+{
+	"schema": "nw.mode/1",
+	"id": "bedroom",
+	"order": 3,
+	"menu": {
+		"id": "bedroom",
+		"num": 4,
+		"label": "4. BEDTIME",
+		"title": "BEDTIME",
+		"tag": "LISTEN · NO CAMERAS",
+		"playable": true,
+		"resumable": true,
+		"office": "bedroom",
+		"cast": [
+			"loxelle",
+			"javelle",
+			"haelith"
+		],
+		"art": [
+			"loxelle",
+			"javelle"
+		],
+		"custom": [
+			{
+				"id": "loxelle",
+				"label": "Loxelle"
+			},
+			{
+				"id": "javelle",
+				"label": "Javelle"
+			},
+			{
+				"id": "haelith",
+				"label": "Haelith"
+			}
+		],
+		"presets": [
+			{
+				"id": "closet-door",
+				"name": "Closet Door",
+				"ai": {
+					"loxelle": 15,
+					"javelle": 0,
+					"haelith": 0
+				}
+			},
+			{
+				"id": "hall-watch",
+				"name": "Hall Watch",
+				"ai": {
+					"loxelle": 0,
+					"javelle": 15,
+					"haelith": 0
+				}
+			},
+			{
+				"id": "lights-out",
+				"name": "Lights Out",
+				"ai": {
+					"loxelle": 6,
+					"javelle": 6,
+					"haelith": 15
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20",
+				"ai": {
+					"loxelle": 20,
+					"javelle": 20,
+					"haelith": 20
+				}
+			}
+		],
+		"blurb": "No cameras. Hold the closet door, light the hall, light the bed, one hand at a time, on a battery that never recharges.",
+		"hint": "",
+		"levels": [
+			"NIGHT 1",
+			"NIGHT 2",
+			"NIGHT 3",
+			"NIGHT 4",
+			"NIGHT 5",
+			"NIGHT 6"
+		],
+		"scored": 6,
+		"open": false,
+		"customLevel": null
+	}
+}

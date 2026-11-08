@@ -1,0 +1,47 @@
+{
+	"schema": "nw.dayshift.tunables/1",
+	"cast": ["ravelle", "ceryth", "ysolde"],
+	"names": {"ravelle": "Ravelle", "ceryth": "Ceryth", "ysolde": "Ysolde"},
+	"pan": {"ravelle": -0.8, "ceryth": 0.8, "ysolde": 0.0},
+	"upgrades": [
+		{"id": "hinges", "name": "Sturdy hinges", "cost": 30, "blurb": "Doors cost half as much power while shut."},
+		{"id": "cell", "name": "Extra cell", "cost": 40, "blurb": "Power drains a quarter slower."},
+		{"id": "soles", "name": "Soft soles", "cost": 35, "blurb": "The doors' visitors are two levels less keen."},
+		{"id": "gloves", "name": "Salvage gloves", "cost": 45, "blurb": "Salvaging is 30% faster."},
+		{"id": "bench", "name": "Padded bench", "cost": 40, "blurb": "Salvaging makes half the noise."}
+	],
+	"budget": [90, 100, 110, 120, 130],
+	"quota": [140, 210, 280, 340, 380],
+	"levels": {
+		"ravelle": [4, 7, 10, 13, 15],
+		"ceryth": [0, 5, 8, 12, 14],
+		"ysolde": [0, 0, 6, 10, 13]
+	},
+	"carry_cap": 40,
+	"item_kinds": ["scrap", "parts", "prize"],
+	"items": {
+		"scrap": {"label": "Scrap", "value": 10, "ms": 2000.0, "weight": 5},
+		"parts": {"label": "Parts", "value": 25, "ms": 3500.0, "weight": 3},
+		"prize": {"label": "Prize", "value": 60, "ms": 5500.0, "weight": 1}
+	},
+	"decks": [
+		{"id": "steady", "weight": 2, "scrap": 5, "parts": 3, "prize": 1},
+		{"id": "lumpy", "weight": 1, "scrap": 7, "parts": 0, "prize": 2},
+		{"id": "parts", "weight": 1, "scrap": 3, "parts": 6, "prize": 0}
+	],
+	"t": {
+		"comboLevel": 6, "comboMs": 2200.0,
+		"atDoorMs": 5200.0, "leaveMs": 450.0, "startDist": 3,
+		"atDoorByWeekMs": [8000.0, 7000.0, 6200.0, 5600.0, 5200.0],
+		"noisePerSec": 14.0, "noiseDecayPerSec": 10.0, "loud": 40.0, "uneasy": 20.0,
+		"powerBase": 0.10, "powerPerDevice": 0.07, "outAttackMs": 9000.0,
+		"slots": 4, "spawnMs": 11000.0, "firstSpawnMs": 2000.0, "expireMs": 30000.0,
+		"windowGapMs": 42000.0, "windowGapPerLevelMs": 1800.0, "windowGapMinMs": 14000.0, "knockMs": 3000.0, "presentMs": 6000.0, "exposeMs": 1500.0,
+		"knockMaxMs": 4200.0, "windowGapSpread": 0.3, "spawnSpread": 0.2, "firstSpawnSpread": 0.5, "leadSteps": 1
+	},
+	"walk": {
+		"step_budget_s": 2.0,
+		"first_budget_s": 7.0,
+		"knock_budget_s": 3.0
+	}
+}

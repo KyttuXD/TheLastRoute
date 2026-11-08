@@ -1,0 +1,51 @@
+{
+  "schema": "nw.nav/1",
+  "id": "extra-campfire",
+  "note": "Open Air watch 3, the campfire (openair_world.gd _build_campfire). V3..V0 Verrine from the left trees, Q3..Q0 Quenelle from the right, Y2..Y0 Ysolde (the trees, out of them, the log pile). RW, RN, RE are the trail along the treeline that joins the three approaches (the Godot chains were separate). Camera nodes are added in code from map.json. Task spots are never nearer the fire than the hunter's own stand spots.",
+  "rooms": {
+    "trees_w": {"min": [-16.0, -12.0], "max": [-8.8, 2.0]},
+    "edge_w": {"min": [-8.8, -6.0], "max": [-4.5, 2.0]},
+    "trees_e": {"min": [8.8, -12.0], "max": [16.0, 2.0]},
+    "edge_e": {"min": [4.5, -6.0], "max": [8.8, 2.0]},
+    "pines": {"min": [0.0, -16.0], "max": [8.4, -4.2]},
+    "log_pile": {"min": [0.5, -4.2], "max": [6.5, -1.2]},
+    "treeline": {"min": [-16.0, -17.0], "max": [16.0, -10.5]}
+  },
+  "nodes": [
+    {"id": "V3", "kind": "waypoint", "room": "trees_w", "p": [-12.5, 0, -7.0]},
+    {"id": "V2", "kind": "waypoint", "room": "trees_w", "p": [-10.0, 0, -4.6]},
+    {"id": "V1", "kind": "waypoint", "room": "edge_w", "p": [-7.4, 0, -2.4]},
+    {"id": "V0", "kind": "waypoint", "room": "edge_w", "p": [-5.2, 0, -0.8]},
+    {"id": "Q3", "kind": "waypoint", "room": "trees_e", "p": [12.5, 0, -7.0]},
+    {"id": "Q2", "kind": "waypoint", "room": "trees_e", "p": [10.0, 0, -4.6]},
+    {"id": "Q1", "kind": "waypoint", "room": "edge_e", "p": [7.4, 0, -2.4]},
+    {"id": "Q0", "kind": "waypoint", "room": "edge_e", "p": [5.2, 0, -0.8]},
+    {"id": "Y2", "kind": "waypoint", "room": "pines", "p": [5.0, 0, -11.0]},
+    {"id": "Y1", "kind": "waypoint", "room": "pines", "p": [4.6, 0, -6.8]},
+    {"id": "Y0", "kind": "waypoint", "room": "log_pile", "p": [2.6, 0, -2.4]},
+    {"id": "RW", "kind": "waypoint", "room": "treeline", "p": [-10.5, 0, -11.5]},
+    {"id": "RN", "kind": "waypoint", "room": "treeline", "p": [0.0, 0, -13.5]},
+    {"id": "RE", "kind": "waypoint", "room": "treeline", "p": [10.5, 0, -11.5]},
+
+    {"id": "T:trees_w:sort_boxes", "kind": "task", "room": "trees_w", "task": "sort_boxes", "p": [-13.0, 0, -6.0], "look": [-14.0, 0.5, -6.0]},
+    {"id": "T:trees_w:check_locker", "kind": "task", "room": "trees_w", "task": "check_locker", "p": [-12.0, 0, -8.7], "look": [-12.0, 1.2, -9.6]},
+    {"id": "T:trees_w:pace", "kind": "task", "room": "trees_w", "task": "pace", "p": [-14.0, 0, -2.5], "pace_to": [-14.0, 0, -8.8], "look": [-15.0, 1.5, -5.6]},
+
+    {"id": "T:trees_e:sort_boxes", "kind": "task", "room": "trees_e", "task": "sort_boxes", "p": [13.0, 0, -6.0], "look": [14.0, 0.5, -6.0]},
+    {"id": "T:trees_e:check_locker", "kind": "task", "room": "trees_e", "task": "check_locker", "p": [12.0, 0, -8.7], "look": [12.0, 1.2, -9.6]},
+    {"id": "T:trees_e:pace", "kind": "task", "room": "trees_e", "task": "pace", "p": [14.0, 0, -2.5], "pace_to": [14.0, 0, -8.8], "look": [15.0, 1.5, -5.6]},
+
+    {"id": "T:pines:sit", "kind": "task", "room": "pines", "task": "sit", "p": [2.5, 0, -12.9], "look": [2.5, 0.5, -14.5]},
+    {"id": "T:pines:sort_boxes", "kind": "task", "room": "pines", "task": "sort_boxes", "p": [6.0, 0, -13.0], "look": [7.0, 0.5, -13.0]},
+    {"id": "T:pines:pace", "kind": "task", "room": "pines", "task": "pace", "p": [1.0, 0, -9.5], "pace_to": [6.8, 0, -9.5], "look": [3.9, 1.5, -10.5]}
+  ],
+  "edges": [
+    ["V3", "V2"], ["V2", "V1"], ["V1", "V0"],
+    ["Q3", "Q2"], ["Q2", "Q1"], ["Q1", "Q0"],
+    ["Y2", "Y1"], ["Y1", "Y0"],
+    ["V3", "RW"], ["RW", "RN"], ["RN", "Y2"], ["RN", "RE"], ["RE", "Q3"],
+    ["T:trees_w:sort_boxes", "V3"], ["T:trees_w:check_locker", "V3"], ["T:trees_w:pace", "V2"],
+    ["T:trees_e:sort_boxes", "Q3"], ["T:trees_e:check_locker", "Q3"], ["T:trees_e:pace", "Q2"],
+    ["T:pines:sit", "RN"], ["T:pines:sit", "Y2"], ["T:pines:sort_boxes", "Y2"], ["T:pines:pace", "Y2"]
+  ]
+}

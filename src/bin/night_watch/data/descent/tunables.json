@@ -1,0 +1,52 @@
+{
+	"schema": "nw.descent/1",
+	"rules": {
+		"rate_per_level": 0.22,
+		"wrong_bump": 13.0,
+		"stage_relief": 34.0,
+		"ride_ms": 1800.0,
+		"show_on_ms": 520.0,
+		"show_off_ms": 260.0,
+		"show_lead_ms": 700.0,
+		"hold_ms": 3200.0,
+		"hold_slip": 22.0,
+		"hold_rate": 2.6,
+		"pipe_rate": 0.5,
+		"surge_spread": 0.2,
+		"surge_every_ms": 9000.0,
+		"surge_every_spread": 0.33,
+		"show_pace_spread": 0.15,
+		"lit_spread": 1,
+		"length_spread": 1
+	},
+	"data": {
+		"descents": 5,
+		"elise_levels": [0, 5, 8, 11, 14],
+		"runs": {
+			"1": ["wires"],
+			"2": ["wires", "memory"],
+			"3": ["wires", "memory", "pipes"],
+			"4": ["wires", "memory", "pipes", "hold"],
+			"5": ["wires", "memory", "pipes", "wires", "hold"]
+		},
+		"wires_lit": [3, 3, 4, 4, 5],
+		"wires_buttons": [4, 4, 5, 6, 6],
+		"memory_length": [3, 3, 4, 4, 5],
+		"pipes_grid": [4, 4, 4, 5, 5],
+		"pipes_detours": [0, 0, 0, 1, 1],
+		"pipes_turns": [2, 2, 2, 2, 2]
+	},
+	"view": {
+		"elise_speed": 1.4,
+		"sill_far": -5.6,
+		"sill_near": -1.95,
+		"window_x": 1.1,
+		"ride_drop": 3.0,
+		"beam_gap": 3.0,
+		"camera": {"pos": [0.0, 1.5, 1.1], "pitch_deg": -3.0, "fov_deg": 62.0},
+		"lamp": {"pos": [0.0, 3.35, 0.1], "calm": [1.0, 0.86, 0.62], "alarm": [1.0, 0.35, 0.28], "energy_calm": 1.5, "energy_alarm": 1.0, "range": 5.0},
+		"sill_light": {"y": 2.3, "z": -2.9, "colour": [0.45, 0.55, 0.85], "energy": 0.8, "range": 5.0},
+		"ambient": [0.34, 0.36, 0.5],
+		"background": [0.02, 0.02, 0.03]
+	}
+}

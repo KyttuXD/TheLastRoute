@@ -1,0 +1,522 @@
+{
+ "schema": "nw.story.rules/1",
+ "variety": {
+  "stepTempo": 0.1,
+  "startNearer": 0.1,
+  "startFarther": 0.05,
+  "liftGapSpread": 0.3
+ },
+ "levels": {
+  "opalie": [
+   0,
+   8,
+   10,
+   10,
+   11,
+   13
+  ],
+  "porcelle": [
+   0,
+   0,
+   10,
+   10,
+   10,
+   12
+  ],
+  "quenelle": [
+   0,
+   0,
+   0,
+   6,
+   9,
+   12
+  ]
+ },
+ "t": {
+  "startDist": 3,
+  "strikeMs": 1200,
+  "recoverMs": 6000,
+  "walkMs": 1800,
+  "crawlMs": 3600,
+  "walkNoise": 35,
+  "crawlNoise": 6,
+  "workNoisePerSec": 6,
+  "noiseDecayPerSec": 12,
+  "hearNoise": 24,
+  "doorMs": 500,
+  "comboLevel": 5,
+  "comboMs": 1500,
+  "dialSteps": 6,
+  "stepNoise": {
+   "code": 4,
+   "dials": 8,
+   "collect": 10,
+   "crank": 12,
+   "switches": 7
+  },
+  "wrongNoise": 16,
+  "beaconDrainPerSec": 18,
+  "beaconRegenPerSec": 3,
+  "beaconPushMs": 1500,
+  "liftBaseMs": 30000,
+  "liftPerLevelMs": 1000,
+  "liftMinMs": 14000,
+  "bellMs": 3500,
+  "openMs": 5000,
+  "exposeMs": 1500
+ },
+ "nights": {
+  "startDist": [
+   3,
+   2,
+   2,
+   2,
+   2,
+   2
+  ],
+  "paceX": [
+   1,
+   2.2,
+   2.7,
+   2.75,
+   2.8,
+   3.2
+  ],
+  "hear": [
+   24,
+   15,
+   12,
+   11.5,
+   11,
+   9
+  ],
+  "quietX": [
+   0,
+   1.2,
+   1.5,
+   1.55,
+   1.6,
+   2.6
+  ],
+  "recoverX": [
+   1,
+   1.5,
+   1.6,
+   1.7,
+   1.8,
+   2
+  ],
+  "awayPaceX": [
+   0,
+   0.8,
+   0.9,
+   1,
+   1.1,
+   1.4
+  ],
+  "strikeMs": [
+   1200,
+   1200,
+   1200,
+   1150,
+   1150,
+   1100
+  ],
+  "drainX": [
+   1,
+   1.4,
+   1.5,
+   1.6,
+   1.7,
+   1.9
+  ],
+  "keenMs": [
+   0,
+   30000,
+   25000,
+   22000,
+   20000,
+   18000
+  ],
+  "keenCap": [
+   0,
+   2,
+   3,
+   3,
+   4,
+   4
+  ],
+  "liftGapX": [
+   1,
+   1,
+   1,
+   0.9,
+   0.8,
+   0.7
+  ],
+  "openX": [
+   1,
+   1,
+   1,
+   1,
+   1.15,
+   1.3
+  ],
+  "liftSees": [
+   0,
+   0,
+   0,
+   1,
+   1,
+   1
+  ]
+ },
+ "porcelleRooms": [
+  "workshop",
+  "auditorium"
+ ],
+ "rooms": {
+  "breaker": {
+   "label": "BREAKER ROOM",
+   "exits": {
+    "R": "gallery"
+   }
+  },
+  "gallery": {
+   "label": "GALLERY",
+   "exits": {
+    "L": "breaker",
+    "R": "control"
+   }
+  },
+  "control": {
+   "label": "CONTROL",
+   "exits": {
+    "L": "gallery",
+    "R": "workshop",
+    "C": "lift"
+   }
+  },
+  "workshop": {
+   "label": "WORKSHOP",
+   "exits": {
+    "L": "control",
+    "R": "auditorium"
+   }
+  },
+  "auditorium": {
+   "label": "AUDITORIUM",
+   "exits": {
+    "L": "workshop"
+   }
+  },
+  "lift": {
+   "label": "LIFT",
+   "exits": {
+    "C": "control"
+   }
+  }
+ },
+ "tasks": {
+  "1": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 3
+   },
+   {
+    "room": "gallery",
+    "label": "Calibrate the lamps",
+    "kind": "dials",
+    "n": 3
+   },
+   {
+    "room": "workshop",
+    "label": "Collect the parts",
+    "kind": "collect",
+    "n": 4
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 3
+   }
+  ],
+  "2": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 3
+   },
+   {
+    "room": "gallery",
+    "label": "Calibrate the lamps",
+    "kind": "dials",
+    "n": 3
+   },
+   {
+    "room": "breaker",
+    "label": "Reset the breaker",
+    "kind": "switches",
+    "n": 4
+   },
+   {
+    "room": "gallery",
+    "label": "Check the lamps",
+    "kind": "dials",
+    "n": 4
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 4
+   }
+  ],
+  "3": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 3
+   },
+   {
+    "room": "workshop",
+    "label": "Collect the parts",
+    "kind": "collect",
+    "n": 5
+   },
+   {
+    "room": "auditorium",
+    "label": "Service the stage",
+    "kind": "crank",
+    "n": 14
+   },
+   {
+    "room": "gallery",
+    "label": "Check the lamps",
+    "kind": "dials",
+    "n": 4
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 4
+   }
+  ],
+  "4": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 4
+   },
+   {
+    "room": "lift",
+    "label": "Check the floor above",
+    "kind": "hold",
+    "ms": 4500
+   },
+   {
+    "room": "breaker",
+    "label": "Reset the breaker",
+    "kind": "switches",
+    "n": 5
+   },
+   {
+    "room": "gallery",
+    "label": "Check the lamps",
+    "kind": "dials",
+    "n": 4
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 4
+   }
+  ],
+  "5": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 4
+   },
+   {
+    "room": "auditorium",
+    "label": "Service the stage",
+    "kind": "crank",
+    "n": 14
+   },
+   {
+    "room": "breaker",
+    "label": "Reset the breaker",
+    "kind": "switches",
+    "n": 5
+   },
+   {
+    "room": "lift",
+    "label": "Check the floor above",
+    "kind": "hold",
+    "ms": 4500
+   },
+   {
+    "room": "gallery",
+    "label": "Calibrate the lamps",
+    "kind": "dials",
+    "n": 4
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 4
+   }
+  ],
+  "6": [
+   {
+    "room": "control",
+    "label": "Log in",
+    "kind": "code",
+    "n": 5
+   },
+   {
+    "room": "workshop",
+    "label": "Collect the parts",
+    "kind": "collect",
+    "n": 6
+   },
+   {
+    "room": "auditorium",
+    "label": "Service the stage",
+    "kind": "crank",
+    "n": 16
+   },
+   {
+    "room": "breaker",
+    "label": "Reset the breaker",
+    "kind": "switches",
+    "n": 6
+   },
+   {
+    "room": "lift",
+    "label": "Check the floor above",
+    "kind": "hold",
+    "ms": 5000
+   },
+   {
+    "room": "gallery",
+    "label": "Calibrate the lamps",
+    "kind": "dials",
+    "n": 5
+   },
+   {
+    "room": "control",
+    "label": "Sign off",
+    "kind": "code",
+    "n": 5
+   }
+  ]
+ },
+ "orders": {
+  "1": [
+   [
+    0,
+    1,
+    2,
+    3
+   ]
+  ],
+  "2": [
+   [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   [
+    0,
+    1,
+    3,
+    2,
+    4
+   ],
+   [
+    0,
+    2,
+    1,
+    3,
+    4
+   ]
+  ],
+  "3": [
+   [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   [
+    0,
+    2,
+    1,
+    3,
+    4
+   ]
+  ],
+  "4": [
+   [
+    0,
+    1,
+    2,
+    3,
+    4
+   ]
+  ],
+  "5": [
+   [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   [
+    0,
+    1,
+    4,
+    3,
+    2,
+    5
+   ]
+  ],
+  "6": [
+   [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   [
+    0,
+    1,
+    2,
+    5,
+    4,
+    3,
+    6
+   ]
+  ]
+ }
+}

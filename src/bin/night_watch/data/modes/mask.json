@@ -1,0 +1,125 @@
+{
+	"schema": "nw.mode/1",
+	"id": "mask",
+	"order": 1,
+	"menu": {
+		"id": "mask",
+		"num": 2,
+		"label": "2. MASKED HOURS",
+		"title": "MASKED HOURS",
+		"tag": "MASK · MUSIC BOX · VENTS",
+		"playable": true,
+		"resumable": true,
+		"office": "mask",
+		"cast": [
+			"verrine",
+			"thessine",
+			"glyra",
+			"nyxie",
+			"umbriel",
+			"haelith",
+			"ilyra"
+		],
+		"art": [
+			"thessine",
+			"nyxie"
+		],
+		"custom": [
+			{
+				"id": "verrine",
+				"label": "Verrine"
+			},
+			{
+				"id": "thessine",
+				"label": "Thessine"
+			},
+			{
+				"id": "glyra",
+				"label": "Glyra"
+			},
+			{
+				"id": "nyxie",
+				"label": "Nyxie"
+			},
+			{
+				"id": "umbriel",
+				"label": "Umbriel"
+			},
+			{
+				"id": "haelith",
+				"label": "Haelith"
+			},
+			{
+				"id": "ilyra",
+				"label": "Ilyra"
+			}
+		],
+		"presets": [
+			{
+				"id": "hall-pass",
+				"name": "Hall Pass",
+				"ai": {
+					"verrine": 0,
+					"thessine": 12,
+					"glyra": 5,
+					"nyxie": 0,
+					"umbriel": 12,
+					"haelith": 0,
+					"ilyra": 0
+				}
+			},
+			{
+				"id": "vent-duty",
+				"name": "Vent Duty",
+				"ai": {
+					"verrine": 15,
+					"thessine": 0,
+					"glyra": 8,
+					"nyxie": 0,
+					"umbriel": 0,
+					"haelith": 0,
+					"ilyra": 0
+				}
+			},
+			{
+				"id": "wound-tight",
+				"name": "Wound Tight",
+				"ai": {
+					"verrine": 6,
+					"thessine": 6,
+					"glyra": 20,
+					"nyxie": 6,
+					"umbriel": 6,
+					"haelith": 0,
+					"ilyra": 0
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20/20",
+				"ai": {
+					"verrine": 20,
+					"thessine": 20,
+					"glyra": 20,
+					"nyxie": 20,
+					"umbriel": 20,
+					"haelith": 20,
+					"ilyra": 20
+				}
+			}
+		],
+		"blurb": "No doors. Watch the cameras for who is coming, wear the mask when the hall hunters walk in, wind the music box, light the vents, and keep the flashlight alive: when it dies, someone comes.",
+		"hint": "",
+		"levels": [
+			"NIGHT 1",
+			"NIGHT 2",
+			"NIGHT 3",
+			"NIGHT 4",
+			"NIGHT 5",
+			"NIGHT 6"
+		],
+		"scored": 6,
+		"open": false,
+		"customLevel": null
+	}
+}

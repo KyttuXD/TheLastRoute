@@ -1,0 +1,88 @@
+{
+	"schema": "nw.mode/1",
+	"id": "dayshift",
+	"order": 6,
+	"menu": {
+		"id": "dayshift",
+		"num": 7,
+		"label": "7. SALVAGE RUN",
+		"title": "SALVAGE RUN",
+		"tag": "MANAGE · SALVAGE",
+		"playable": true,
+		"resumable": true,
+		"office": "dayshift",
+		"cast": [
+			"ravelle",
+			"ceryth",
+			"ysolde"
+		],
+		"art": [
+			"ravelle",
+			"ceryth"
+		],
+		"custom": [
+			{
+				"id": "ravelle",
+				"label": "Ravelle"
+			},
+			{
+				"id": "ceryth",
+				"label": "Ceryth"
+			},
+			{
+				"id": "ysolde",
+				"label": "Ysolde"
+			}
+		],
+		"presets": [
+			{
+				"id": "left-door",
+				"name": "Left Door",
+				"ai": {
+					"ravelle": 15,
+					"ceryth": 0,
+					"ysolde": 0
+				}
+			},
+			{
+				"id": "right-door",
+				"name": "Right Door",
+				"ai": {
+					"ravelle": 0,
+					"ceryth": 15,
+					"ysolde": 0
+				}
+			},
+			{
+				"id": "after-hours",
+				"name": "After Hours",
+				"ai": {
+					"ravelle": 5,
+					"ceryth": 5,
+					"ysolde": 15
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20",
+				"ai": {
+					"ravelle": 20,
+					"ceryth": 20,
+					"ysolde": 20
+				}
+			}
+		],
+		"blurb": "Spend the day's budget on upgrades, then salvage pieces off the rack at night to make the quota while the doors and the window are watched.",
+		"hint": "",
+		"levels": [
+			"WEEK 1",
+			"WEEK 2",
+			"WEEK 3",
+			"WEEK 4",
+			"WEEK 5"
+		],
+		"scored": 5,
+		"open": false,
+		"customLevel": 3
+	}
+}

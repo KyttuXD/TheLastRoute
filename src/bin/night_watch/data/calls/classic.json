@@ -1,0 +1,69 @@
+{
+	"schema": "nw.calls/1",
+	"id": "classic",
+	"order": 0,
+	"levels": [
+		{
+			"level": "1",
+			"at": 5,
+			"lines": [
+				"Zellia, on the headset. Can you hear me all right? Good.",
+				"Doors are A and D. Lights are Q and E, held. The cameras are on Space. Your power is limited, so spend it carefully.",
+				"Dovelle comes by the left door. A light on her holds her still. Keep it on her and she backs right off. Closing the door is quicker, but she won't go far.",
+				"If the power goes, the doors open and the lights fail. You won't be alone in the dark for long.",
+				"I'll check in again later. Try to stay calm. It makes the night shorter."
+			]
+		},
+		{
+			"level": "2",
+			"at": 5,
+			"lines": [
+				"Zellia again. Ravelle is on the floor tonight, at the right-hand door. If a shut door turns her away she'll try the other one.",
+				"If a camera loses its picture it's usually temporary. Check another room and come back."
+			]
+		},
+		{
+			"level": "3",
+			"at": 5,
+			"lines": [
+				"Aki has started moving. She only moves while you aren't looking at a camera, so keep your checks short.",
+				"Keep your hands steady. The building notices more than people think."
+			]
+		},
+		{
+			"level": "4",
+			"at": 5,
+			"lines": [
+				"Ilyra is up. She stays where she is while you're watching her room, which tells you something about her.",
+				"Footsteps carry. The louder they are, the closer they are. That's the whole rule."
+			]
+		},
+		{
+			"level": "5",
+			"at": 5,
+			"lines": [
+				"Everyone is active tonight, and they move faster than before. Two of them at their doors at once is worse than one.",
+				"Keep to a routine. It's easier to hold a pattern than to invent one at three in the morning."
+			]
+		},
+		{
+			"level": "6",
+			"at": 5,
+			"lines": [
+				"You've reached the sixth night. Not many people do.",
+				"There's nothing new to tell you. Be careful, and be patient."
+			]
+		},
+		{
+			"level": "7",
+			"at": 5,
+			"lines": [
+				"Zellia. It's only Kathy tonight. She won't show up in the door lights, but when she reaches a door, its light stutters.",
+				"Keep a light on her door, open or shut, and it dips now and then while she's there. That's all you get to see.",
+				"Listen too. A breath means she's in a hall. Static means she's at that door, and she hums while she waits. A shut door muffles it.",
+				"The cameras catch her in flickers. Catch one in a hall and meet her eyes, K, and she goes back. Miss, and you'll have to wait.",
+				"When she gives up at a shut door she leaves without a sound. The hum stops and the light stops dipping. Check before you open."
+			]
+		}
+	]
+}

@@ -1,0 +1,63 @@
+{
+	"schema": "nw.mask.rules/1",
+	"id": "mask",
+	"cast": ["verrine", "thessine", "glyra", "nyxie", "umbriel", "haelith", "ilyra"],
+	"names": {"thessine": "Thessine", "umbriel": "Umbriel", "verrine": "Verrine", "glyra": "Glyra", "nyxie": "Nyxie", "haelith": "Haelith", "ilyra": "Ilyra"},
+	"levels": {
+		"thessine": [3, 5, 9, 12, 14, 17],
+		"umbriel": [0, 0, 10, 11, 12, 12],
+		"verrine": [0, 3, 5, 7, 9, 11],
+		"haelith": [0, 0, 0, 6, 4, 3],
+		"ilyra": [0, 0, 0, 0, 3, 3],
+		"nyxie": [3, 4, 6, 8, 10, 12]
+	},
+	"box_decay": [2, 2, 3, 4, 5, 6],
+	"flash_seconds": [117, 100, 83, 67, 50, 50],
+	"t": {
+		"hallSteps": 4, "stepMs": 2300, "stepJitter": 0.4,
+		"windowMs": 3500, "leaveMs": 2500, "offGraceMs": 1200, "coolMs": 4000,
+		"coolSpread": 0.05, "offDrain": 0.5,
+		"ventWaitMs": 6000, "ventNeedMs": 1400, "ventCoolMs": 6000, "boxGraceMs": 6000,
+		"ventMaskRate": 0.9, "windPerSec": 12,
+		"roomMs": 4000, "roomJitter": 0.5, "ductMs": 4000, "ductJitter": 0.5,
+		"hallCool0": 0, "ventCool0": 2000,
+		"rushCoolMs": 12000, "rushCool0": 8000, "flashCost": 0.25,
+		"haelithDuctMs": 1900, "haelithDuctJitter": 0.3, "haelithWaitMs": 3400, "haelithNeedMs": 500, "haelithFetchMs": 1500, "haelithCoolMs": 6000,
+		"ilyraStepMs": 2600, "ilyraStepJitter": 0.3, "ilyraSteps": 3, "ilyraVentMs": 3000, "ilyraNeedMs": 1200, "ilyraCoolMs": 8000,
+		"lampDrain": 0.1, "camDrain": 0.025
+	},
+	"vent_from": {"verrine": 0, "haelith": 45000, "ilyra": 90000},
+	"variety": {
+		"restSpread": 0.3, "killSpread": 0.2, "killFloor": 0.9, "sideBias": [0.35, 0.65], "salt": 1025477207,
+		"factors": [0.88, 1.0, 1.12], "ms": [30000, 60000]
+	},
+	"panels": {"mask": {"raise": 200, "lower": 150}, "monitor": {"raise": 250, "lower": 200}},
+	"rooms": {
+		"music": {"cam": 1, "label": "PRIZE CORNER", "pan": 0.0, "map": [15, 33]},
+		"costume": {"cam": 2, "label": "PARTS / SERVICE", "pan": 0.5, "map": [85, 33]},
+		"gallery": {"cam": 3, "label": "SHOW STAGE", "pan": 0.0, "map": [50, 11]},
+		"ballroom": {"cam": 4, "label": "GAME AREA", "pan": 0.0, "map": [50, 33]},
+		"crawl": {"cam": 5, "label": "VENT HUB", "pan": 0.0, "map": [50, 78]},
+		"ductL": {"cam": 6, "label": "LEFT AIR VENT", "pan": -0.9, "map": [15, 61.5]},
+		"ductR": {"cam": 7, "label": "RIGHT AIR VENT", "pan": 0.9, "map": [85, 61.5]},
+		"hall": {"cam": 8, "label": "MAIN HALL", "pan": 0.0, "map": [50, 61.5]},
+		"office": {"cam": 0, "label": "OFFICE", "pan": 0.0, "map": [50, 94]},
+		"ventL": {"cam": 0, "label": "LEFT VENT", "pan": -1.0, "map": [32.5, 77.75]},
+		"ventR": {"cam": 0, "label": "RIGHT VENT", "pan": 1.0, "map": [67.5, 77.75]}
+	},
+	"graph": {
+		"music": ["ballroom"],
+		"costume": ["ballroom"],
+		"gallery": ["ballroom"],
+		"ballroom": ["music", "costume", "gallery", "hall"],
+		"hall": ["ballroom", "office"],
+		"office": ["hall", "ventL", "ventR"],
+		"crawl": ["ductL", "ductR"],
+		"ductL": ["crawl", "ventL"],
+		"ductR": ["crawl", "ventR"],
+		"ventL": ["ductL", "office"],
+		"ventR": ["ductR", "office"]
+	},
+	"home": {"thessine": "costume", "umbriel": "gallery", "verrine": "crawl", "haelith": "crawl", "ilyra": "crawl", "glyra": "music"},
+	"tune": [659, 587, 523, 587, 659, 659, 659, 587, 587, 587, 659, 784, 784]
+}

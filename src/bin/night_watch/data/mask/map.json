@@ -1,0 +1,44 @@
+{
+	"schema": "nw.mask.map/1",
+	"id": "mask",
+	"office": {"half_w": 3.4, "front_z": -1.8, "back_z": 3.6, "height": 3.7, "opening": 2.5, "spawn": [0, 0, 1.35]},
+	"hall": {"near": 3.3, "far": 15.0, "rush_door": 2.6, "office_walker": [0, 0, -1.25]},
+	"vent_stand": {"L": [-1.75, 0, 0.55], "R": [1.75, 0, 0.55]},
+	"centres": {
+		"ballroom": [0, 0, -24], "music": [-14.5, 0, -25], "costume": [14.5, 0, -25], "gallery": [0, 0, -34],
+		"crawl": [0, 0, 6.8], "ductL": [-5.2, 0, 0.6], "ductR": [5.2, 0, 0.6]
+	},
+	"stand_offsets": [[0.9, 0, 0.6], [-0.9, 0, -0.6], [0, 0, -1.6]],
+	"stand_lift": {"gallery": [0, 0.7, -1.0]},
+	"duct_x": {"far": 7.2, "stand": 5.4, "near": 3.5},
+	"glyra_offset": [0.6, 0, -1.2],
+	"glyra_advance": 3.0,
+	"nyxie": {"from_z": -3.3, "to": [0.5, 0, -1.0]},
+	"cameras": {
+		"music": {"mount": [-11.6, 2.8, -20.2], "target": [-15.5, 0.8, -26.5], "fov": 62},
+		"costume": {"mount": [11.6, 2.8, -20.2], "target": [15.5, 0.8, -26.5], "fov": 62},
+		"gallery": {"mount": [7.5, 2.9, -28.5], "target": [0, 1.1, -36.0], "fov": 62},
+		"ballroom": {"mount": [10.0, 3.1, -31.0], "target": [-1.0, 0.8, -21.5], "fov": 62},
+		"crawl": {"mount": [11.5, 2.8, 4.2], "target": [0, 0.7, 7.5], "fov": 62},
+		"ductL": {"mount": [-8.1, 1.4, 0.6], "target": [-3.0, 0.7, 0.6], "fov": 62},
+		"ductR": {"mount": [8.1, 1.4, 0.6], "target": [3.0, 0.7, 0.6], "fov": 62},
+		"hall": {"mount": [0, 2.6, -1.9], "target": [0, 1.0, -14.0], "fov": 62}
+	},
+	"cam_map": {
+		"rooms": {
+			"ballroom": [0, -24], "music": [-14.5, -25], "costume": [14.5, -25], "gallery": [0, -34],
+			"hall": [0, -9], "party1": [-5, -7.2], "party2": [-5, -12.8], "party3": [5, -7.2], "party4": [5, -12.8],
+			"lefthall": [-12.5, -8], "righthall": [12.5, -8],
+			"crawl": [0, 6.8], "ductL": [-5.2, 0.6], "ductR": [5.2, 0.6]
+		},
+		"edges": [
+			["ballroom", "music"], ["ballroom", "costume"], ["ballroom", "gallery"], ["ballroom", "hall"],
+			["hall", "party1"], ["hall", "party2"], ["hall", "party3"], ["hall", "party4"],
+			["music", "lefthall"], ["costume", "righthall"], ["lefthall", "crawl"], ["righthall", "crawl"],
+			["crawl", "ductL"], ["crawl", "ductR"]
+		],
+		"entrances": ["hall", "ductL", "ductR"],
+		"vents": ["ductL", "ductR", "crawl"],
+		"office": [0, 2.0]
+	}
+}

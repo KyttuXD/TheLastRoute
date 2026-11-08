@@ -1,0 +1,596 @@
+{
+ "schema": "nw.story.map/1",
+ "cell": 6,
+ "roomW": 5.6,
+ "roomD": 5,
+ "height": 3.6,
+ "doorGap": 1.5,
+ "doorTop": 3.2,
+ "spawnOffset": 1.5,
+ "order": [
+  "breaker",
+  "gallery",
+  "control",
+  "workshop",
+  "auditorium"
+ ],
+ "lift": [
+  0,
+  0,
+  -4.1
+ ],
+ "tints": {
+  "breaker": [
+   1.1,
+   1,
+   0.8
+  ],
+  "gallery": [
+   0.85,
+   0.8,
+   1.3
+  ],
+  "control": [
+   0.85,
+   1.05,
+   1.2
+  ],
+  "workshop": [
+   1.25,
+   1,
+   0.8
+  ],
+  "auditorium": [
+   1.3,
+   0.8,
+   0.9
+  ],
+  "lift": [
+   0.9,
+   0.95,
+   1
+  ]
+ },
+ "creeper": {
+  "anchor": 1.5,
+  "base": 0.9,
+  "step": 0.85,
+  "z": {
+   "opalie": 0.5,
+   "porcelle": -0.4
+  },
+  "side": {
+   "opalie": -1,
+   "porcelle": 1
+  }
+ },
+ "quenelle": {
+  "inCar": [
+   0,
+   0,
+   -4.6
+  ],
+  "atDoor": [
+   0,
+   0,
+   -2.9
+  ],
+  "tripS": 1.6
+ },
+ "player": {
+  "start": [
+   0,
+   0,
+   0.6
+  ],
+  "yaw": 0,
+  "pitch": -0.05
+ },
+ "lights": {
+  "room": {
+   "color": [
+    1,
+    0.92,
+    0.75
+   ],
+   "energy": 1.1,
+   "range": 7,
+   "y": 3.2
+  },
+  "lift": {
+   "color": [
+    0.85,
+    0.95,
+    1
+   ],
+   "energy": 0.9,
+   "range": 4.5,
+   "y": 2.6
+  },
+  "ambient": [
+   0.38,
+   0.4,
+   0.55
+  ],
+  "ambientScale": 0.9
+ },
+ "beacon": {
+  "color": [
+   1,
+   0.95,
+   0.8
+  ],
+  "energy": 6,
+  "range": 9,
+  "halfAngleDeg": 30,
+  "offset": [
+   0.2,
+   -0.2,
+   0.2
+  ]
+ },
+ "cameras": [
+  {
+   "room": "breaker",
+   "pos": [
+    -13.2,
+    3.1,
+    2.3
+   ],
+   "target": [
+    -11.8,
+    0.8,
+    -1.2
+   ],
+   "fov": 62,
+   "label": "BREAKER ROOM"
+  },
+  {
+   "room": "gallery",
+   "pos": [
+    -7.2,
+    3.1,
+    2.3
+   ],
+   "target": [
+    -5.8,
+    0.8,
+    -1.2
+   ],
+   "fov": 62,
+   "label": "GALLERY"
+  },
+  {
+   "room": "control",
+   "pos": [
+    -1.2,
+    3.1,
+    2.3
+   ],
+   "target": [
+    0.2,
+    0.8,
+    -1.2
+   ],
+   "fov": 62,
+   "label": "CONTROL"
+  },
+  {
+   "room": "workshop",
+   "pos": [
+    4.8,
+    3.1,
+    2.3
+   ],
+   "target": [
+    6.2,
+    0.8,
+    -1.2
+   ],
+   "fov": 62,
+   "label": "WORKSHOP"
+  },
+  {
+   "room": "auditorium",
+   "pos": [
+    10.8,
+    3.1,
+    2.3
+   ],
+   "target": [
+    12.2,
+    0.8,
+    -1.2
+   ],
+   "fov": 62,
+   "label": "AUDITORIUM"
+  },
+  {
+   "room": "lift",
+   "pos": [
+    1.2,
+    3.1,
+    -2.85
+   ],
+   "target": [
+    -0.2,
+    0.9,
+    -5
+   ],
+   "fov": 66,
+   "label": "LIFT"
+  }
+ ],
+ "map": {
+  "edges": [
+   [
+    "breaker",
+    "gallery"
+   ],
+   [
+    "gallery",
+    "control"
+   ],
+   [
+    "control",
+    "workshop"
+   ],
+   [
+    "workshop",
+    "auditorium"
+   ],
+   [
+    "control",
+    "lift"
+   ]
+  ],
+  "entrances": [
+   "gallery",
+   "workshop",
+   "lift"
+  ],
+  "pos": {
+   "breaker": [
+    -12,
+    0
+   ],
+   "gallery": [
+    -6,
+    0
+   ],
+   "control": [
+    0,
+    0
+   ],
+   "workshop": [
+    6,
+    0
+   ],
+   "auditorium": [
+    12,
+    0
+   ],
+   "lift": [
+    0,
+    -4.1
+   ]
+  }
+ },
+ "props": [
+  {
+   "model": "breakerCabinet",
+   "room": "breaker",
+   "pos": [
+    -2.2,
+    0,
+    -1.5
+   ],
+   "face": "s",
+   "solid": true,
+   "min": [
+    -0.437,
+    0,
+    -0.312
+   ],
+   "max": [
+    0.438,
+    1.625,
+    0.375
+   ]
+  },
+  {
+   "model": "serverRack",
+   "room": "breaker",
+   "pos": [
+    -2.4,
+    0,
+    0.6
+   ],
+   "face": "e",
+   "solid": true,
+   "min": [
+    -0.312,
+    0,
+    -0.375
+   ],
+   "max": [
+    0.313,
+    1.938,
+    0.438
+   ]
+  },
+  {
+   "model": "cableCoil",
+   "room": "breaker",
+   "pos": [
+    0.6,
+    0,
+    1.5
+   ],
+   "face": "s",
+   "solid": false,
+   "min": [
+    -0.187,
+    0,
+    -0.187
+   ],
+   "max": [
+    0.188,
+    0.063,
+    0.188
+   ]
+  },
+  {
+   "model": "gasCylinderRack",
+   "room": "breaker",
+   "pos": [
+    0.8,
+    0,
+    2.2
+   ],
+   "face": "n",
+   "solid": true,
+   "min": [
+    -0.5,
+    0,
+    -0.25
+   ],
+   "max": [
+    0.5,
+    1.625,
+    0.25
+   ]
+  },
+  {
+   "model": "displayCase",
+   "room": "gallery",
+   "pos": [
+    0.3,
+    0,
+    2.1
+   ],
+   "face": "n",
+   "solid": true,
+   "min": [
+    -0.687,
+    0,
+    -0.375
+   ],
+   "max": [
+    0.75,
+    1.25,
+    0.375
+   ]
+  },
+  {
+   "model": "framedWallPortrait",
+   "room": "gallery",
+   "pos": [
+    -1.8,
+    0,
+    2.45
+   ],
+   "face": "n",
+   "solid": false,
+   "min": [
+    -0.437,
+    0.688,
+    -0.062
+   ],
+   "max": [
+    0.438,
+    1.875,
+    0.125
+   ]
+  },
+  {
+   "model": "framedWallPortrait",
+   "room": "gallery",
+   "pos": [
+    1.8,
+    0,
+    2.45
+   ],
+   "face": "n",
+   "solid": false,
+   "min": [
+    -0.437,
+    0.688,
+    -0.062
+   ],
+   "max": [
+    0.438,
+    1.875,
+    0.125
+   ]
+  },
+  {
+   "model": "officeWaterCooler",
+   "room": "control",
+   "pos": [
+    -2.4,
+    0,
+    -1.2
+   ],
+   "face": "e",
+   "solid": true,
+   "min": [
+    -0.25,
+    0.063,
+    -0.187
+   ],
+   "max": [
+    0.25,
+    1.688,
+    0.375
+   ]
+  },
+  {
+   "model": "filingCabinet",
+   "room": "control",
+   "pos": [
+    0.5,
+    0,
+    2.15
+   ],
+   "face": "n",
+   "solid": true,
+   "min": [
+    -0.312,
+    0,
+    -0.312
+   ],
+   "max": [
+    0.313,
+    1.25,
+    0.375
+   ]
+  },
+  {
+   "model": "storageShelving",
+   "room": "workshop",
+   "pos": [
+    -0.6,
+    0,
+    2.15
+   ],
+   "face": "n",
+   "solid": true,
+   "min": [
+    -0.625,
+    0,
+    -0.25
+   ],
+   "max": [
+    0.625,
+    1.938,
+    0.25
+   ]
+  },
+  {
+   "model": "supplyCrates",
+   "room": "workshop",
+   "pos": [
+    0.9,
+    0,
+    1.9
+   ],
+   "face": "n",
+   "solid": true,
+   "min": [
+    -0.375,
+    0,
+    -0.312
+   ],
+   "max": [
+    0.375,
+    0.938,
+    0.313
+   ]
+  },
+  {
+   "model": "stageSpeaker",
+   "room": "auditorium",
+   "pos": [
+    -1.5,
+    0.42,
+    -1.4
+   ],
+   "face": "s",
+   "solid": false,
+   "min": [
+    -0.437,
+    0,
+    -0.312
+   ],
+   "max": [
+    0.438,
+    1.563,
+    0.563
+   ]
+  },
+  {
+   "model": "micStand",
+   "room": "auditorium",
+   "pos": [
+    0.3,
+    0.42,
+    -1
+   ],
+   "face": "s",
+   "solid": false,
+   "min": [
+    -0.187,
+    0,
+    -0.187
+   ],
+   "max": [
+    0.188,
+    1.7,
+    0.243
+   ]
+  },
+  {
+   "model": "stageMonitor",
+   "room": "auditorium",
+   "pos": [
+    -0.6,
+    0.42,
+    -0.8
+   ],
+   "face": "s",
+   "solid": false,
+   "min": [
+    -0.25,
+    0,
+    -0.187
+   ],
+   "max": [
+    0.25,
+    0.375,
+    0.197
+   ]
+  },
+  {
+   "model": "trashBin",
+   "room": "lift",
+   "pos": [
+    -1.15,
+    0,
+    -1.1
+   ],
+   "face": "s",
+   "solid": false,
+   "min": [
+    -0.25,
+    0,
+    -0.265
+   ],
+   "max": [
+    0.25,
+    0.763,
+    0.313
+   ]
+  }
+ ]
+}
