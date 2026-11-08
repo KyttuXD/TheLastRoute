@@ -16,6 +16,7 @@
 //! and for the title ADMIN button: `admin::HubPanel` / `admin::draw_hub`.
 
 mod actions;
+pub use actions::RoomStatus;
 mod effects;
 mod hub;
 mod look;
@@ -139,6 +140,8 @@ pub struct Admin {
     /// The player is a guest of a room whose host runs the game (set by the app each frame). An NPC summon then goes to
     /// the host as the room owner's command, so every player sees the NPCs.
     pub in_room: bool,
+    /// The room this runner is in, for the STATUS page's SERVER line (filled each frame by the app).
+    pub room: RoomStatus,
     /// The RESET PASSWORD request, its answer and the message box (password.rs).
     reset: password::ResetState,
     public: public_settings::PublicState,
@@ -212,6 +215,7 @@ impl Admin {
             enabled: true,
             owner: false,
             in_room: false,
+            room: RoomStatus::default(),
             reset: password::ResetState::default(),
             public: public_settings::PublicState::default(),
             open: false,

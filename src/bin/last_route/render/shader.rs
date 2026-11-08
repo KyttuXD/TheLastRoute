@@ -68,6 +68,7 @@ uniform float FogFar;
 uniform vec4 Lamps[16];
 uniform vec4 LampColors[16];
 uniform vec4 Reach;
+uniform float LampCount;
 void main() {
     float mode = nrm.w;
     float ghost = mode > 3.5 ? 1.0 : 0.0;
@@ -84,6 +85,7 @@ void main() {
     vec3 n = normalize(nrm.xyz);
     vec3 lamp = vec3(0.0);
     for (int i = 0; i < 16; i++) {
+        if (float(i) >= LampCount) break;
         float range = Lamps[i].w;
         if (range > 0.0) {
             vec3 d = Lamps[i].xyz - wpos;
@@ -133,6 +135,7 @@ struct Uniforms {
     packed_float4 Lamps[16];
     packed_float4 LampColors[16];
     packed_float4 Reach;
+    float LampCount;
 };
 struct Vertex {
     float3 position [[attribute(0)]];
@@ -176,6 +179,7 @@ fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buff
     float4 reach = float4(u.Reach);
     float3 lamp = float3(0.0);
     for (int i = 0; i < 16; i++) {
+        if (float(i) >= u.LampCount) break;
         float4 lp = float4(u.Lamps[i]);
         float range = lp.w;
         if (range > 0.0) {
@@ -243,6 +247,8 @@ fn world_uniforms_for(lamps: usize) -> Vec<UniformDesc> {
         UniformDesc::new("LampColors", UniformType::Float4).array(lamps),
         // (dark_far, flashlight range, flashlight intensity, flashlight fog reach): data/render/ambient.json
         UniformDesc::new("Reach", UniformType::Float4),
+        // how many leading lamp slots hold a lamp (the shader's loop stops there)
+        UniformDesc::new("LampCount", UniformType::Float1),
     ]
 }
 
@@ -396,6 +402,8 @@ impl Lighting {
 pub struct NearLamps {
     pos: [Vec4; MAX_LAMPS],
     col: [Vec4; MAX_LAMPS],
+    /// How many leading slots hold a lamp; the shader's loop stops there (the `LampCount` uniform).
+    count: usize,
 }
 
 thread_local! {
@@ -440,18 +448,29 @@ pub fn nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
 
 /// The up to `cap` (at most MAX_LAMPS) lamps nearest `eye`, nearest first.
 pub fn nearest_lamps_capped(eye: Vec3, lamps: &[Lamp], cap: usize) -> NearLamps {
+    nearest_lamps_reaching(eye, lamps, cap, f32::INFINITY)
+}
+
+/// [`nearest_lamps_capped`] without the lamps that cannot light anything in view. The shader fades lamp light to zero
+/// at `view` metres from the eye (`fog_far`), so a lamp whose reach stops short of that (its distance minus its range
+/// is at least `view`) adds exactly nothing; dropping it keeps the picture and frees its slot for a lamp that counts.
+/// A lamp with no range is dropped too. An infinite `view` culls only the rangeless.
+pub fn nearest_lamps_reaching(eye: Vec3, lamps: &[Lamp], cap: usize, view: f32) -> NearLamps {
     #[cfg(test)]
     SORTS.with(|c| c.set(c.get() + 1));
     let mut near: Vec<(f32, &Lamp)> = lamps
         .iter()
+        .filter(|lp| lp.range > 0.0 && (lp.pos - eye).length() - lp.range < view)
         .map(|lp| ((lp.pos - eye).length_squared(), lp))
         .collect();
     near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut out = NearLamps {
         pos: [Vec4::ZERO; MAX_LAMPS],
         col: [Vec4::ZERO; MAX_LAMPS],
+        count: 0,
     };
     for (i, (_, lp)) in near.iter().take(cap.min(MAX_LAMPS)).enumerate() {
+        out.count = i + 1;
         out.pos[i] = vec4(lp.pos.x, lp.pos.y, lp.pos.z, lp.range);
         out.col[i] = vec4(lp.color.r, lp.color.g, lp.color.b, lp.energy);
     }
@@ -481,6 +500,7 @@ fn same_lamps(a: &[Lamp], b: &[Lamp]) -> bool {
 struct LampCache {
     eye: Vec3,
     cap: usize,
+    view: f32,
     lamps: Vec<Lamp>,
     near: NearLamps,
 }
@@ -496,18 +516,18 @@ thread_local! {
 /// `nearest_lamps`, reused while the eye, the cap and the lamp list are unchanged. Every material is drawn with the
 /// same lighting in a frame, so each distinct list is sorted once per frame rather than once per material. Any change
 /// to the eye, the cap or a lamp (position, reach, colour or energy, or order) is a miss, so the result never goes stale.
-fn cached_nearest_lamps(eye: Vec3, lamps: &[Lamp]) -> NearLamps {
+fn cached_nearest_lamps(eye: Vec3, lamps: &[Lamp], view: f32) -> NearLamps {
     let cap = lamp_cap();
     LAMP_CACHE.with(|slots| {
         let mut slots = slots.borrow_mut();
-        if let Some(hit) = slots.iter().find(|h| h.eye == eye && h.cap == cap && same_lamps(&h.lamps, lamps)) {
+        if let Some(hit) = slots.iter().find(|h| h.eye == eye && h.cap == cap && h.view == view && same_lamps(&h.lamps, lamps)) {
             return hit.near;
         }
-        let near = nearest_lamps_capped(eye, lamps, cap);
+        let near = nearest_lamps_reaching(eye, lamps, cap, view);
         if slots.len() >= LAMP_CACHE_SLOTS {
             slots.remove(0);
         }
-        slots.push(LampCache { eye, cap, lamps: lamps.to_vec(), near });
+        slots.push(LampCache { eye, cap, view, lamps: lamps.to_vec(), near });
         near
     })
 }
@@ -522,11 +542,14 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform("FogColor", l.fog);
     mat.set_uniform("FogFar", l.fog_far);
     mat.set_uniform("Reach", vec4(l.dark_far, l.flash.range, l.flash.intensity, l.flash.fog_reach));
-    let near = cached_nearest_lamps(l.eye, lamps);
+    // lamp light is gone at `fog_far` from the eye, so lamps reaching less far than that are dropped
+    let view = if l.fog_far > 0.0 { l.fog_far } else { f32::INFINITY };
+    let near = cached_nearest_lamps(l.eye, lamps, view);
     // the material's arrays are as long as its variant (`WorldMats`): slots past the cap are empty anyway
     let slots = lamp_variant();
     mat.set_uniform_array("Lamps", &near.pos[..slots]);
     mat.set_uniform_array("LampColors", &near.col[..slots]);
+    mat.set_uniform("LampCount", near.count as f32);
 }
 
 #[cfg(test)]
@@ -591,17 +614,17 @@ mod tests {
     fn cached_lamps_match_a_fresh_sort_and_follow_changes() {
         let eye = Vec3::ZERO;
         let a = [lamp_at(4.0, 1.0), lamp_at(1.0, 2.0)];
-        assert_eq!(cached_nearest_lamps(eye, &a), nearest_lamps(eye, &a));
+        assert_eq!(cached_nearest_lamps(eye, &a, f32::INFINITY), nearest_lamps(eye, &a));
         // the same inputs again are served from the cache and still match
-        assert_eq!(cached_nearest_lamps(eye, &a), nearest_lamps(eye, &a));
+        assert_eq!(cached_nearest_lamps(eye, &a, f32::INFINITY), nearest_lamps(eye, &a));
         // same length, one lamp's reach changed: the old cached order must not come back
         let b = [lamp_at(1.0, 9.0), lamp_at(4.0, 1.0)];
-        let got = cached_nearest_lamps(eye, &b);
+        let got = cached_nearest_lamps(eye, &b, f32::INFINITY);
         assert_eq!(got, nearest_lamps(eye, &b));
         assert_eq!(got.pos[0].w, 9.0);
         // a moved eye re-sorts the same list
         let moved = vec3(4.0, 0.0, 0.0);
-        let got = cached_nearest_lamps(moved, &b);
+        let got = cached_nearest_lamps(moved, &b, f32::INFINITY);
         assert_eq!(got, nearest_lamps(moved, &b));
         assert_eq!(got.pos[0].w, 1.0);
     }
@@ -613,15 +636,65 @@ mod tests {
         let hands = [lamp_at(2.0, 3.0)];
         let before = SORTS.with(|c| c.get());
         for _ in 0..30 {
-            cached_nearest_lamps(eye, &room);
-            cached_nearest_lamps(eye, &hands);
-            cached_nearest_lamps(eye, &room);
+            cached_nearest_lamps(eye, &room, f32::INFINITY);
+            cached_nearest_lamps(eye, &hands, f32::INFINITY);
+            cached_nearest_lamps(eye, &room, f32::INFINITY);
         }
         assert_eq!(SORTS.with(|c| c.get()) - before, 2, "two lists, two sorts, over 90 material uploads");
         // a new frame with a moved eye sorts each again, once
-        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room);
-        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room);
+        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room, f32::INFINITY);
+        cached_nearest_lamps(vec3(1.0, 0.0, 0.0), &room, f32::INFINITY);
         assert_eq!(SORTS.with(|c| c.get()) - before, 3);
+    }
+
+    /// The old per-call result: sort every lamp, keep the first `cap` (what `apply` did before the cull).
+    fn old_nearest(eye: Vec3, lamps: &[Lamp], cap: usize) -> Vec<Vec4> {
+        let mut v: Vec<&Lamp> = lamps.iter().collect();
+        v.sort_by(|a, b| (a.pos - eye).length_squared().partial_cmp(&(b.pos - eye).length_squared()).unwrap());
+        v.iter().take(cap).map(|l| vec4(l.pos.x, l.pos.y, l.pos.z, l.range)).collect()
+    }
+
+    #[test]
+    fn the_cached_list_equals_the_old_per_call_result() {
+        let lamps: Vec<Lamp> = (0..12).map(|i| lamp_at(((i * 7) % 12) as f32 - 6.0, 2.0 + i as f32)).collect();
+        let eye = vec3(0.5, 0.0, 0.0);
+        let got = cached_nearest_lamps(eye, &lamps, f32::INFINITY);
+        let want = old_nearest(eye, &lamps, lamp_cap());
+        assert_eq!(got.count, want.len());
+        assert_eq!(&got.pos[..got.count], &want[..]);
+        // a view far wider than every lamp's reach drops nothing
+        assert_eq!(cached_nearest_lamps(eye, &lamps, 1000.0), got);
+    }
+
+    #[test]
+    fn a_lamp_out_of_range_of_the_view_is_culled_and_frees_its_slot() {
+        // view 10 m: a lamp 30 m away with 5 m of reach cannot reach it; one 12 m away with 5 m can
+        let lamps = [lamp_at(30.0, 5.0), lamp_at(12.0, 5.0), lamp_at(2.0, 0.0)];
+        let near = nearest_lamps_reaching(Vec3::ZERO, &lamps, 16, 10.0);
+        assert_eq!(near.count, 1, "the far lamp and the rangeless one are gone");
+        assert_eq!(near.pos[0].x, 12.0);
+        assert_eq!(near.pos[1], Vec4::ZERO);
+        // with a wide view the far lamp is kept
+        assert_eq!(nearest_lamps_reaching(Vec3::ZERO, &lamps, 16, 100.0).count, 2);
+        // a cap smaller than the reachable lamps still keeps the nearest
+        let many: Vec<Lamp> = (0..20).map(|i| lamp_at(i as f32, 3.0)).collect();
+        let cut = nearest_lamps_reaching(Vec3::ZERO, &many, 4, 6.0);
+        assert_eq!(cut.count, 4);
+    }
+
+    #[test]
+    fn the_count_uniform_matches_the_lamps_uploaded() {
+        let lamps: Vec<Lamp> = (0..20).map(|i| lamp_at(i as f32, 50.0)).collect();
+        for (cap, want) in [(0usize, 0usize), (3, 3), (8, 8), (16, 16), (99, 16)] {
+            let near = nearest_lamps_capped(Vec3::ZERO, &lamps, cap);
+            assert_eq!(near.count, want, "cap {cap}");
+            assert_eq!(near.pos.iter().filter(|p| p.w > 0.0).count(), near.count);
+        }
+        assert_eq!(nearest_lamps_capped(Vec3::ZERO, &[], 16).count, 0);
+        // both shaders stop their loop at the uniform, and it is declared in the uniform list
+        assert!(FRAGMENT.contains("uniform float LampCount;") && FRAGMENT.contains("float(i) >= LampCount"));
+        assert!(MSL.contains("float LampCount;") && MSL.contains("float(i) >= u.LampCount"));
+        assert!(world_uniforms().iter().any(|u| u.name == "LampCount"));
     }
 
     #[test]
@@ -657,11 +730,11 @@ mod tests {
             want.push((u.name.clone(), at));
             at += u.uniform_type.size() * u.array_count;
         }
-        assert_eq!(at, 740, "total uniform bytes");
+        assert_eq!(at, 744, "total uniform bytes");
         let off = |n: &str| want.iter().find(|(k, _)| k == n).map(|(_, o)| *o);
         assert_eq!(
-            [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors"), off("Reach")],
-            [144, 156, 168, 180, 184, 196, 208, 212, 468, 724].map(Some)
+            [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors"), off("Reach"), off("LampCount")],
+            [144, 156, 168, 180, 184, 196, 208, 212, 468, 724, 740].map(Some)
         );
         // the MSL struct, walked field by field, must land every field on the same offset with no padding
         let body = MSL.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
@@ -679,7 +752,7 @@ mod tests {
             at += msl_size(ty) * count;
         }
         assert_eq!(got, want);
-        assert_eq!(at, 740);
+        assert_eq!(at, 744);
         // the arrays of 16 in the MSL are MAX_LAMPS
         assert_eq!(MAX_LAMPS, 16);
     }
@@ -811,7 +884,7 @@ mod tests {
             }
             // 212 bytes ahead of the arrays (144 of built-ins + 68 of single uniforms) + Lamps and LampColors (2 arrays of
             // n float4s = 32 * n) + the Reach float4 (16) that follows them: 228 + 32 * n (740 for the 16-lamp material)
-            assert_eq!(at, 212 + 32 * n + 16, "{n}: total uniform bytes");
+            assert_eq!(at, 212 + 32 * n + 16 + 4, "{n}: total uniform bytes");
             let body = msl.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
             let mut got: Vec<(String, usize)> = Vec::new();
             let mut off = 0;

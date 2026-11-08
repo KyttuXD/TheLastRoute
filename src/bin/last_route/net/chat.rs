@@ -136,25 +136,67 @@ impl ChatLine {
     }
 }
 
+/// How many lines one guest may send in a window, and the pause after going over (data/chat.json `rate_lines`,
+/// `rate_window_seconds`, `cooldown_seconds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatLimits {
+    pub lines: usize,
+    pub window_ms: i64,
+    pub cooldown_ms: i64,
+}
+
+impl Default for ChatLimits {
+    fn default() -> Self {
+        ChatLimits { lines: CHAT_RATE_MAX, window_ms: CHAT_RATE_WINDOW_MS, cooldown_ms: CHAT_COOLDOWN_MS }
+    }
+}
+
+impl ChatLimits {
+    pub fn from_rules(rules: &ChatRules) -> ChatLimits {
+        ChatLimits {
+            lines: rules.rate_lines,
+            window_ms: (f64::from(rules.rate_window_seconds) * 1000.0) as i64,
+            cooldown_ms: (f64::from(rules.cooldown_seconds) * 1000.0) as i64,
+        }
+    }
+}
+
 /// The host's per-peer chat moderation (`accept_line`).
-#[derive(Default)]
 pub struct ChatModeration {
     pub room_muted: HashSet<i64>,
+    limits: ChatLimits,
     chat_times: HashMap<i64, Vec<i64>>,
     ping_times: HashMap<i64, i64>,
     cooldown_until: HashMap<i64, i64>,
     recent_lines: HashMap<i64, Vec<(String, i64)>>,
 }
 
+impl Default for ChatModeration {
+    fn default() -> Self {
+        ChatModeration::with_limits(ChatLimits::from_rules(ChatRules::load()))
+    }
+}
+
 impl ChatModeration {
+    pub fn with_limits(limits: ChatLimits) -> ChatModeration {
+        ChatModeration {
+            room_muted: HashSet::new(),
+            limits,
+            chat_times: HashMap::new(),
+            ping_times: HashMap::new(),
+            cooldown_until: HashMap::new(),
+            recent_lines: HashMap::new(),
+        }
+    }
+
     pub fn rate_ok(&mut self, peer: i64, ping: bool, now: i64) -> bool {
         if now < *self.cooldown_until.get(&peer).unwrap_or(&0) {
             return false;
         }
-        let mut times: Vec<i64> = self.chat_times.get(&peer).cloned().unwrap_or_default().into_iter().filter(|t| now - t < CHAT_RATE_WINDOW_MS).collect();
-        if times.len() >= CHAT_RATE_MAX {
+        let mut times: Vec<i64> = self.chat_times.get(&peer).cloned().unwrap_or_default().into_iter().filter(|t| now - t < self.limits.window_ms).collect();
+        if times.len() >= self.limits.lines {
             self.chat_times.insert(peer, times);
-            self.cooldown_until.insert(peer, now + CHAT_COOLDOWN_MS);
+            self.cooldown_until.insert(peer, now + self.limits.cooldown_ms);
             return false;
         }
         if ping && now - *self.ping_times.get(&peer).unwrap_or(&-PING_MIN_INTERVAL_MS) < PING_MIN_INTERVAL_MS {
@@ -207,11 +249,40 @@ pub struct ChatRules {
     pub line_seconds: f32,
     pub nearby_radius: f64,
     pub inbox_max: usize,
+    /// The key that opens the input box (a letter; "T").
+    pub open_key: String,
+    /// Characters the input box takes (never more than [`MAX_CHAT_LENGTH`], which the host cuts to anyway).
+    pub input_max: usize,
+    /// The last seconds of a line's life over which it fades out.
+    pub fade_seconds: f32,
+    /// Lines the feed remembers for the open box, and how many the open box shows.
+    pub history_max: usize,
+    pub open_lines: usize,
+    /// Per guest, on the host: this many lines per window, then a cooldown.
+    pub rate_lines: usize,
+    pub rate_window_seconds: f32,
+    pub cooldown_seconds: f32,
+    /// Sender name colours (r, g, b in 0..1), picked by peer id.
+    pub name_colors: Vec<[f32; 3]>,
 }
 
 impl Default for ChatRules {
     fn default() -> Self {
-        ChatRules { max_lines: 6, line_seconds: 12.0, nearby_radius: 30.0, inbox_max: 64 }
+        ChatRules {
+            max_lines: 6,
+            line_seconds: 12.0,
+            nearby_radius: 30.0,
+            inbox_max: 64,
+            open_key: "T".into(),
+            input_max: MAX_CHAT_LENGTH,
+            fade_seconds: 2.0,
+            history_max: 40,
+            open_lines: 12,
+            rate_lines: CHAT_RATE_MAX,
+            rate_window_seconds: 10.0,
+            cooldown_seconds: 5.0,
+            name_colors: vec![[0.55, 0.85, 1.0], [1.0, 0.75, 0.4], [0.6, 1.0, 0.6], [1.0, 0.6, 0.8], [0.85, 0.7, 1.0], [1.0, 1.0, 0.55]],
+        }
     }
 }
 
@@ -223,6 +294,26 @@ impl ChatRules {
             line_seconds: v.get("line_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.line_seconds),
             nearby_radius: v.get("nearby_radius").and_then(Value::as_f64).filter(|r| *r > 0.0).unwrap_or(d.nearby_radius),
             inbox_max: v.get("inbox_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 1000)).unwrap_or(d.inbox_max),
+            open_key: v
+                .get("open_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|k| k.chars().count() == 1 && k.chars().all(|c| c.is_ascii_alphabetic()))
+                .map(str::to_uppercase)
+                .unwrap_or(d.open_key),
+            input_max: v.get("input_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, MAX_CHAT_LENGTH)).unwrap_or(d.input_max),
+            fade_seconds: v.get("fade_seconds").and_then(Value::as_f64).filter(|s| *s >= 0.0).map(|s| s as f32).unwrap_or(d.fade_seconds),
+            history_max: v.get("history_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 200)).unwrap_or(d.history_max),
+            open_lines: v.get("open_lines").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 40)).unwrap_or(d.open_lines),
+            rate_lines: v.get("rate_lines").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 100)).unwrap_or(d.rate_lines),
+            rate_window_seconds: v.get("rate_window_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.rate_window_seconds),
+            cooldown_seconds: v.get("cooldown_seconds").and_then(Value::as_f64).filter(|s| *s >= 0.0).map(|s| s as f32).unwrap_or(d.cooldown_seconds),
+            name_colors: v
+                .get("name_colors")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|c| vec_of::<3>(Some(c)).map(|x| [x[0] as f32, x[1] as f32, x[2] as f32])).collect::<Vec<_>>())
+                .filter(|c| !c.is_empty())
+                .unwrap_or(d.name_colors),
         }
     }
 
@@ -254,21 +345,51 @@ impl ChatFeed {
                 self.lines.push((line, 0.0));
             }
         }
-        let extra = self.lines.len().saturating_sub(rules.max_lines);
+        let extra = self.lines.len().saturating_sub(rules.history_max.max(rules.max_lines));
         self.lines.drain(..extra);
     }
 
+    /// Ages the lines. A line leaves the screen after `line_seconds` but stays in the history (for the open box) until
+    /// the history is full.
     pub fn tick(&mut self, dt: f32) {
-        let life = ChatRules::load().line_seconds;
         for (_, age) in &mut self.lines {
             *age += dt.max(0.0);
         }
-        self.lines.retain(|(_, age)| *age < life);
     }
 
-    /// Oldest first.
+    /// The lines on screen while the box is closed, oldest first: the newest `max_lines` that have not expired.
     pub fn visible(&self) -> impl Iterator<Item = &ChatLine> {
-        self.lines.iter().map(|(l, _)| l)
+        self.faded().into_iter().map(|(l, _)| l)
+    }
+
+    /// Like [`ChatFeed::visible`] with each line's opacity (1.0, then fading to 0 over the last `fade_seconds`).
+    pub fn faded(&self) -> Vec<(&ChatLine, f32)> {
+        let rules = ChatRules::load();
+        let live: Vec<(&ChatLine, f32)> = self
+            .lines
+            .iter()
+            .filter(|(_, age)| *age < rules.line_seconds)
+            .map(|(l, age)| (l, fade_alpha(*age, rules.line_seconds, rules.fade_seconds)))
+            .collect();
+        let skip = live.len().saturating_sub(rules.max_lines);
+        live.into_iter().skip(skip).collect()
+    }
+
+    /// The newest `open_lines` remembered lines, oldest first: what the open box shows.
+    pub fn recent(&self) -> Vec<&ChatLine> {
+        let skip = self.lines.len().saturating_sub(ChatRules::load().open_lines);
+        self.lines.iter().skip(skip).map(|(l, _)| l).collect()
+    }
+}
+
+/// Opacity of a line of `age` seconds: 1 until the last `fade` seconds of `life`, then down to 0.
+pub fn fade_alpha(age: f32, life: f32, fade: f32) -> f32 {
+    if age >= life {
+        0.0
+    } else if fade <= 0.0 || age <= life - fade {
+        1.0
+    } else {
+        ((life - age) / fade).clamp(0.0, 1.0)
     }
 }
 
@@ -351,6 +472,34 @@ mod tests {
         assert!(feed.visible().all(|l| l.text != "far away"), "a distant nearby line is not heard");
         feed.tick(rules.line_seconds + 1.0);
         assert_eq!(feed.visible().count(), 0, "lines expire");
+        assert!(!feed.recent().is_empty(), "but the open box still shows them");
+    }
+
+    #[test]
+    fn a_guest_over_the_data_rate_is_dropped_until_the_cooldown_ends() {
+        let limits = ChatLimits { lines: 2, window_ms: 10_000, cooldown_ms: 5_000 };
+        let mut m = ChatModeration::with_limits(limits);
+        let say = |m: &mut ChatModeration, peer: i64, n: i64, now: i64| {
+            let Some(Message::SubmitChatPayload { payload }) = submit(&format!("different words {n} here"), "team", [0.0; 2], [0.0; 3], 0) else { panic!() };
+            relay_submission(m, peer, "G", &payload, now).is_some()
+        };
+        let sent: Vec<bool> = (0..6).map(|n| say(&mut m, 5, n, 100 + n)).collect();
+        assert_eq!(sent.iter().filter(|s| **s).count(), 2, "only the data's lines per window pass: {sent:?}");
+        assert!(say(&mut m, 6, 0, 120), "another guest has their own allowance");
+        assert!(!say(&mut m, 5, 10, 4_000), "still cooling down");
+        assert!(say(&mut m, 5, 11, 20_000), "allowed again after the window and cooldown");
+        let rules = ChatRules::parse(&json!({ "rate_lines": 7, "rate_window_seconds": 4.0, "cooldown_seconds": 1.0 }));
+        assert_eq!(ChatLimits::from_rules(&rules), ChatLimits { lines: 7, window_ms: 4_000, cooldown_ms: 1_000 });
+        assert_eq!(ChatLimits::from_rules(ChatRules::load()), ChatLimits::default(), "Standard values");
+    }
+
+    #[test]
+    fn lines_fade_over_the_last_seconds() {
+        assert_eq!(fade_alpha(0.0, 12.0, 2.0), 1.0);
+        assert_eq!(fade_alpha(10.0, 12.0, 2.0), 1.0);
+        assert!((fade_alpha(11.0, 12.0, 2.0) - 0.5).abs() < 1e-6);
+        assert_eq!(fade_alpha(12.0, 12.0, 2.0), 0.0);
+        assert_eq!(fade_alpha(11.9, 12.0, 0.0), 1.0, "no fade: full until it expires");
     }
 
 }

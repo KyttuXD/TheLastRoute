@@ -657,7 +657,6 @@ impl Game {
                         self.hunters[h].def.id == "nyxie",
                     );
                     self.hunters[h].apply_stun(prof.hide_tell, false);
-                    self.say("THE LOCKER RATTLES");
                 }
             }
         }

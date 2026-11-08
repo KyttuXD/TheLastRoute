@@ -907,7 +907,7 @@ fn template_prop_entry(
     } else {
         [0.0, 0.0]
     };
-    Some(Prop {
+    let prop = Prop {
         id: format!("{}:TEMPLATE:{}:{}:{}", props::chunk_tag(c), room_token, template, spec_index),
         prop_type,
         cell,
@@ -932,6 +932,96 @@ fn template_prop_entry(
         mount_scaled: false,
         oriented: false,
         spec_index,
+    };
+    // a bed's whole rotated footprint must stay in the room, off the hall and off the doorway clearance
+    if bed_rule_on() && interaction_for(prop_type) == "lay" && !lay_footprint_fits(&prop, room, grid, reserved) {
+        return None;
+    }
+    Some(prop)
+}
+
+#[cfg(test)]
+thread_local! {
+    static GODOT_LAYOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the bed footprint rule applies. Godot has no such rule, so the Godot-parity tests switch it off on
+/// their own thread with [`godot_layout`]; the game always applies it.
+#[cfg(test)]
+fn bed_rule_on() -> bool {
+    !GODOT_LAYOUT.with(|g| g.get())
+}
+
+#[cfg(not(test))]
+fn bed_rule_on() -> bool {
+    true
+}
+
+/// Test-only guard: lays chunks out without the bed footprint rule (Godot's layout) until it drops.
+#[cfg(test)]
+pub(crate) struct GodotLayout;
+
+#[cfg(test)]
+pub(crate) fn godot_layout() -> GodotLayout {
+    GODOT_LAYOUT.with(|g| g.set(true));
+    GodotLayout
+}
+
+#[cfg(test)]
+impl Drop for GodotLayout {
+    fn drop(&mut self) {
+        GODOT_LAYOUT.with(|g| g.set(false));
+    }
+}
+
+/// The cells a doorway keeps clear: the doorway itself and the room cells next to it (for every doorway).
+pub(super) fn doorway_clearance(room: &Room) -> Vec<V2> {
+    let rect = room.rect;
+    let mut doors: Vec<V2> = room.doorway.into_iter().collect();
+    if let Some(extra) = &room.extra_doorways {
+        doors.extend(extra.iter().copied());
+    }
+    let mut out = Vec::new();
+    for d in doors {
+        out.push(d);
+        for step in [V2::new(1, 0), V2::new(-1, 0), V2::new(0, 1), V2::new(0, -1)] {
+            let inner = V2::new(d.x + step.x, d.y + step.y);
+            if rect_has(rect, inner) && !out.contains(&inner) {
+                out.push(inner);
+            }
+        }
+    }
+    out
+}
+
+/// The floor cells a prop's collider boxes (rotated, with the placement offset) touch, shrunk by 2 cm so a flush
+/// edge does not count as the next cell.
+pub(super) fn footprint_cells(prop: &Prop) -> Vec<V2> {
+    let mut cells: Vec<V2> = Vec::new();
+    for (centre, half, yaw) in collider_rects(prop) {
+        let (ax, ay) = (axis_x(yaw), axis_y(yaw));
+        let ex = (half[0] as f64 * ax[0]).abs() + (half[1] as f64 * ay[0]).abs();
+        let ey = (half[0] as f64 * ax[1]).abs() + (half[1] as f64 * ay[1]).abs();
+        let (x0, x1) = (centre[0] as f64 - ex + 0.02, centre[0] as f64 + ex - 0.02);
+        let (y0, y1) = (centre[1] as f64 - ey + 0.02, centre[1] as f64 + ey - 0.02);
+        for y in (y0.floor() as i32)..=(y1.floor() as i32) {
+            for x in (x0.floor() as i32)..=(x1.floor() as i32) {
+                let cell = V2::new(x, y);
+                if !cells.contains(&cell) {
+                    cells.push(cell);
+                }
+            }
+        }
+    }
+    cells
+}
+
+/// Whether a bed's collider footprint lies wholly on open floor of its room, clear of doors, thresholds and the
+/// doorway clearance.
+fn lay_footprint_fits(prop: &Prop, room: &Room, grid: &Grid, reserved: &Reserved) -> bool {
+    let clearance = doorway_clearance(room);
+    footprint_cells(prop).into_iter().all(|cell| {
+        rect_has(room.rect, cell) && grid_open(grid, cell) && reserved.get(&cell) != Some(&PLAIN) && !clearance.contains(&cell)
     })
 }
 
@@ -3048,6 +3138,39 @@ mod tests {
                                 let y = centre[1] as f64 + sx * half[0] as f64 * ax[1] + sy * half[1] as f64 * ay[1];
                                 assert!(inside(x as f32, y as f32), "{label}: collider corner ({x:.3}, {y:.3}) leaves the room");
                             }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(beds > 0, "the sampled chunks place no beds");
+    }
+
+    /// Across many seeds no bed footprint (rotated collider, with its offset) touches a hall cell, a wall cell,
+    /// a cell outside its room or a doorway clearance cell.
+    #[test]
+    fn beds_keep_off_halls_and_doorways() {
+        const BEDS: [&str; 4] = ["singleBed", "doubleBed", "bunkBed", "gothicDoubleBed"];
+        let mut beds = 0usize;
+        for seed in 0..12u64 {
+            let world = format!("{}", 1_000_003u64 * (seed + 7));
+            for cx in -4..=4 {
+                for cz in -4..=4 {
+                    let Some(layout) = crate::world::route::layout::chunk_layout(&world, Coord::new(cx, 0, cz)) else {
+                        continue;
+                    };
+                    let Some(props) = layout.region_props.as_ref() else {
+                        continue;
+                    };
+                    for p in props.iter().filter(|p| BEDS.contains(&p.prop_type) && p.room_template.is_some()) {
+                        beds += 1;
+                        let room = layout.rooms.iter().find(|r| r.id == p.room_id).expect("a bed has its room");
+                        let clearance = doorway_clearance(room);
+                        for cell in footprint_cells(p) {
+                            let label = format!("{world} {cx},{cz} {} cell {},{}", p.id, cell.x, cell.y);
+                            assert!(rect_has(room.rect, cell), "{label}: leaves its room");
+                            assert!(grid_open(&layout.grid, cell), "{label}: covers a hall or wall cell");
+                            assert!(!clearance.contains(&cell), "{label}: covers the doorway clearance");
                         }
                     }
                 }

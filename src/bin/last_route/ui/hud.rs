@@ -635,16 +635,10 @@ pub fn chat_line_text(line: &crate::net::chat::ChatLine) -> String {
 
 /// The co-op chat feed, bottom-left above the hotbar rows, oldest line on top (`app` calls this once per frame, after
 /// the HUD, with the feed it keeps).
+/// Sender names in their colour, lines fading out (the box closed); `app` calls `chat_box::draw_chat` instead while it
+/// keeps a [`super::chat_box::ChatBox`], which also shows the input row and the recent history.
 pub fn draw_chat_feed(a: &Assets, feed: &crate::net::chat::ChatFeed) {
-    let v = view();
-    let size = (7.0f32).max((12.0 / unit()).ceil().min(9.0));
-    let lines: Vec<String> = feed.visible().map(chat_line_text).collect();
-    let step = size + 3.0;
-    let mut top = v.y - SAFE - 40.0 - step * lines.len() as f32;
-    for text in lines {
-        shadowed(a, &text, SAFE, top, size, rgba(0.95, 0.95, 0.9, 0.95));
-        top += step;
-    }
+    super::chat_box::draw_chat(a, feed, &super::chat_box::ChatBox::default());
 }
 
 pub fn draw_crosshair(g: &Game, aimed: bool) {

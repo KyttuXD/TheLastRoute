@@ -1,0 +1,6 @@
+{
+  "_note": "How a hunter walks its route (hunters/brain.rs; Godot hunter_brain.gd lines 31-34). waypoint_distance = metres from a waypoint that counts as reached; path_lookahead_nodes = route cells ahead it may cut straight to; sweep_step = metres between the samples of the straight-line body check.",
+  "waypoint_distance": 0.18,
+  "path_lookahead_nodes": 4,
+  "sweep_step": 0.15
+}

@@ -101,6 +101,69 @@ pub fn to_evict(held: &[(i32, usize)], keep: &[i32], current: i32, cfg: &Preload
     out
 }
 
+const PREWARM_PATH: &str = "chunk_prewarm.json";
+
+/// The chunk-window prewarm numbers from data/chunk_prewarm.json.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChunkPrewarm {
+    pub margin_m: f32,
+    pub gap_frames: u32,
+    pub chunks_per_step: usize,
+}
+
+/// Reads the prewarm numbers from the JSON text.
+pub fn parse_prewarm(text: &str) -> Result<ChunkPrewarm, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let n = |k: &str| v.get(k).and_then(|x| x.as_f64()).ok_or_else(|| format!("{k}: a number is needed"));
+    let p = ChunkPrewarm {
+        margin_m: n("margin_m")? as f32,
+        gap_frames: n("gap_frames")?.max(0.0) as u32,
+        chunks_per_step: n("chunks_per_step")? as usize,
+    };
+    if !(p.margin_m > 0.0) || p.chunks_per_step == 0 {
+        return Err("margin_m and chunks_per_step must be above zero".into());
+    }
+    Ok(p)
+}
+
+static PREWARM: OnceLock<ChunkPrewarm> = OnceLock::new();
+
+/// The prewarm data, loaded once from the embedded file.
+pub fn chunk_prewarm() -> ChunkPrewarm {
+    *PREWARM.get_or_init(|| {
+        let text = embedded::data_under("")
+            .find(|(p, _)| *p == PREWARM_PATH)
+            .map(|(_, t)| t)
+            .expect("data/chunk_prewarm.json is embedded by build.rs");
+        parse_prewarm(text).expect("data/chunk_prewarm.json is valid")
+    })
+}
+
+/// The chunks to generate this frame: none while `wait` frames remain, else the first `chunks_per_step` of `wanted`
+/// (see `infinite::approach_chunks`) that `has` does not hold yet. Single-threaded on every target (wasm has no
+/// threads), so the per-step budget is what keeps a frame short.
+pub fn prewarm_step(
+    cfg: &ChunkPrewarm,
+    wait: u32,
+    wanted: &[crate::world::infinite::ChunkKey],
+    has: impl Fn(&crate::world::infinite::ChunkKey) -> bool,
+) -> Vec<crate::world::infinite::ChunkKey> {
+    if wait > 0 {
+        return Vec::new();
+    }
+    wanted.iter().copied().filter(|k| !has(k)).take(cfg.chunks_per_step).collect()
+}
+
+/// Frames a prewarm of `missing` chunks takes, counting the wait after each step.
+pub fn prewarm_frames(cfg: &ChunkPrewarm, missing: usize) -> u32 {
+    let steps = missing.div_ceil(cfg.chunks_per_step) as u32;
+    if steps == 0 {
+        0
+    } else {
+        (steps - 1) * (cfg.gap_frames + 1) + 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +253,58 @@ mod tests {
         let out = to_evict(&held, &keep, 0, &tight);
         assert_eq!(out.first(), Some(&-2), "the farthest resident goes first");
         assert!(!out.contains(&0));
+    }
+
+    fn pcfg() -> ChunkPrewarm {
+        ChunkPrewarm { margin_m: 8.0, gap_frames: 2, chunks_per_step: 2 }
+    }
+
+    #[test]
+    fn the_prewarm_data_is_the_standard_values() {
+        let p = chunk_prewarm();
+        assert!(p.margin_m > 0.0 && p.chunks_per_step >= 1);
+        assert!(parse_prewarm("{}").is_err());
+    }
+
+    #[test]
+    fn the_budgeted_builder_finishes_in_the_expected_frames() {
+        use crate::world::infinite::ChunkKey;
+        let cfg = pcfg();
+        let wanted: Vec<ChunkKey> = (0..5).map(|i| ChunkKey { cx: i, cy: 0, level: 0 }).collect();
+        let mut held: Vec<ChunkKey> = vec![];
+        let (mut wait, mut frames) = (0u32, 0u32);
+        while held.len() < wanted.len() && frames < 100 {
+            frames += 1;
+            wait = wait.saturating_sub(1);
+            let step = prewarm_step(&cfg, wait, &wanted, |k| held.contains(k));
+            assert!(step.len() <= cfg.chunks_per_step, "a step stays inside the budget");
+            if !step.is_empty() {
+                held.extend(step);
+                wait = cfg.gap_frames + 1;
+            }
+        }
+        assert_eq!(held.len(), 5);
+        assert_eq!(frames, prewarm_frames(&cfg, 5));
+        let one = ChunkPrewarm { chunks_per_step: 1, ..cfg };
+        assert!(prewarm_frames(&one, 5) > prewarm_frames(&cfg, 5), "a changed budget changes the time");
+        assert_eq!(prewarm_frames(&cfg, 0), 0);
+    }
+
+    #[test]
+    fn a_prebuilt_chunk_equals_a_fresh_one() {
+        use crate::world::catalog::Catalog;
+        use crate::world::infinite::{chunk, ChunkKey};
+        let cat = Catalog::load();
+        let loot = crate::content::loot::LootTables::default();
+        let k = ChunkKey { cx: 2, cy: -1, level: 0 };
+        let (a, fa) = chunk("PREWARM-SEED", k, &cat, &loot);
+        let (b, fb) = chunk("PREWARM-SEED", k, &cat, &loot);
+        assert_eq!((a.cols, a.rows), (b.cols, b.rows));
+        assert_eq!(a.wall, b.wall, "the same seed builds the same chunk");
+        assert_eq!(a.start, b.start);
+        assert_eq!(a.relays, b.relays);
+        assert_eq!(fa.coins, fb.coins);
+        assert_eq!(fa.vents, fb.vents);
     }
 
     #[test]

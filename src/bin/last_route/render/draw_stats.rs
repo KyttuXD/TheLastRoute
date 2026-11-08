@@ -31,6 +31,43 @@ static WORLD_FOGGED: AtomicU64 = AtomicU64::new(0);
 static WORLD_OFF_VIEW: AtomicU64 = AtomicU64::new(0);
 static ITEMS_OFF_VIEW: AtomicU64 = AtomicU64::new(0);
 
+/// The frame sections draws are counted under in the F7 overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    World,
+    Props,
+    Actors,
+    Effects,
+    Other,
+}
+
+pub const SECTIONS: [(Section, &str); 5] = [
+    (Section::World, "world"),
+    (Section::Props, "props"),
+    (Section::Actors, "actors"),
+    (Section::Effects, "effects"),
+    (Section::Other, "other"),
+];
+
+const SECTION_COUNT: usize = 5;
+static SECTION_NOW: AtomicU64 = AtomicU64::new(4);
+static SECTION_MESHES: [AtomicU64; SECTION_COUNT] = [const { AtomicU64::new(0) }; SECTION_COUNT];
+static SECTION_CALLS: [AtomicU64; SECTION_COUNT] = [const { AtomicU64::new(0) }; SECTION_COUNT];
+
+/// Names the section the following draws belong to (until the next call or the next frame start).
+pub fn set_section(s: Section) {
+    SECTION_NOW.store(s as u64, Ordering::Relaxed);
+}
+
+/// Per section: (meshes, draw calls) this frame.
+pub fn section_counts() -> [(u64, u64); SECTION_COUNT] {
+    let mut out = [(0, 0); SECTION_COUNT];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = (SECTION_MESHES[i].load(Ordering::Relaxed), SECTION_CALLS[i].load(Ordering::Relaxed));
+    }
+    out
+}
+
 thread_local! {
     static BATCH: RefCell<BatchModel<Option<Texture2D>>> =
         RefCell::new(BatchModel::new(DRAW_CALL_VERTEX_CAPACITY, DRAW_CALL_INDEX_CAPACITY));
@@ -54,6 +91,11 @@ pub fn begin_frame() {
         c.store(0, Ordering::Relaxed);
     }
     BATCH.with(|b| b.borrow_mut().clear());
+    for i in 0..SECTION_COUNT {
+        SECTION_MESHES[i].store(0, Ordering::Relaxed);
+        SECTION_CALLS[i].store(0, Ordering::Relaxed);
+    }
+    SECTION_NOW.store(Section::Other as u64, Ordering::Relaxed);
 }
 
 /// Counts one mesh handed to `draw_mesh`.
@@ -64,7 +106,12 @@ pub fn note_mesh(m: &Mesh) {
     MESHES.fetch_add(1, Ordering::Relaxed);
     VERTICES.fetch_add(m.vertices.len() as u64, Ordering::Relaxed);
     INDICES.fetch_add(m.indices.len() as u64, Ordering::Relaxed);
-    BATCH.with(|b| b.borrow_mut().push(&m.texture, m.vertices.len(), m.indices.len()));
+    let new_call = BATCH.with(|b| b.borrow_mut().push(&m.texture, m.vertices.len(), m.indices.len()));
+    let s = (SECTION_NOW.load(Ordering::Relaxed) as usize).min(SECTION_COUNT - 1);
+    SECTION_MESHES[s].fetch_add(1, Ordering::Relaxed);
+    if new_call {
+        SECTION_CALLS[s].fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Draws a mesh and counts it.
@@ -144,7 +191,7 @@ pub fn rows() -> Vec<(String, String)> {
         return vec![];
     }
     let c = counts();
-    vec![
+    let mut rows = vec![
         ("3d draw calls".to_string(), format!("{}", c.draw_calls)),
         ("3d meshes".to_string(), format!("{}", c.meshes)),
         ("3d triangles".to_string(), format!("{}", c.indices / 3)),
@@ -155,7 +202,14 @@ pub fn rows() -> Vec<(String, String)> {
             format!("{} seen, {} fog, {} view", c.world_seen, c.world_fogged, c.world_off_view),
         ),
         ("items off view".to_string(), format!("{}", c.items_off_view)),
-    ]
+    ];
+    let by = section_counts();
+    for (i, (_, name)) in SECTIONS.iter().enumerate() {
+        if by[i].0 > 0 {
+            rows.push((format!("draws: {name}"), format!("{} calls, {} meshes", by[i].1, by[i].0)));
+        }
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -171,12 +225,35 @@ mod tests {
         assert!(vertex_bytes() >= 36 && vertex_bytes() <= 48, "macroquad's vertex is about 40 bytes");
     }
 
+    /// The counters and the on/off flag are process-wide, so the tests that switch them take turns.
+    static COUNTER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn nothing_is_counted_or_shown_while_off() {
+        let _serial = COUNTER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         set_active(false);
         note_world_cull(5, 1, 2);
         note_item_off_view();
         assert_eq!(counts().world_seen, 0);
         assert!(rows().is_empty());
+    }
+
+    #[test]
+    fn section_counts_add_up_to_the_frame_total() {
+        let _serial = COUNTER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        set_active(true);
+        begin_frame();
+        // meshes without a texture: the first starts a call, the rest join it
+        let plain = Mesh { vertices: vec![], indices: vec![], texture: None };
+        set_section(Section::World);
+        note_mesh(&plain);
+        note_mesh(&plain);
+        set_section(Section::Props);
+        note_mesh(&plain);
+        let by = section_counts();
+        let c = counts();
+        assert_eq!(by.iter().map(|s| s.0).sum::<u64>(), c.meshes);
+        assert_eq!(by.iter().map(|s| s.1).sum::<u64>(), c.draw_calls);
+        set_active(false);
     }
 }

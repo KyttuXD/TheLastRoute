@@ -439,8 +439,10 @@ pub fn paint_terrazzo(variant: i32) -> Img {
             1,
         );
     }
-    img.dot(0, 0, hex(0x7a5c2c), PX, 1);
-    img.dot(0, 0, hex(0x7a5c2c), 1, PX);
+    // flat: the divider strips take the pale chip tone, so the floor stays in three tones
+    let strip = flat_or(hex(0x7a5c2c), flat_chips[0]);
+    img.dot(0, 0, strip, PX, 1);
+    img.dot(0, 0, strip, 1, PX);
     img
 }
 
@@ -578,8 +580,10 @@ pub fn paint_safe_mark(_variant: i32) -> Img {
     let c = PX / 2;
     img.dot(c - 3, 4, hex(0x1c8a8c), 6, PX - 8);
     img.dot(4, c - 3, hex(0x1c8a8c), PX - 8, 6);
-    img.dot(c - 1, 6, hex(0x5cf0e0), 2, PX - 12);
-    img.dot(6, c - 1, hex(0x5cf0e0), PX - 12, 2);
+    // flat: the bright core line is the dark seam tone (a groove down the cross)
+    let core = flat_or(hex(0x5cf0e0), flat_seam());
+    img.dot(c - 1, 6, core, 2, PX - 12);
+    img.dot(6, c - 1, core, PX - 12, 2);
     img
 }
 

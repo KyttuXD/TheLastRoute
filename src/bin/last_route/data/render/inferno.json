@@ -63,5 +63,6 @@
     "crack_height_m": 0.3,
     "ember_start_m": 0.1,
     "ember_drift_m": 0.35
-  }
+  },
+  "lava_surface": {"hot":[1.0,0.55,0.12],"cool":[0.75,0.2,0.04],"pulse_hz":0.35,"flow_x_cps":0.05,"flow_z_cps":0.03,"pit_color":[0.12,0.04,0.03]}
 }

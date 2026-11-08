@@ -2,6 +2,7 @@
   "schema": "lr.music_box/1",
   "_note": "The music box: a collectable that is wound from the pack (game/music_box.rs). boxes_per_region is the count of boxes per route region (GameConfig.MUSIC_BOXES_PER_REGION, game_config.gd:546). wound_seconds is the wound time by difficulty id (GameConfig.MUSIC_BOX_WOUND_SECONDS). winddown_seconds is the last stretch where Glyra turns restless and the HUD warns (MusicBoxes.mood_for); it no longer drives the tune. slowdown_from_fraction is the share of the wound time left below which the tune slows (0.70 = it plays at normal speed down to 70 %, then eases down as the wind drains, and stops at 0); slowdown_floor is the speed it has just before the box empties (a factor of normal tempo and pitch). tune_gain scales the tune against the master bus.",
   "boxes_per_region": 2,
+  "tune_count": 4,
   "wound_seconds": {
     "standard": 45.0,
     "hard": 35.0,

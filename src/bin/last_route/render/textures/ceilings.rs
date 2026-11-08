@@ -102,6 +102,34 @@ pub fn paint_rock_ceiling(variant: i32) -> Img {
     img
 }
 
+/// Skylight for the ceiling table: the painted beach look, or in the flat style three sky tones (pane, cloud flecks,
+/// timber lattice) and a dark lattice shadow. The flecks take the same RNG draws in both styles.
+pub fn styled_skylight(variant: i32) -> Img {
+    if !flat() {
+        return super::beach::paint_skylight(variant);
+    }
+    let mut rng = GodotRng::from_key("skylight");
+    let mut img = Img::new(PX, PX);
+    img.fill(hex(0x7a9fb2));
+    for _ in 0..7 {
+        img.dot(
+            rng.randi_range(2, 28),
+            rng.randi_range(2, 28),
+            hex(0xa8c4cc),
+            rng.randi_range(2, 4),
+            1,
+        );
+    }
+    let beam = hex(0xa8946e);
+    for k in [0, 16] {
+        img.dot(k, 0, beam, 2, PX);
+        img.dot(0, k, beam, PX, 2);
+        img.dot(k + 2, 0, mul(beam, 0.6), 1, PX);
+        img.dot(0, k + 2, mul(beam, 0.6), PX, 1);
+    }
+    img
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +148,17 @@ mod tests {
     #[test]
     fn flat_glass_panes_have_3_to_6_colours() {
         check_flat_painter("glass", paint_glass, 0);
+    }
+
+    #[test]
+    fn flat_skylight_has_3_to_6_colours() {
+        check_flat_painter("skylight", styled_skylight, 0);
+    }
+
+    #[test]
+    fn painted_skylight_is_the_beach_painter() {
+        let painted = with_style(false, || styled_skylight(0));
+        assert_eq!(painted.px, super::super::beach::paint_skylight(0).px);
     }
 
     #[test]

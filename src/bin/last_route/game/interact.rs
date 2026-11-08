@@ -11,6 +11,55 @@ use crate::content::Content;
 use crate::hunters::gimmicks::{ceryth::Entry, Gimmick};
 use crate::world::catalog::Catalog;
 use crate::world::facility::{Cover, DoorToggle, LinkKind};
+use std::cell::RefCell;
+use std::sync::OnceLock;
+
+/// `data/player/hiding_slots.json`: how many bodies a hiding spot holds and where the second one sits.
+pub(crate) struct HidingSlots {
+    default_capacity: usize,
+    capacity: Vec<(String, usize)>,
+    pub beside_offset: f32,
+    pub full_text: String,
+}
+
+impl HidingSlots {
+    pub(crate) fn capacity_of(&self, kind: &str) -> usize {
+        self.capacity.iter().find(|(k, _)| k == kind).map_or(self.default_capacity, |(_, c)| *c)
+    }
+}
+
+pub(crate) fn hiding_slots() -> &'static HidingSlots {
+    static C: OnceLock<HidingSlots> = OnceLock::new();
+    C.get_or_init(|| {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/player/hiding_slots.json")).expect("hiding_slots.json");
+        let cap = |x: &serde_json::Value| x.as_u64().unwrap_or(1).max(1) as usize;
+        HidingSlots {
+            default_capacity: cap(&v["default_capacity"]),
+            capacity: v["capacity"].as_object().map(|m| m.iter().map(|(k, c)| (k.clone(), cap(c))).collect()).unwrap_or_default(),
+            beside_offset: v["beside_offset"].as_f64().unwrap_or(0.28) as f32,
+            full_text: v["full_text"].as_str().unwrap_or("FULL").to_uppercase(),
+        }
+    })
+}
+
+thread_local! {
+    /// Spot index of every OTHER runner hidden in this window (fed by the net layer each frame).
+    static OTHERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Tell the hiding code which spots other runners are hidden in (one entry per body).
+pub(crate) fn set_other_bodies(spots: Vec<usize>) {
+    OTHERS.with(|o| *o.borrow_mut() = spots);
+}
+
+/// Where slot `slot` sits: 0 is the front (the spot's centre), later slots sit beside it, across the facing.
+fn hiding_slot_pos(c: (f32, f32), facing: (i32, i32), slot: usize) -> (f32, f32) {
+    if slot == 0 {
+        return c;
+    }
+    let side = hiding_slots().beside_offset * slot as f32;
+    (c.0 - facing.1 as f32 * side, c.1 + facing.0 as f32 * side)
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -210,6 +259,8 @@ impl Game {
             Focus::Locker(i) => {
                 if self.hiding_disabled[i] {
                     "BURNT OUT".into()
+                } else if self.hiding_full(i) {
+                    hiding_slots().full_text.clone()
                 } else {
                     "[E] HIDE".into()
                 }
@@ -537,6 +588,12 @@ impl Game {
             self.say("BURNT OUT");
             return;
         }
+        if self.hiding_full(i) {
+            let t = hiding_slots().full_text.clone();
+            self.say(&t);
+            return;
+        }
+        let slot = self.hiding_next_slot(i);
         let lit = self.p.flashlight_on && self.p.lamp > 0.0;
         let mut trapped = false;
         for h in self.hunters.iter_mut().filter(|h| h.active) {
@@ -550,13 +607,33 @@ impl Game {
         self.p.hidden = Some(i);
         self.p.flashlight_on = false;
         let l = &self.fac.hiding[i];
-        self.p.pos = self.fac.locker_center(l);
+        self.p.pos = hiding_slot_pos(self.fac.locker_center(l), l.facing, slot);
         // the view turns out of the spot over the entry glide (game/mod.rs `apply_look`), not in one frame
         self.hide_ease = Some((self.p.yaw, self.p.pitch, 0.0));
         if trapped {
             self.p.hide_lock = 30.0;
             self.say("THE DOOR WON'T OPEN");
         }
+    }
+
+    /// Bodies in spot `i`: this runner plus the other runners reported through [`set_other_bodies`].
+    pub(crate) fn hiding_occupants(&self, i: usize) -> usize {
+        let others = OTHERS.with(|o| o.borrow().iter().filter(|&&s| s == i).count());
+        others + usize::from(self.p.hidden == Some(i))
+    }
+
+    /// Capacity of spot `i` (data per hiding kind; every spot is a locker for now).
+    pub(crate) fn hiding_capacity(&self, _i: usize) -> usize {
+        hiding_slots().capacity_of("locker")
+    }
+
+    pub(crate) fn hiding_full(&self, i: usize) -> bool {
+        self.hiding_occupants(i) >= self.hiding_capacity(i)
+    }
+
+    /// The slot the next body takes: 0 is the front, 1 the beside slot.
+    fn hiding_next_slot(&self, i: usize) -> usize {
+        OTHERS.with(|o| o.borrow().iter().filter(|&&s| s == i).count())
     }
 
     pub(super) fn leave_locker(&mut self, forced_to: Option<(f32, f32)>) {
@@ -801,6 +878,47 @@ pub(super) fn valve_keys(prop: &crate::world::facility::Prop) -> (String, String
 mod tests {
     use super::*;
     use crate::config::Difficulty;
+
+    #[test]
+    fn hiding_capacity_is_enforced_and_leaving_frees_the_slot() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        assert!(!g.fac.hiding.is_empty());
+        let li = 0;
+        let cap = g.hiding_capacity(li);
+        assert!(cap >= 2, "a spot holds at least two bodies");
+        set_other_bodies(vec![li; cap]);
+        assert!(g.hiding_full(li));
+        g.enter_locker(li, &Sounds::default());
+        assert!(g.p.hidden.is_none(), "a full spot refuses");
+        set_other_bodies(vec![li; cap - 1]);
+        assert!(!g.hiding_full(li));
+        g.enter_locker(li, &Sounds::default());
+        assert_eq!(g.p.hidden, Some(li));
+        assert!(g.hiding_full(li));
+        g.leave_locker(None);
+        assert!(!g.hiding_full(li), "leaving frees the slot");
+        set_other_bodies(vec![]);
+    }
+
+    #[test]
+    fn hiding_slots_are_front_then_beside() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let li = 0;
+        let front = g.fac.locker_center(&g.fac.hiding[li]);
+        set_other_bodies(vec![]);
+        g.enter_locker(li, &Sounds::default());
+        assert_eq!(g.p.pos, front, "the first body takes the front");
+        g.leave_locker(None);
+        set_other_bodies(vec![li]);
+        g.enter_locker(li, &Sounds::default());
+        let d = pdist(g.p.pos, front);
+        assert!((d - hiding_slots().beside_offset).abs() < 1e-3, "the second body takes the beside slot");
+        set_other_bodies(vec![]);
+    }
 
     #[test]
     fn taking_the_stairs_autosaves_the_new_level() {

@@ -3,6 +3,7 @@
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
 pub mod discovery;
+pub mod emote;
 pub mod endless;
 pub mod inferno_secrets;
 mod hunting;
@@ -77,6 +78,8 @@ pub struct Controls {
     pub flashlight: bool,
     pub taser: bool,
     pub drop: bool,
+    /// Seconds the drop key has been held (0 when up); a hold past data/player/drop.json drops the whole stack.
+    pub drop_held_for: f32,
     pub slot: Option<usize>,
     pub wheel: i32,
     pub look: Vec2,
@@ -189,6 +192,8 @@ pub struct Game {
     pub music_box_left: f32,
     /// The hunter specialty bar, slots 6 to 9 (game/specialty.rs): separate from `slots`.
     pub specialty: specialty::Specialty,
+    /// The local runner's emote wheel and playing emote (game/emote.rs).
+    pub emote: emote::EmoteState,
     pub relays_collected: i32,
     /// Per-room climate offsets: hot and cold spots on the floor.
     pub climate: Vec<f32>,
@@ -338,6 +343,7 @@ impl Game {
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
             specialty: specialty::Specialty::default(),
+            emote: Default::default(),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -483,6 +489,7 @@ impl Game {
             map_open: false,
             music_box_left: music_box::wound_seconds(difficulty.id()),
             specialty: specialty::Specialty::default(),
+            emote: Default::default(),
             relays_collected: 0,
             climate: vec![],
             discovered: vec![],
@@ -856,6 +863,17 @@ impl Game {
         self.world_nb.sync(&self.fac, stack, (e.x, e.y, e.z), assets, content);
     }
 
+    /// Tells the hiding code which spots the other runners are hidden in (one entry per hidden body), so a spot fills up
+    /// (game/interact.rs, data/player/hiding_slots.json). `remotes` are in this window's cells.
+    pub fn sync_other_hiders(&self, remotes: &[crate::net::world_sync::RemoteView]) {
+        let spots: Vec<usize> = remotes
+            .iter()
+            .filter_map(|r| r.hide)
+            .filter_map(|h| self.fac.hiding.iter().position(|s| (s.cell.x, s.cell.y) == h.cell))
+            .collect();
+        interact::set_other_bodies(spots);
+    }
+
     /// One frame of the run, then the render meshes for any floor it entered.
     pub fn update(
         &mut self,
@@ -892,6 +910,10 @@ impl Game {
         // directly) ticks them too, not only the window's `update`.
         self.tick_void_effects(dt);
         self.time += dt;
+        if let Some(set) = crate::render::anim::emote_pose::set() {
+            let now = self.time;
+            self.emote.update(set, now, self.p.moving, self.p.sprinting);
+        }
         self.fade = (self.fade - dt * 1.5).max(0.0);
         self.toast_t = (self.toast_t - dt).max(0.0);
         self.message_t = (self.message_t - dt).max(0.0);
@@ -1072,6 +1094,8 @@ impl Game {
         // level 0 has no Nyxie in its lineup: a dead flashlight there makes the one that comes for it (endless.rs)
         self.keep_level0_nyxie(content);
         self.update_hunters(dt, &prof, sounds);
+        // the hunters on the shelves live on coarsely (data/hunters/offscreen.json)
+        self.simulate_offscreen(dt);
         // the window may have stored or loaded a hunter and a hunter may have crossed to the floor beside: the bar the frame is
         // drawn with is the one for the hunters as they stand now
         self.sync_specialty();

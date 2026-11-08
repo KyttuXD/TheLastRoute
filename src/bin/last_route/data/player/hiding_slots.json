@@ -1,0 +1,6 @@
+{
+  "default_capacity": 2,
+  "capacity": { "locker": 2, "wardrobe": 2, "bed": 2 },
+  "beside_offset": 0.28,
+  "full_text": "FULL"
+}

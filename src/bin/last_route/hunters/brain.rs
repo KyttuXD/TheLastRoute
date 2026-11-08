@@ -202,7 +202,7 @@ fn body_fits_gated_at(fac: &Facility, gates: &[Cell], x: f32, z: f32, h: Option<
 /// Whether a body of HUNTER_RADIUS can sweep the straight line from `from` to `to` (sampled every 0.15 m) on the floor.
 fn sweep_clear(fac: &Facility, gates: &[Cell], from: (f32, f32), to: (f32, f32)) -> bool {
     let d = dist(from, to);
-    let steps = ((d / 0.15).ceil() as i32).max(1);
+    let steps = ((d / walk_rules().sweep_step).ceil() as i32).max(1);
     (1..=steps).all(|i| {
         let t = i as f32 / steps as f32;
         body_fits_gated(fac, gates, from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
@@ -487,7 +487,40 @@ pub struct Brain {
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
-const WAYPOINT_DISTANCE: f32 = 0.18;
+/// data/hunter_walk.json: how close counts as at a waypoint, how many route cells it may cut ahead, the sweep sample step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WalkRules {
+    pub waypoint_distance: f32,
+    pub path_lookahead_nodes: usize,
+    pub sweep_step: f32,
+}
+
+impl WalkRules {
+    /// The Godot values (hunter_brain.gd lines 31-34).
+    pub const GODOT: WalkRules = WalkRules { waypoint_distance: 0.18, path_lookahead_nodes: 4, sweep_step: 0.15 };
+
+    /// Reads the three keys; a missing or out-of-range key keeps the Godot value.
+    pub fn parse(text: &str) -> WalkRules {
+        let mut r = WalkRules::GODOT;
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            if let Some(x) = v.get("waypoint_distance").and_then(|x| x.as_f64()).filter(|x| *x > 0.0 && *x < 5.0) {
+                r.waypoint_distance = x as f32;
+            }
+            if let Some(x) = v.get("path_lookahead_nodes").and_then(|x| x.as_u64()).filter(|x| *x >= 1 && *x <= 64) {
+                r.path_lookahead_nodes = x as usize;
+            }
+            if let Some(x) = v.get("sweep_step").and_then(|x| x.as_f64()).filter(|x| *x >= 0.01 && *x < 5.0) {
+                r.sweep_step = x as f32;
+            }
+        }
+        r
+    }
+}
+
+pub(crate) fn walk_rules() -> &'static WalkRules {
+    static RULES: OnceLock<WalkRules> = OnceLock::new();
+    RULES.get_or_init(|| WalkRules::parse(include_str!("../data/hunter_walk.json")))
+}
 /// How long a cell a step was blocked by stays out of a hunter's route.
 const BLOCKED_AVOID_SECONDS: f32 = 2.0;
 /// How far off the middle of its cell (m) a body may stand before it walks to the middle to get past a corner.
@@ -1602,7 +1635,7 @@ impl Brain {
         }
         self.unreachable = 0.0;
         while let Some(first) = self.path.first() {
-            if dist(self.pos, first.center()) <= WAYPOINT_DISTANCE {
+            if dist(self.pos, first.center()) <= walk_rules().waypoint_distance {
                 self.path.remove(0);
             } else {
                 break;
@@ -1613,7 +1646,7 @@ impl Brain {
         if on_path {
             let mut furthest = 0;
             waypoint = self.path[0].center();
-            for i in 0..self.path.len().min(4) {
+            for i in 0..self.path.len().min(walk_rules().path_lookahead_nodes) {
                 let c = self.path[i].center();
                 if !body_fits_gated(fac, &self.gate_floor, c.0, c.1) || !self.clear_sweep(fac, self.pos, c) {
                     break;
@@ -2052,6 +2085,15 @@ pub fn search_rules() -> &'static SearchRules {
 mod tests {
     use super::*;
     use crate::config::Difficulty;
+
+    #[test]
+    fn the_walk_data_equals_the_godot_values_and_a_changed_value_applies() {
+        assert_eq!(*walk_rules(), WalkRules::GODOT);
+        assert_eq!(WalkRules::parse("{}"), WalkRules::GODOT);
+        let r = WalkRules::parse(r#"{"waypoint_distance":0.3,"path_lookahead_nodes":2,"sweep_step":0.1}"#);
+        assert_eq!((r.waypoint_distance, r.path_lookahead_nodes, r.sweep_step), (0.3, 2, 0.1));
+        assert_eq!(WalkRules::parse(r#"{"path_lookahead_nodes":0}"#).path_lookahead_nodes, 4);
+    }
     use crate::world::facility::Options;
 
     fn aki() -> HunterDef {

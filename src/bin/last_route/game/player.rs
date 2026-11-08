@@ -32,11 +32,46 @@ pub struct BobRules {
     pub ease_rate: f32,
     pub sway_ratio: f32,
     pub crouch_eye_clearance: f32,
+    /// Lock the bob to the footstep cadence (Godot 1007: PI * steps per second, one dip per footfall); off = the
+    /// fixed `phase_per_metre`.
+    pub step_locked: bool,
+    /// Bob amplitudes before the player model scale: walk, sprint, crouch (Godot CAMERA_BOB_*_AMPLITUDE).
+    pub amp_walk: f32,
+    pub amp_sprint: f32,
+    pub amp_crouch: f32,
 }
 
 impl Default for BobRules {
     fn default() -> Self {
-        BobRules { phase_per_metre: 1.9, ease_rate: 10.0, sway_ratio: 0.42, crouch_eye_clearance: 0.08 }
+        BobRules {
+            phase_per_metre: 1.9,
+            ease_rate: 10.0,
+            sway_ratio: 0.42,
+            crouch_eye_clearance: 0.08,
+            step_locked: true,
+            amp_walk: 0.024,
+            amp_sprint: 0.038,
+            amp_crouch: 0.012,
+        }
+    }
+}
+
+impl BobRules {
+    /// Bob phase advance in rad/s at `speed` m/s on the given gait: PI per footfall (Godot 1007), so the phase moves
+    /// with distance and the sway flips side with every step.
+    pub fn phase_rate(&self, crouching: bool, sprinting: bool, speed: f32) -> f32 {
+        if !self.step_locked {
+            return speed * self.phase_per_metre;
+        }
+        let gait = if crouching { "crouch" } else if sprinting { "sprint" } else { "walk" };
+        let gap = crate::audio::cues::rules::footstep_gap(gait, speed as f64) as f32;
+        std::f32::consts::PI / gap
+    }
+
+    /// The bob amplitude in metres for the gait (scaled by the player model, Godot 48-50).
+    pub fn amplitude(&self, crouching: bool, sprinting: bool) -> f32 {
+        let a = if crouching { self.amp_crouch } else if sprinting { self.amp_sprint } else { self.amp_walk };
+        a * PLAYER_MODEL_SCALE
     }
 }
 
@@ -55,6 +90,14 @@ pub fn bob_rules() -> &'static BobRules {
             ease_rate: get("ease_rate", d.ease_rate),
             sway_ratio: get("sway_ratio", d.sway_ratio),
             crouch_eye_clearance: get("crouch_eye_clearance", d.crouch_eye_clearance),
+            step_locked: v
+                .as_ref()
+                .and_then(|v| v.get("step_locked"))
+                .and_then(|x| x.as_bool())
+                .unwrap_or(d.step_locked),
+            amp_walk: get("amp_walk", d.amp_walk),
+            amp_sprint: get("amp_sprint", d.amp_sprint),
+            amp_crouch: get("amp_crouch", d.amp_crouch),
         }
     })
 }
@@ -332,13 +375,7 @@ impl Player {
     }
 
     pub fn eye(&self) -> Vec3 {
-        let amp = if self.crouching {
-            CAMERA_BOB_CROUCH
-        } else if self.sprinting {
-            CAMERA_BOB_SPRINT
-        } else {
-            CAMERA_BOB_WALK
-        };
+        let amp = bob_rules().amplitude(self.crouching, self.sprinting);
         let bob = if self.moving && self.grounded {
             (self.bob_phase * 2.0).sin() * amp
         } else {
@@ -636,7 +673,9 @@ impl Player {
     /// The head bob and the footsteps of the frame (only on the ground).
     fn after_move(&mut self, dt: f32, moving: bool, sprinting: bool, speed: f32, speed_now: f32) {
         if moving && self.grounded && speed_now > 0.3 {
-            self.bob_phase = (self.bob_phase + dt * speed_now * bob_rules().phase_per_metre).rem_euclid(std::f32::consts::TAU);
+            let ground = speed_now.min(speed * 1.5);
+            let rate = bob_rules().phase_rate(self.crouching, sprinting, ground);
+            self.bob_phase = (self.bob_phase + dt * rate).rem_euclid(std::f32::consts::TAU);
         } else {
             // ease back to rest instead of freezing mid-stride (Godot 1009-1011: move_toward 0)
             let step = dt * bob_rules().ease_rate;
@@ -1589,6 +1628,50 @@ mod tests {
         assert!(g.p.bob_phase > 0.0 && g.p.bob_phase < 2.0, "eased, not held or snapped: {}", g.p.bob_phase);
         run_body(&mut g, 1.0, &Controls::default());
         assert_eq!(g.p.bob_phase, 0.0);
+    }
+
+    #[test]
+    fn the_step_locked_bob_advances_pi_per_footfall_and_with_speed() {
+        let r = bob_rules();
+        let gap = crate::audio::cues::rules::footstep_gap("walk", 2.0) as f32;
+        let rate = r.phase_rate(false, false, 2.0);
+        assert!((rate * gap - std::f32::consts::PI).abs() < 1e-4, "PI per footfall");
+        assert!(r.phase_rate(false, false, 3.0) > rate, "faster ground speed, faster phase");
+        let unlocked = BobRules { step_locked: false, ..*r };
+        assert!((unlocked.phase_rate(false, false, 2.0) - 2.0 * r.phase_per_metre).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_sway_alternates_side_every_step() {
+        let r = bob_rules();
+        let mut p = Player::new((1.0, 1.0));
+        p.grounded = true;
+        p.moving = true;
+        p.yaw = 0.0;
+        let gap = crate::audio::cues::rules::footstep_gap("walk", 2.0) as f32;
+        let per_step = r.phase_rate(false, false, 2.0) * gap;
+        let mut last = 0.0f32;
+        for i in 0..4 {
+            p.bob_phase = (0.4 + per_step * i as f32).rem_euclid(std::f32::consts::TAU);
+            let side = p.eye().x - p.pos.0;
+            if i > 0 {
+                assert!(side * last < 0.0, "step {i}: {side} after {last}");
+            }
+            last = side;
+        }
+    }
+
+    #[test]
+    fn standing_still_settles_the_eye_and_the_amplitudes_follow_the_gait() {
+        let mut p = Player::new((1.0, 1.0));
+        p.grounded = true;
+        p.moving = false;
+        p.bob_phase = 1.0;
+        assert_eq!((p.eye().x, p.eye().z), p.pos);
+        let r = bob_rules();
+        assert!(r.amplitude(false, true) > r.amplitude(false, false));
+        assert!(r.amplitude(false, false) > r.amplitude(true, false));
+        assert!((r.amplitude(false, false) - CAMERA_BOB_WALK).abs() < 1e-6, "Godot walk amplitude");
     }
 
     #[test]

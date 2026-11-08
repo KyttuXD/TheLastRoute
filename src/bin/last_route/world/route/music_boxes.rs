@@ -52,6 +52,30 @@ pub struct MusicBox {
     pub offset: Option<[f32; 2]>,
     /// The surface type of a table box (`on`); `None` on the floor.
     pub on: Option<&'static str>,
+    /// The tune id of the region's boxes: both boxes of a 4x4 block carry the same one (`region_tune`).
+    pub tune: u32,
+}
+
+/// How many tunes a box can carry: `tune_count` of data/music_box.json when present (optional key), else 4.
+pub fn tune_count() -> u32 {
+    static COUNT: OnceLock<u32> = OnceLock::new();
+    *COUNT.get_or_init(|| {
+        embedded::data_under("music_box.json")
+            .next()
+            .and_then(|x| serde_json::from_str::<Value>(x.1).ok())
+            .and_then(|j| j["tune_count"].as_u64())
+            .map(|n| n.clamp(1, 64) as u32)
+            .unwrap_or(4)
+    })
+}
+
+/// The tune shared by every music box of the region (4x4 block) holding chunk `c` on its level. Deterministic by
+/// seed; its own RNG key, so the placement draws are untouched.
+pub fn region_tune(world: &str, c: Coord) -> u32 {
+    let region_x = c.x.div_euclid(REGION_SIZE_CHUNKS);
+    let region_z = c.z.div_euclid(REGION_SIZE_CHUNKS);
+    let mut rng = Rng::new(&format!("{world}:MUSICTUNE:{region_x}:{}:{region_z}", c.y));
+    rng.next_index(tune_count() as usize) as u32
 }
 
 /// `music_box_chunk` (streamed_route_generator.gd:5471-5482): whether this chunk holds one of its region's music boxes.
@@ -91,6 +115,7 @@ pub fn chunk_music_boxes(
     let tag = props::chunk_tag(c);
     let mut rng = Rng::new(&format!("{world}:MUSICBOX-CELL:{tag}"));
     let box_id = format!("{tag}:music_box");
+    let tune = region_tune(world, c);
     // `_stair_door_exclusion(stairs)` with no stairs: empty.
     let stair_doors: HashSet<V2> = HashSet::new();
     // 5504-5506: the cells of the fixtures and the pickups (the table skips them, the floor keeps off them).
@@ -109,6 +134,7 @@ pub fn chunk_music_boxes(
             cell: table.cell,
             offset: Some([placement[0] + mount[0], placement[1] + mount[1]]),
             on: Some(table.prop_type),
+            tune,
             y: surface_height(table.prop_type) + MUSIC_BOX_TABLE_LIFT,
         }];
     }
@@ -172,13 +198,14 @@ pub fn chunk_music_boxes(
             cell,
             offset: Some([side.x as f32 * MUSIC_BOX_WALL_NUDGE, side.y as f32 * MUSIC_BOX_WALL_NUDGE]),
             on: None,
+            tune,
             y: MUSIC_BOX_FLOOR_Y,
         }];
     }
     // 5552-5553: any room interior cell.
     if !interior.is_empty() {
         let cell = interior[rng.next_index(interior.len())];
-        return vec![MusicBox { id: box_id, cell, offset: None, on: None, y: MUSIC_BOX_FLOOR_Y }];
+        return vec![MusicBox { id: box_id, cell, offset: None, on: None, tune, y: MUSIC_BOX_FLOOR_Y }];
     }
     // 5554-5565: no room interior in this chunk. Open floor clear of props, fixtures and pickups.
     for prop in region_props {
@@ -197,7 +224,7 @@ pub fn chunk_music_boxes(
         return Vec::new();
     }
     let cell = candidates[rng.next_index(candidates.len())];
-    vec![MusicBox { id: box_id, cell, offset: None, on: None, y: MUSIC_BOX_FLOOR_Y }]
+    vec![MusicBox { id: box_id, cell, offset: None, on: None, tune, y: MUSIC_BOX_FLOOR_Y }]
 }
 
 /// `_music_box_table` (streamed_route_generator.gd:5570-5591): a free tabletop in a room. A solid surface parent with a
@@ -349,6 +376,39 @@ mod tests {
             let hits = region_chunks(rx, rz).iter().filter(|c| music_box_chunk(world, **c)).count();
             assert_eq!(hits, boxes_per_region(), "region ({rx}, {rz})");
         }
+    }
+
+    #[test]
+    fn each_block_has_exactly_two_box_chunks_over_many_seeds() {
+        for seed in 0..60 {
+            let world = format!("seed-{seed}");
+            for (rx, rz, y) in [(0, 0, 0), (-3, 2, 0), (5, -4, 1)] {
+                let hits = (0..REGION_SIZE_CHUNKS * REGION_SIZE_CHUNKS)
+                    .filter(|i| {
+                        let x = rx * REGION_SIZE_CHUNKS + i % REGION_SIZE_CHUNKS;
+                        let z = rz * REGION_SIZE_CHUNKS + i / REGION_SIZE_CHUNKS;
+                        music_box_chunk(&world, Coord::new(x, y, z))
+                    })
+                    .count();
+                assert_eq!(hits, 2, "{world} block ({rx},{rz}) level {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn boxes_of_a_block_share_one_tune_and_it_is_deterministic() {
+        let mut seen = HashSet::new();
+        for seed in 0..60 {
+            let world = format!("seed-{seed}");
+            let first = region_tune(&world, Coord::new(0, 0, 0));
+            for i in 0..REGION_SIZE_CHUNKS * REGION_SIZE_CHUNKS {
+                let c = Coord::new(i % REGION_SIZE_CHUNKS, 0, i / REGION_SIZE_CHUNKS);
+                assert_eq!(region_tune(&world, c), first, "{world} chunk {i}");
+            }
+            assert!(first < tune_count());
+            seen.insert(first);
+        }
+        assert!(tune_count() == 1 || seen.len() > 1, "seeds should vary the tune");
     }
 
     #[test]
@@ -530,6 +590,7 @@ mod parity_tests {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
+        let _godot = crate::world::route::furnished::godot_layout();
         check(&TAGS, load_compact);
     }
 

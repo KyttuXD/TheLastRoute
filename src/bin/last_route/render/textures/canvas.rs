@@ -266,7 +266,7 @@ pub fn flower(img: &mut Img, cx: i32, cy: i32, petal: Col, core: Col) {
         let px = roundi(cx as f64 + ang.cos() * 3.0);
         let py = roundi(cy as f64 + ang.sin() * 3.0);
         img.dot(px - 1, py - 1, petal, 3, 3);
-        img.dot1(px, py, mul(petal, 1.25));
+        img.dot1(px, py, flat_or(mul(petal, 1.25), petal)); // flat: no highlight
     }
     img.dot(cx - 1, cy - 1, core, 3, 3);
 }

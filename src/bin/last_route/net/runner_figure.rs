@@ -252,13 +252,37 @@ struct Figure {
     last_at: Option<(f32, f32)>,
     /// The body's last facing, for the head's lag behind a turn.
     last_yaw: Option<f32>,
+    /// The emote it plays: (id, the sample's start sequence number, seconds since it began).
+    emote: Option<(String, u32, f32)>,
     seen: u64,
 }
 
 impl Figure {
     fn new(epoch: u64, slim: bool) -> Figure {
-        Figure { view: RunnerView::load(slim), slim, last_at: None, last_yaw: None, seen: epoch }
+        Figure { view: RunnerView::load(slim), slim, last_at: None, last_yaw: None, emote: None, seen: epoch }
     }
+}
+
+/// What a remote runner's sample says it is emoting: the emote id and its start sequence number. None when it names
+/// none (an older client, or the emote ended). The id may be one this build does not know; posing ignores it.
+pub fn remote_emote(r: &RemoteView) -> Option<(&str, u32)> {
+    r.emote.as_ref().map(|(id, seq)| (id.as_str(), *seq))
+}
+
+/// Moves a figure's emote clock by `dt`. A new id or a new sequence number restarts it; a sample without one clears it.
+fn advance_emote(slot: &mut Option<(String, u32, f32)>, wanted: Option<(&str, u32)>, dt: f32) {
+    match wanted {
+        None => *slot = None,
+        Some((id, seq)) => match slot {
+            Some((cur, cur_seq, t)) if cur == id && *cur_seq == seq => *t += dt.max(0.0),
+            _ => *slot = Some((id.to_string(), seq, 0.0)),
+        },
+    }
+}
+
+/// Lays emote `id` at `t` seconds over a body's bone pose. False (pose untouched) for an unknown id or a finished emote.
+fn pose_emote(rig: &Rig, locals: &mut [Local], id: &str, t: f32) -> bool {
+    crate::render::anim::emote_pose::set().is_some_and(|set| crate::render::anim::emote_pose::apply(locals, rig, set, id, t))
 }
 
 thread_local! {
@@ -361,8 +385,18 @@ fn draw_body(a: &Assets, look: Look, pick: &Pick, slim: bool, pose: Option<(&Rig
 /// Draws one still figure: the same body a runner wears, at `pos` (feet) and `yaw`, in `pose` at `phase` (0..1) of its
 /// clip. The caller sets the camera and material, as for [`draw_runners`]. The locker occupant uses this.
 pub fn draw_figure(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose: Pose, phase: f32) {
+    draw_figure_emoting(a, pos, yaw, pick, slim, pose, phase, None);
+}
+
+/// [`draw_figure`] with an emote laid over the pose: `emote` is (id, seconds since it began). The local player's own
+/// body in the third-person views (spectate, locker) uses this with `EmoteState::local_pose`; first person draws none.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_figure_emoting(a: &Assets, pos: Vec3, yaw: f32, pick: Pick, slim: bool, pose: Pose, phase: f32, emote: Option<(&str, f32)>) {
     let rig = driver::player_rig(slim);
-    let locals = rig.as_ref().map(|r| still_pose(r, pose, phase));
+    let mut locals = rig.as_ref().map(|r| still_pose(r, pose, phase));
+    if let (Some(r), Some(l), Some((id, t))) = (rig.as_ref(), locals.as_mut(), emote) {
+        pose_emote(r, l, id, t);
+    }
     let posed = rig.as_ref().zip(locals.as_ref()).map(|(r, l)| (&**r, l.as_slice()));
     let _ = draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, &pick, slim, posed, None);
 }
@@ -387,7 +421,7 @@ pub fn moving_backward(vel: (f32, f32), yaw: f32) -> bool {
 #[allow(clippy::too_many_arguments)]
 /// Draws one driven figure and returns its held flashlight's lamp point (see [`draw_body`]). `look_pitch` is the runner's
 /// aim (+ up) that tilts its head; a bot or an older peer passes 0.
-fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, dt: f32, epoch: u64) -> Option<Vec3> {
+fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, emote: Option<(&str, u32)>, dt: f32, epoch: u64) -> Option<Vec3> {
     let driven = FIGURES.with(|f| {
         let mut f = f.borrow_mut();
         let fig = f.1.entry(key).or_insert_with(|| Figure::new(epoch, slim));
@@ -401,6 +435,8 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32,
             _ => 0.0,
         };
         fig.last_yaw = Some(yaw);
+        advance_emote(&mut fig.emote, emote, dt);
+        let emoting = fig.emote.clone();
         fig.view.as_mut().map(|v| {
             let here = (pos.x, pos.z);
             let mut state = *state;
@@ -417,7 +453,11 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_pitch: f32,
             } else {
                 v.aim_head(0.0, 0.0, dt);
             }
-            (v.rig.clone(), v.locals(), v.fade, v.pitch)
+            let mut locals = v.locals();
+            if let Some((id, _, t)) = &emoting {
+                pose_emote(&v.rig, &mut locals, id, *t);
+            }
+            (v.rig.clone(), locals, v.fade, v.pitch)
         })
     });
     match driven {
@@ -550,7 +590,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
         let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
         let held = if r.hide.is_some() { None } else { r.held };
-        let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, r.look_pitch, &tex, r.slim, &remote_state(r), held, dt, epoch);
+        let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, r.look_pitch, &tex, r.slim, &remote_state(r), held, remote_emote(r), dt, epoch);
         // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none.
         // The beam leaves the lamp in the held flashlight's hand; without one drawn it leaves the usual lamp height.
         if let (Some(pitch), None) = (r.flash_pitch, r.hide) {
@@ -624,7 +664,7 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         });
         let state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, dt, epoch);
+        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, 0.0, &tex, false, &state, None, None, dt, epoch);
     }
     prune(epoch, true);
 }
@@ -664,6 +704,7 @@ mod tests {
             held: None,
             flash_pitch: None,
             look_pitch: 0.0,
+            emote: None,
             hide: None,
             hide_since: None,
         }
@@ -1010,5 +1051,53 @@ mod tests {
         assert!((upright.transform_point3(hips) - hips).length() < 1e-5);
         assert!((leaning.transform_point3(hips) - hips).length() < 1e-5, "the hips stay put");
         assert!((leaning.transform_point3(Vec3::Y * 1.9) - Vec3::Y * 1.9).length() > 0.3, "the head swings");
+    }
+
+    #[test]
+    fn a_new_sequence_restarts_the_emote_clock_and_no_emote_clears_it() {
+        let mut slot = None;
+        advance_emote(&mut slot, Some(("wave", 1)), 0.1);
+        advance_emote(&mut slot, Some(("wave", 1)), 0.5);
+        assert_eq!(slot.as_ref().map(|s| (s.1, s.2)), Some((1, 0.5)));
+        advance_emote(&mut slot, Some(("wave", 2)), 0.5);
+        assert_eq!(slot.as_ref().map(|s| (s.1, s.2)), Some((2, 0.0)), "the same emote played again restarts");
+        advance_emote(&mut slot, None, 0.5);
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn an_emote_poses_the_body_and_an_unknown_id_is_ignored() {
+        let Some(rig) = player_rig(false) else {
+            return;
+        };
+        let rest = still_pose(&rig, Pose::Idle, 0.0);
+        let mut posed = rest.clone();
+        assert!(pose_emote(&rig, &mut posed, "wave", 0.9));
+        let arm = rig.bone("R-Arm").unwrap();
+        assert!(posed[arm].r.dot(rest[arm].r).abs() < 0.99, "the waving arm moved off its idle pose");
+        let mut other = rest.clone();
+        assert!(!pose_emote(&rig, &mut other, "no-such-emote", 0.9));
+        assert!(other.iter().zip(&rest).all(|(a, b)| a.r == b.r && a.t == b.t));
+    }
+
+    #[test]
+    fn a_sample_without_an_emote_names_none() {
+        assert_eq!(remote_emote(&remote(None, false, false, false, 0.0)), None);
+    }
+
+    #[test]
+    fn a_remote_sample_with_an_emote_names_it_and_poses_the_arm() {
+        let mut r = remote(None, false, false, false, 0.0);
+        r.emote = Some(("wave".into(), 1));
+        assert_eq!(remote_emote(&r), Some(("wave", 1)));
+        let Some(rig) = player_rig(false) else {
+            return;
+        };
+        let rest = still_pose(&rig, Pose::Idle, 0.0);
+        let mut posed = rest.clone();
+        let (id, _) = remote_emote(&r).unwrap();
+        assert!(pose_emote(&rig, &mut posed, id, 0.9));
+        let arm = rig.bone("R-Arm").unwrap();
+        assert!(posed[arm].r.dot(rest[arm].r).abs() < 0.99, "R-Arm moved");
     }
 }

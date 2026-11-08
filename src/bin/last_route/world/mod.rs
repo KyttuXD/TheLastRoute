@@ -23,6 +23,8 @@ pub mod flight_links;
 mod stack_contract_tests;
 #[cfg(test)]
 mod spiral_stairs_tests;
+#[cfg(test)]
+mod sewer_height_tests;
 
 pub use facility::{Cell, Facility};
 

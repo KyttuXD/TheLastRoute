@@ -1,12 +1,14 @@
 // edit-pass: the standard Last Route change pass. Pass the task list as args:
 //   Workflow({ name: 'edit-pass', args: { label: 'pass 30', extraRules: '...', tasks: [{ n: 1, files: '...', task: '...' }, ...] } })
-// Stages: Edit (sonnet, low effort, no cargo) -> QA (three read-only checkers: data and format, compile read, test read)
-//   -> Build (one cargo build) -> Test (at most three instances) -> Review (adversarial, read-only).
-// Why: edit agents never compile, so nothing fights over the target directory; one build and three test instances run
-// after every edit is in; QA catches typos, bad JSON and stale tests before the slow stages.
+// Stages: Edit (sonnet, low effort, no cargo) -> Integrate -> QA (three read-only checkers: data and format, compile read,
+//   test read; they never build) -> Build (ONE agent compiles and fixes compile errors) -> Test (ONE agent runs the built
+//   tests and fixes what the pass broke) -> Review (adversarial, read-only). At most two agents compile, one after the
+//   other (the agent build rules (global CLAUDE.md, and AGENTS.md for this repo)).
+// Why: edit agents never compile, so nothing fights over the target directory and the PC does not lag; QA catches typos,
+// bad JSON and stale tests before the slow stages.
 export const meta = {
   name: 'edit-pass',
-  description: 'Standard Last Route pass: parallel edit agents (sonnet low, no cargo), QA and format checks, one build, up to three test instances, then an adversarial review. Args: { label, extraRules, tasks: [{ n, files, task }] }',
+  description: 'Standard Last Route pass: parallel edit agents (sonnet low, no cargo), read-only QA, one build-and-fix agent, one test-and-fix agent, then a read-only review. Args: { label, extraRules, tasks: [{ n, files, task }] }',
   phases: [{ title: 'Edit' }, { title: 'Integrate' }, { title: 'QA' }, { title: 'Build' }, { title: 'Test' }, { title: 'Review' }],
 }
 
@@ -94,40 +96,38 @@ ${reports}`, { label: 'QA: test read', phase: 'QA', model: 'haiku', effort: 'low
 phase('Build')
 const build = await agent(`${RULES}
 
-All edits and QA are done. One build only, with CARGO_TARGET_DIR=${TARGET}: cargo build --bin last_route; then cargo test --bin last_route --no-run; then cargo build --bin lr_server --features server${NW ? ' and cargo build --bin night_watch' : ' (do NOT build night_watch in this pass)'}. Report every compile error with file and line. If something fails, apply the one-line fixes from the QA reports below ONLY if they match the error exactly, rebuild once, and report what you changed. Do not make other changes.
+You are the ONLY agent in this pass that compiles code before the test stage (the agent build rules (global CLAUDE.md, and AGENTS.md for this repo)). Use CARGO_BUILD_JOBS=4 and CARGO_TARGET_DIR=${TARGET} for every cargo call, one cargo at a time. Loop, at most 6 rounds:
+1. cargo build --bin last_route
+2. cargo test --no-run --lib --bin last_route
+3. cargo check --target wasm32-unknown-unknown --bin last_route
+4. cargo build --bin lr_server --features server
+On a compile error, fix it in the file the compiler names with the smallest change that keeps the author's intent (the QA reports below often have the fix), then go again. Fix compile errors only: no refactors, no behaviour changes, no new features. Report every error you saw, each fix (file, line, what), and the final state of all four commands.
 
 QA data/format:
 ${String(dataQa)}
 QA compile read:
 ${String(compileQa)}
 QA tests read:
-${String(testQa)}`, { label: 'single build', phase: 'Build', model: 'sonnet', effort: 'low' })
+${String(testQa)}`, { label: 'build and fix', phase: 'Build', model: 'sonnet', effort: 'low' })
 
 phase('Test')
-const [unit, headless, other] = await parallel([
-  () => agent(`${RULES}
-Test instance 1 of 3. CARGO_TARGET_DIR=${TARGET}. Run cargo test --bin last_route once. Report pass, fail and ignored counts and each failing test with its first assertion. Fix nothing.
+const tests = await agent(`${RULES}
 
-Build: ${String(build)}`, { label: 'test 1: unit', phase: 'Test', model: 'haiku', effort: 'low' }),
-  () => agent(`${RULES}
-Test instance 2 of 3. Use ${TARGET}/debug/last_route.exe (build it with CARGO_TARGET_DIR=${TARGET} cargo build --bin last_route only if missing). Run the headless suites once: last_route --headless --test-suite "tests/*.json" (docs/DEVELOPING.md). Report passed and failed counts and each failing test with its first assertion. Fix nothing.
+You are the ONLY agent that runs tests in this pass, and it starts after the build agent finished (the agent build rules (global CLAUDE.md, and AGENTS.md for this repo)). CARGO_BUILD_JOBS=4, CARGO_TARGET_DIR=${TARGET}. Plain cargo test aborts on this PC.
+1. Run the newest ${TARGET}/debug/deps/last_route-*.exe --test-threads=4 (the build agent built it with cargo test --no-run). Note every failure.
+2. Run ${TARGET}/debug/last_route.exe --headless --test-suite "tests/*.json" once. Note every failure.
+3. For each failure that this pass caused (not one of the known failures in the agent build rules (global CLAUDE.md, and AGENTS.md for this repo); rerun timing-flaky tests alone first): if the test pins behaviour the task deliberately changed, update the test to the new behaviour without weakening it; if the code is wrong, make the smallest fix. Then rebuild only with cargo test --no-run --lib --bin last_route (and cargo build --bin last_route for the headless suites) and rerun the affected tests. At most 4 rounds.
+Report: pass, fail and ignored counts before and after, every change you made (file, line, why), and anything still failing with its first assertion.
 
-Build: ${String(build)}`, { label: 'test 2: headless', phase: 'Test', model: 'haiku', effort: 'low' }),
-  () => agent(`${RULES}
-Test instance 3 of 3. CARGO_TARGET_DIR=${TARGET}. Run cargo test --bin lr_server --features server${NW ? ' and cargo test --bin night_watch' : ' (skip night_watch in this pass)'} once. Report counts and each failing test with its first assertion. Fix nothing.
-
-Build: ${String(build)}`, { label: 'test 3: lr_server and night_watch', phase: 'Test', model: 'haiku', effort: 'low' }),
-])
+Build: ${String(build)}`, { label: 'test and fix', phase: 'Test', model: 'sonnet', effort: 'low' })
 
 phase('Review')
 const review = await agent(`${RULES}
 ${NO_CARGO}
-READ-ONLY adversarial review of the pass. Read git diff for every changed file. Check: a tunable left in code instead of data; a guest able to change hunter state; bots triggering the danger readout, heartbeat or chase cue; a Standard value changed without a Godot reason; a fixed-seed region output that changed; a lock held across a network call in lr_server; a test weakened just to pass; a hunter or bot that can get stuck. Return blockers first.
+READ-ONLY adversarial review of the pass. Read git diff for every changed file. Check: a tunable left in code instead of data; a guest able to change hunter state; bots triggering the danger readout, heartbeat or chase cue; a Standard value changed without a Godot reason; a fixed-seed region output that changed; a lock held across a network call in lr_server; a test weakened just to pass; a hunter or bot that can get stuck; a per-frame allocation or scan added to a hot path; a wasm32 path using std::time, threads or the file system. Return blockers first.
 
 Build: ${String(build)}
-Unit: ${String(unit)}
-Headless: ${String(headless)}
-Other: ${String(other)}
+Tests: ${String(tests)}
 Reports: ${reports}`, { label: 'adversarial review', phase: 'Review', model: 'haiku', effort: 'low' })
 
-return { label, built, qa: { dataQa, compileQa, testQa }, build, unit, headless, other, review }
+return { label, built, qa: { dataQa, compileQa, testQa }, build, tests, review }

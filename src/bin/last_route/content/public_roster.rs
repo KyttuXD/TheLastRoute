@@ -302,6 +302,26 @@ impl PublicRoster {
     }
 }
 
+impl PublicRoster {
+    /// The host's spawn list for a UTC moment: `roster` for the day `unix_seconds` falls in. Same day, same list;
+    /// the featured hunters are always first. The host calls this with the clock and the online player count.
+    pub fn roster_at<'a>(
+        &self,
+        seed: &str,
+        unix_seconds: i64,
+        players: usize,
+        pool: &[&'a str],
+        tier_of: &dyn Fn(&str) -> &'static str,
+    ) -> Vec<&'a str> {
+        self.roster(seed, &day_key(unix_seconds), players, pool, tier_of)
+    }
+
+    /// Today's (system clock, UTC) featured hunters.
+    pub fn featured_today<'a>(&self, pool: &[&'a str], tier_of: &dyn Fn(&str) -> &'static str) -> Vec<&'a str> {
+        self.featured(&today(), pool, tier_of)
+    }
+}
+
 /// "YYYY-MM-DD" in UTC for a Unix time in seconds (Godot day_key, L16). The lineup reshuffles at 00:00 UTC.
 pub fn day_key(unix_seconds: i64) -> String {
     let (y, m, d) = civil_from_days(unix_seconds.div_euclid(86_400));
@@ -514,6 +534,60 @@ mod tests {
         let today = r.lineup("lobby-1", "2026-11-03", POOL, &tier_of);
         let tomorrow = r.lineup("lobby-1", "2026-11-04", POOL, &tier_of);
         assert_ne!(today, tomorrow);
+    }
+
+    #[test]
+    fn roster_at_uses_the_utc_day_of_the_time() {
+        let r = PublicRoster::default();
+        let noon = 1_793_664_000 + 12 * 3600;
+        let late = 1_793_664_000 + 86_399;
+        assert_eq!(r.roster_at("s", noon, 6, POOL, &tier_of), r.roster_at("s", late, 6, POOL, &tier_of));
+        assert_eq!(r.roster_at("s", noon, 6, POOL, &tier_of), r.roster("s", "2026-11-03", 6, POOL, &tier_of));
+        let a = r.lineup("s", "2026-11-03", POOL, &tier_of);
+        let b = r.lineup("s", "2026-11-04", POOL, &tier_of);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn featured_are_in_every_roster_and_featured_count_is_data() {
+        let r = PublicRoster::default();
+        for d in 1..=28 {
+            let day = format!("2026-11-{d:02}");
+            let f = r.featured(&day, POOL, &tier_of);
+            let roster = r.roster("s", &day, 3, POOL, &tier_of);
+            assert_eq!(roster.len(), 2);
+            assert_eq!(&roster[..], &f[..]);
+            assert!(r.lineup("s", &day, POOL, &tier_of).starts_with(&f));
+        }
+        let four = parse(r#"{"featured_count":4}"#);
+        assert_eq!(four.featured("2026-11-03", POOL, &tier_of).len(), 4);
+        assert!(parse(r#"{"featured_count":0}"#).featured("2026-11-03", POOL, &tier_of).is_empty());
+    }
+
+    #[test]
+    fn featured_days_follow_the_weights_over_many_days() {
+        let r = PublicRoster::default();
+        let (mut easy, mut hard, mut easy_n, mut hard_n) = (0usize, 0usize, 0usize, 0usize);
+        for id in POOL {
+            match tier_of(id) {
+                "easy" => easy_n += 1,
+                "difficult" => hard_n += 1,
+                _ => {}
+            }
+        }
+        for day in 0..600i64 {
+            for id in r.featured(&day_key(1_700_000_000 + day * 86_400), POOL, &tier_of) {
+                match tier_of(id) {
+                    "easy" => easy += 1,
+                    "difficult" => hard += 1,
+                    _ => {}
+                }
+            }
+        }
+        let per_easy = easy as f64 / easy_n as f64;
+        let per_hard = hard as f64 / hard_n as f64;
+        assert!(per_easy > per_hard * 2.0, "easy {per_easy} vs difficult {per_hard}");
+        assert!(hard > 0, "difficult hunters still get featured sometimes");
     }
 
     #[test]

@@ -118,6 +118,47 @@ pub fn group_for_batching<K>(items: Vec<(K, Mesh)>) -> Vec<(K, Mesh)> {
     order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
+/// The most vertices one merged mesh holds: the 16-bit index limit (indices 0..=65534).
+pub const MAX_MERGED_VERTICES: usize = 65535;
+
+/// Joins `meshes` that sit next to each other in the list, share a texture and the same blending, into one mesh each,
+/// starting a new mesh where the vertex count would pass `max_vertices` (so indices stay in 16 bits). Vertices and
+/// triangles keep their order, so the drawn image is the same; only the number of meshes (and so of draw calls the
+/// caller makes) drops. A mesh that is alone or already past the limit comes through unchanged.
+pub fn merge_adjacent(meshes: Vec<Mesh>, max_vertices: usize) -> Vec<Mesh> {
+    let max_vertices = max_vertices.min(MAX_MERGED_VERTICES);
+    let mut out: Vec<Mesh> = Vec::with_capacity(meshes.len());
+    let mut last_blended = false;
+    for m in meshes {
+        if m.indices.is_empty() {
+            continue;
+        }
+        let blended = is_blended(&m);
+        if let Some(cur) = out.last_mut() {
+            if cur.texture == m.texture
+                && last_blended == blended
+                && cur.vertices.len() + m.vertices.len() <= max_vertices
+            {
+                let base = cur.vertices.len() as u16;
+                cur.vertices.extend_from_slice(&m.vertices);
+                cur.indices.extend(m.indices.iter().map(|&i| i + base));
+                continue;
+            }
+        }
+        last_blended = blended;
+        out.push(m);
+    }
+    out
+}
+
+/// `group_for_batching` and then `merge_adjacent`: opaque meshes grouped by texture and joined, blended ones joined only
+/// where they were already neighbours of one texture, so the blending order is kept.
+pub fn merge_for_draw(meshes: Vec<Mesh>) -> Vec<Mesh> {
+    let items: Vec<((), Mesh)> = meshes.into_iter().map(|m| ((), m)).collect();
+    let grouped: Vec<Mesh> = group_for_batching(items).into_iter().map(|(_, m)| m).collect();
+    merge_adjacent(grouped, MAX_MERGED_VERTICES)
+}
+
 /// A model of macroquad's batcher (`QuadGl::geometry`), which joins consecutive `draw_mesh` calls into one draw call:
 /// a new call starts where the texture changes, where the running call would pass `max_vertices` or `max_indices`, or
 /// after a flush (`reset`; a camera change flushes). Everything else the real batcher compares (the pipeline, the model
@@ -358,5 +399,64 @@ mod tests {
         let items = vec![(10, mesh_of(&[tri(0.0, 0.0, 1)])), (11, mesh_of(&[tri(0.0, 0.0, 2)]))];
         let out = group_for_batching(items);
         assert_eq!(out.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![10, 11]);
+    }
+
+    fn quad_mesh(n: usize, tag: u8) -> Mesh {
+        let mut m = Mesh { vertices: vec![], indices: vec![], texture: None };
+        for k in 0..n {
+            let base = m.vertices.len() as u16;
+            let x = k as f32;
+            m.vertices.extend_from_slice(&[vert(x, 0.0, tag), vert(x + 1.0, 0.0, tag), vert(x, 1.0, tag), vert(x + 1.0, 1.0, tag)]);
+            m.indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+        }
+        m
+    }
+
+    #[test]
+    fn merging_gives_the_same_triangles_in_fewer_meshes() {
+        let a = mesh_of(&[tri(0.0, 0.0, 1)]);
+        let b = mesh_of(&[tri(5.0, 0.0, 2), tri(7.0, 0.0, 3)]);
+        let mut want = triangles(&a);
+        want.extend(triangles(&b));
+        want.sort();
+        let out = merge_adjacent(vec![a, b], MAX_MERGED_VERTICES);
+        assert_eq!(out.len(), 1);
+        assert_eq!(triangles(&out[0]), want);
+        assert!(out[0].indices.iter().all(|&i| (i as usize) < out[0].vertices.len()));
+    }
+
+    #[test]
+    fn blended_and_opaque_meshes_are_not_merged_together() {
+        let a = mesh_of(&[tri(0.0, 0.0, 1)]);
+        let mut b = mesh_of(&[tri(5.0, 0.0, 2)]);
+        b.vertices[0].normal.w = 4.0;
+        assert_eq!(merge_adjacent(vec![a, b], MAX_MERGED_VERTICES).len(), 2);
+    }
+
+    #[test]
+    fn a_large_batch_splits_at_the_index_limit() {
+        // 20 meshes of 4000 vertices = 80000: more than one 16-bit mesh
+        let meshes: Vec<Mesh> = (0..20).map(|i| quad_mesh(1000, i as u8)).collect();
+        let total_v: usize = meshes.iter().map(|m| m.vertices.len()).sum();
+        let total_i: usize = meshes.iter().map(|m| m.indices.len()).sum();
+        let out = merge_adjacent(meshes, MAX_MERGED_VERTICES);
+        assert!(out.len() >= 2);
+        assert!(out.iter().all(|m| m.vertices.len() <= MAX_MERGED_VERTICES));
+        assert_eq!(out.iter().map(|m| m.vertices.len()).sum::<usize>(), total_v);
+        assert_eq!(out.iter().map(|m| m.indices.len()).sum::<usize>(), total_i);
+        for m in &out {
+            assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+        }
+    }
+
+    #[test]
+    fn merge_for_draw_never_drops_or_adds_triangles() {
+        let meshes: Vec<Mesh> = (0..6).map(|i| mesh_of(&[tri(i as f32 * 3.0, 0.0, i as u8)])).collect();
+        let mut want: Vec<_> = meshes.iter().flat_map(triangles).collect();
+        want.sort();
+        let out = merge_for_draw(meshes);
+        let mut got: Vec<_> = out.iter().flat_map(triangles).collect();
+        got.sort();
+        assert_eq!(got, want);
     }
 }

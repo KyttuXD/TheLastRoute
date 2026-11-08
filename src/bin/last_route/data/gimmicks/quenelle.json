@@ -1,0 +1,7 @@
+{
+	"_note": "Quenelle flashlight tracker (game_config.gd QUENELLE_*). lock_seconds is the continuous torch time before the permanent lock; Nightmare overrides it. The chase speed ramps from x1 to max_speed_scale over ramp_activations torch flicks.",
+	"lock_seconds": 8.0,
+	"nightmare_lock_seconds": 5.0,
+	"max_speed_scale": 1.45,
+	"ramp_activations": 10
+}

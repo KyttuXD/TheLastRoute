@@ -92,8 +92,10 @@ pub struct GovernorRules {
 }
 
 /// One row of the hardware table: every condition it names must hold. A row without conditions never loads.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HardwareRule {
+    /// Any of these (upper case) words in the GPU name; empty means the rule does not look at the GPU.
+    pub gpu_contains: Vec<String>,
     pub max_cores: Option<u32>,
     pub max_memory_gb: Option<f32>,
     pub mobile: Option<bool>,
@@ -130,7 +132,7 @@ pub const MIN_RENDER_SCALE: f32 = 0.25;
 impl Config {
     /// What the game uses when the file is missing or does not parse: the same numbers the file ships (a test keeps them in step).
     pub fn fallback() -> Config {
-        let rule = |max_cores, max_memory_gb, mobile, software, tier| HardwareRule { max_cores, max_memory_gb, mobile, software, tier };
+        let rule = |max_cores, max_memory_gb, mobile, software, tier| HardwareRule { gpu_contains: Vec::new(), max_cores, max_memory_gb, mobile, software, tier };
         Config {
             tier_scale: [0.32, 0.40, 0.50],
             notches: vec![
@@ -156,6 +158,10 @@ impl Config {
             auto: AutoRules {
                 hardware: vec![
                     rule(None, None, None, Some(true), Tier::Low),
+                    HardwareRule {
+                        gpu_contains: ["HD GRAPHICS 6000", "HD GRAPHICS 5000", "HD GRAPHICS 4000", "IRIS 5100"].map(String::from).to_vec(),
+                        ..rule(None, None, None, None, Tier::Low)
+                    },
                     rule(Some(2), None, None, None, Tier::Low),
                     rule(None, Some(2.0), None, None, Tier::Low),
                     rule(Some(4), None, None, None, Tier::Medium),
@@ -285,8 +291,16 @@ impl Config {
                     Some(b) => Some(b.as_bool().ok_or_else(|| at("software: true or false".into()))?),
                 },
                 tier: row.get("tier").and_then(Value::as_str).and_then(Tier::parse).ok_or_else(|| at("tier: expected LOW, MEDIUM or HIGH".into()))?,
+                gpu_contains: match row.get("gpu_contains") {
+                    None => Vec::new(),
+                    Some(l) => l
+                        .as_array()
+                        .filter(|l| !l.is_empty())
+                        .and_then(|l| l.iter().map(|w| w.as_str().filter(|w| !w.trim().is_empty()).map(|w| w.trim().to_uppercase())).collect::<Option<Vec<_>>>())
+                        .ok_or_else(|| at("gpu_contains: a list of words".into()))?,
+                },
             };
-            if rule.max_cores.is_none() && rule.max_memory_gb.is_none() && rule.mobile.is_none() && rule.software.is_none() {
+            if rule.gpu_contains.is_empty() && rule.max_cores.is_none() && rule.max_memory_gb.is_none() && rule.mobile.is_none() && rule.software.is_none() {
                 return Err(at("names no condition, so it would match everything".into()));
             }
             hardware.push(rule);
@@ -332,8 +346,10 @@ pub fn config() -> &'static Config {
 // ---- the AUTO tier -------------------------------------------------------------------------------------------------
 
 /// What the browser reports about the machine (packaging/web/hw.js). Zero or false means "not reported".
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Hardware {
+    /// The GPU's name in upper case (hw.js key `gpu`, the WebGL unmasked renderer), empty when not reported.
+    pub gpu: String,
     /// `navigator.hardwareConcurrency`, 0 when missing.
     pub cores: u32,
     /// `navigator.deviceMemory` in gigabytes (Chrome rounds it to a power of two and caps it at 8), 0 when missing.
@@ -356,6 +372,7 @@ impl Hardware {
             memory_gb: v.get("memory_gb").and_then(Value::as_f64).filter(|m| m.is_finite() && *m > 0.0).map_or(0.0, |m| m.min(4096.0) as f32),
             mobile: v.get("mobile").and_then(Value::as_bool).unwrap_or(false),
             software: v.get("software").and_then(Value::as_bool).unwrap_or(false),
+            gpu: v.get("gpu").and_then(Value::as_str).map_or(String::new(), |g| g.chars().take(120).collect::<String>().to_uppercase()),
         })
     }
 
@@ -374,13 +391,14 @@ impl Hardware {
     }
 
     fn reported(&self) -> bool {
-        self.cores > 0 || self.memory_gb > 0.0
+        self.cores > 0 || self.memory_gb > 0.0 || !self.gpu.is_empty()
     }
 }
 
 impl HardwareRule {
     fn matches(&self, hw: &Hardware) -> bool {
-        self.max_cores.map_or(true, |m| hw.cores > 0 && hw.cores <= m)
+        (self.gpu_contains.is_empty() || self.gpu_contains.iter().any(|w| hw.gpu.contains(w.as_str())))
+            && self.max_cores.map_or(true, |m| hw.cores > 0 && hw.cores <= m)
             && self.max_memory_gb.map_or(true, |m| hw.memory_gb > 0.0 && hw.memory_gb <= m)
             && self.mobile.map_or(true, |b| hw.mobile == b)
             && self.software.map_or(true, |b| hw.software == b)
@@ -398,6 +416,13 @@ pub fn pick_tier(auto: &AutoRules, hw: &Hardware) -> Tier {
     } else {
         auto.default_tier
     }
+}
+
+/// [`pick_tier`] for the browser build: a matching hardware row still decides, but when none does (or nothing was reported)
+/// the web default applies (data/app/gfx.json web.default_tier, LOW as shipped) instead of the table's own default and
+/// unknown tiers, which suit a desktop.
+pub fn pick_tier_web(auto: &AutoRules, hw: &Hardware, web_default: Tier) -> Tier {
+    auto.hardware.iter().find(|r| r.matches(hw)).map_or(web_default, |r| r.tier)
 }
 
 /// The seconds a frame should take: one over the lower of the target and the FPS LIMIT row (0, or under 15, is unlimited).
@@ -648,6 +673,10 @@ impl Manager {
     /// `hw` is the browser's report; `None` (a native build) keeps AUTO = HIGH.
     pub fn new(cfg: &'static Config, hw: Option<Hardware>) -> Manager {
         let auto = match hw {
+            Some(hw) if crate::shared::task::IN_BROWSER => {
+                let web = Tier::parse(&crate::app::gfx::web_rules().default_tier).unwrap_or(Tier::Low);
+                Auto::Measuring(pick_tier_web(&cfg.auto, &hw, web), Measure::default())
+            }
             Some(hw) => Auto::Measuring(pick_tier(&cfg.auto, &hw), Measure::default()),
             None => Auto::Resolved(Tier::High),
         };
@@ -943,6 +972,20 @@ mod tests {
     }
 
     #[test]
+    fn an_intel_mac_gpu_name_picks_low_before_any_frame_is_timed() {
+        let a = &Config::fallback().auto;
+        let air = Hardware::parse(r#"{"cores":8,"memory_gb":8,"gpu":"ANGLE (Intel Inc., Intel(R) HD Graphics 6000, OpenGL 4.1)"}"#).unwrap();
+        assert_eq!(pick_tier(a, &air), Tier::Low);
+        assert_eq!(pick_tier(a, &hw(8, 8.0)), Tier::High, "no GPU name, no GPU rule");
+        let other = Hardware::parse(r#"{"cores":8,"memory_gb":8,"gpu":"NVIDIA GeForce RTX 3060"}"#).unwrap();
+        assert_eq!(pick_tier(a, &other), Tier::High);
+        // a GPU name alone is a report, so it is not the unknown tier
+        let mut u = a.clone();
+        u.unknown_tier = Tier::Medium;
+        assert_eq!(pick_tier(&u, &Hardware { gpu: "X".into(), ..Default::default() }), Tier::High);
+    }
+
+    #[test]
     fn the_hardware_table_picks_a_tier() {
         let auto = &Config::fallback().auto;
         let cases: Vec<(&str, Hardware, Tier)> = vec![
@@ -956,14 +999,16 @@ mod tests {
             ("eight cores, 8 GB", hw(8, 8.0), Tier::High),
             ("twelve cores, memory not reported (Firefox, Safari)", hw(12, 0.0), Tier::High),
             ("cores not reported, 8 GB", hw(0, 8.0), Tier::High),
-            ("a phone", Hardware { cores: 8, memory_gb: 8.0, mobile: true, software: false }, Tier::Medium),
-            ("a software renderer", Hardware { cores: 16, memory_gb: 8.0, mobile: false, software: true }, Tier::Low),
+            ("a phone", Hardware { cores: 8, memory_gb: 8.0, mobile: true, ..Default::default() }, Tier::Medium),
+            ("a software renderer", Hardware { cores: 16, memory_gb: 8.0, software: true, ..Default::default() }, Tier::Low),
         ];
         for (name, h, want) in cases {
             assert_eq!(pick_tier(auto, &h), want, "{name}");
         }
         // nothing reported at all is the unknown tier; a phone flag alone is still a report
         assert_eq!(pick_tier(auto, &Hardware::default()), auto.unknown_tier);
+        assert_eq!(pick_tier_web(auto, &Hardware::default(), Tier::Low), Tier::Low, "the web default replaces the desktop default");
+        assert_eq!(pick_tier_web(auto, &hw(1, 8.0), Tier::High), Tier::Low, "a matching row still decides");
         let mut stricter = auto.clone();
         stricter.unknown_tier = Tier::Medium;
         assert_eq!(pick_tier(&stricter, &Hardware::default()), Tier::Medium);

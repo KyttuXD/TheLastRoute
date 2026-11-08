@@ -1,0 +1,7 @@
+{
+  "schema": "lr.chunk_prewarm/1",
+  "_about": "Chunk-window prewarm (game/preload.rs `ChunkPrewarm`, hooked in Game::prewarm_chunks). margin_m: how close (metres) the runner gets to the edge of the middle chunk before the chunks beyond that edge are generated into the window cache. gap_frames: frames to wait after a step. chunks_per_step: chunks generated per step (the per-frame budget). A chunk is a pure function of the seed, so prewarming never changes the world.",
+  "margin_m": 8.0,
+  "gap_frames": 8,
+  "chunks_per_step": 1
+}

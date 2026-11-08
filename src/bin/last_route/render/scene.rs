@@ -24,7 +24,11 @@ use crate::world::route::sewer::core as sewer_core;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
+
+/// Frames drawn, for the far hunters' pose LOD (render/hunter_cache.rs `pose_due`).
+static HUNTER_FRAME: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     /// The meshes of the static props (relays, batteries, lockers' bodies and the like), kept while they stay drawn.
@@ -173,6 +177,26 @@ pub fn camera_from_view(g: &Game, rt: &RenderTarget, (eye, fwd, _, _): (Vec3, Ve
     }
 }
 
+thread_local! {
+    /// Reused per-frame lamp buffers: (the frame's lamps in order, the same with this frame's flicker).
+    static LAMP_SCRATCH: RefCell<(Vec<Lamp>, Vec<Lamp>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
+/// The frame's lamp list in `out`: the room's, then the storey's own, the grab fill, then the other runners'.
+fn gather_lamps(out: &mut Vec<Lamp>, room: &[Lamp], fx: &[Lamp], grab: Option<Lamp>, remote: &[Lamp]) {
+    out.clear();
+    out.extend_from_slice(room);
+    out.extend_from_slice(fx);
+    out.extend(grab);
+    out.extend_from_slice(remote);
+}
+
+/// `lamp_flicker::applied` into a reused buffer.
+fn flicker_into(out: &mut Vec<Lamp>, lamps: &[Lamp], t_s: f32, reduced_motion: bool) {
+    out.clear();
+    out.extend(lamps.iter().map(|l| if reduced_motion { *l } else { Lamp { energy: l.energy * lamp_flicker::factor(t_s, l.flicker), ..*l } }));
+}
+
 /// `lamps` with the flicker of this frame (steady while the reduced motion setting is on).
 pub fn flickered(g: &Game, lamps: &[Lamp]) -> Vec<Lamp> {
     lamp_flicker::applied(lamps, g.time, crate::ui::style::reduced_motion())
@@ -319,18 +343,24 @@ pub fn draw_scene(
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
     // this storey's own lights join the room's lamps: the falls' pool lights, the inferno's lava and cracks
     let fx = level_fx(g, light.eye);
-    let mut extra = fx.lamps.clone();
-    extra.extend(grab_fill(g.escape.is_some(), grab::camera()));
+    let grab_lamp = grab_fill(g.escape.is_some(), grab::camera());
     // the resident neighbour's lamps join the room's (the stairwell lamp and the two nearest), see world_stack::merge_lamps
-    let mut lamps = if g.world_nb.items.is_empty() {
-        g.world.lamps.clone()
+    let merged;
+    let room: &[Lamp] = if g.world_nb.items.is_empty() {
+        &g.world.lamps
     } else {
         let nb = g.world_nb.lamps(&g.fac);
-        world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::lamp_cap())
+        merged = world_stack::merge_lamps(&g.world.lamps, &nb, light.eye, shader::lamp_cap());
+        &merged
     };
-    lamps.extend(extra);
-    lamps.extend_from_slice(remote_lamps);
-    shader::apply(mat, &light, &flickered(g, &lamps));
+    // one reused buffer pair instead of a clone, an extend and a flicker copy per frame
+    LAMP_SCRATCH.with(|c| {
+        let mut c = c.borrow_mut();
+        let (all, lit) = &mut *c;
+        gather_lamps(all, room, &fx.lamps, grab_lamp, remote_lamps);
+        flicker_into(lit, all, g.time, crate::ui::style::reduced_motion());
+        shader::apply(mat, &light, lit);
+    });
     // the falls' loop plays from the nearest fall in range, and stops on a storey without one
     {
         let (_, fwd, right, up) = view(g);
@@ -343,6 +373,7 @@ pub fn draw_scene(
     PROP_RANGE.with(|r| r.set((prop_scale < 1.0).then(|| (light.eye, (cull_range * prop_scale).max(PROP_RANGE_FLOOR)))));
     // the floor's meshes wholly past the fog's full reach are skipped: they would paint the fog colour alone (see
     // `box_fully_fogged`), which the clear colour already is
+    super::draw_stats::set_section(super::draw_stats::Section::World);
     let t_world = crate::app::perf::section("world meshes");
     let (seen, fogged, off_view) = draw_culled(&g.world.meshes, &g.world.bounds, light.eye, cull_range, frustum.as_ref());
     super::draw_stats::note_world_cull(seen, fogged, off_view);
@@ -368,6 +399,7 @@ pub fn draw_scene(
         let _t = crate::app::perf::section("doors");
         draw_doors(g, a);
     }
+    super::draw_stats::set_section(super::draw_stats::Section::Props);
     let t_items = crate::app::perf::section("scene items");
     let mut b = Builder::new(Some(a.white.clone()));
     let t = g.time;
@@ -626,6 +658,8 @@ pub fn draw_scene(
 
     // hunters: posed by their rig (render/anim, the original's clips + view layers). Dormant hunters are drawn too, slumped
     // in their slowed stun clip (HunterView3D.model_alpha: an inactive hunter shows whole).
+    super::draw_stats::set_section(super::draw_stats::Section::Actors);
+    let hunter_frame = HUNTER_FRAME.fetch_add(1, AtomicOrdering::Relaxed);
     let t_hunters = crate::app::perf::section("hunters");
     let (cam_fwd, _, _) = g.camera_basis();
     let runner_feet = vec3(g.p.pos.0, (g.p.height + g.p.feet_y).max(0.0), g.p.pos.1);
@@ -775,6 +809,27 @@ pub fn draw_scene(
                 mechanic: anim::profile::mechanic_of(h),
             };
             let (pose, normal) = view.update(&input, dt, g.time);
+            // a far hunter re-poses every few frames (data/render/hunters.json lod_bands) and shows its last mesh between;
+            // near ones have interval 1 and are always due. A held, stunned, mechanic or beam hunter is always posed.
+            if !is_held
+                && h.stun <= 0.0
+                && input.mechanic.is_none()
+                && !super::beam::kathy_beam_shown(&h.gimmick, h.active, held, faded, h.stun)
+            {
+                let dist = ((h.pos.0 - light.eye.x).powi(2) + (h.pos.1 - light.eye.z).powi(2)).sqrt();
+                if hunter_cache::beyond_fog(tune, dist) || !hunter_cache::pose_due(tune, dist, hunter_frame, cslot) {
+                    let reused = HUNTER_MESHES.with(|m| match m.borrow_mut().cache.stale((lvl, cslot), id) {
+                        Some(mesh) => {
+                            crate::render::draw_stats::draw_counted(mesh);
+                            true
+                        }
+                        None => false,
+                    });
+                    if reused {
+                        continue;
+                    }
+                }
+            }
             let out = grab::drive(
                 slot,
                 held,
@@ -873,6 +928,7 @@ pub fn draw_scene(
         falling: false,
     }));
     runner_figure::draw_bots(a, &bot_views);
+    let mut eyes: Option<Builder> = None;
     for h in g.hunters.iter().filter(|h| h.active) {
         let faded = h.gimmick.hidden_from_view();
         if faded && !matches!(h.gimmick, Gimmick::Ilyra(_)) {
@@ -881,7 +937,7 @@ pub fn draw_scene(
         let yaw = (-h.facing.0).atan2(-h.facing.1);
         let eye_dy = crate::render::stack_actors::actor_dy(h.y, g.fac.level);
         if let Some(eye) = h.gimmick.eye_color() {
-            let mut e = Builder::new(Some(a.white.clone()));
+            let e = eyes.get_or_insert_with(|| Builder::new(Some(a.white.clone())));
             let fwd = vec3(h.facing.0, 0.0, h.facing.1);
             let right = vec3(-h.facing.1, 0.0, h.facing.0);
             for s in [-1.0, 1.0] {
@@ -893,10 +949,13 @@ pub fn draw_scene(
                     2.0,
                 );
             }
-            e.draw_and_clear();
         }
     }
+    if let Some(mut e) = eyes {
+        e.draw_and_clear();
+    }
     drop(t_hunters);
+    super::draw_stats::set_section(super::draw_stats::Section::Effects);
     draw_level_fx(g, a, &fx, light.eye);
     drop(world);
 }
@@ -1061,6 +1120,9 @@ pub fn scene_lights() -> &'static SceneLights {
 /// The room doors, each swung to its open amount (the world meshes hold them shut): the hinge leaves of every door near
 /// enough to be seen, batched by texture.
 fn draw_doors(g: &Game, a: &Assets) {
+    if g.world.doors.is_empty() {
+        return;
+    }
     let eye = g.eye();
     let mut parts = HashMap::new();
     for d in &g.world.doors {
@@ -1421,6 +1483,44 @@ mod tests {
         // far behind and past the fog: the fog cull still drops it
         let far = (vec3(-1.0, 0.0, 90.0), vec3(1.0, 3.0, 93.0));
         assert_eq!(mesh_cull(Some(&far), eye, reach, None), MeshCull::Fogged);
+    }
+
+    fn test_lamp(e: f32, f: Flicker) -> Lamp {
+        Lamp { pos: vec3(e, 1.0, 2.0), range: 5.0, color: WHITE, energy: e, flicker: f }
+    }
+
+    #[test]
+    fn the_scratch_lamp_list_equals_the_cloned_one_and_reuse_leaves_no_stale_lamps() {
+        let room = [test_lamp(1.0, Flicker::NONE), test_lamp(2.0, Flicker::NONE)];
+        let fx = [test_lamp(3.0, Flicker::NONE)];
+        let grab = Some(test_lamp(4.0, Flicker::NONE));
+        let remote = [test_lamp(5.0, Flicker::NONE)];
+        let mut want = room.to_vec();
+        want.extend_from_slice(&fx);
+        want.extend(grab);
+        want.extend_from_slice(&remote);
+        let mut out = vec![test_lamp(9.0, Flicker::NONE); 7];
+        gather_lamps(&mut out, &room, &fx, grab, &remote);
+        let e = |v: &[Lamp]| v.iter().map(|l| l.energy).collect::<Vec<_>>();
+        assert_eq!(e(&out), e(&want));
+        gather_lamps(&mut out, &room[..1], &[], None, &[]);
+        assert_eq!(e(&out), vec![1.0]);
+    }
+
+    #[test]
+    fn the_buffered_flicker_equals_lamp_flicker_applied() {
+        let wobble = Flicker { hz: 3.0, depth: 0.4, phase: 0.7 };
+        let lamps = [test_lamp(1.0, Flicker::NONE), test_lamp(2.0, wobble)];
+        for reduced in [false, true] {
+            let mut out = vec![test_lamp(9.0, Flicker::NONE); 5];
+            flicker_into(&mut out, &lamps, 3.7, reduced);
+            let want = lamp_flicker::applied(&lamps, 3.7, reduced);
+            assert_eq!(out.len(), want.len());
+            for (a, b) in out.iter().zip(&want) {
+                assert_eq!(a.energy, b.energy);
+                assert_eq!(a.pos, b.pos);
+            }
+        }
     }
 
     #[test]

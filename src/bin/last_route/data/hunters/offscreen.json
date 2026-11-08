@@ -1,0 +1,10 @@
+{
+  "schema": "lr.offscreen_hunters/1",
+  "_note": "Coarse life of the hunters nobody simulates (the level-0 shelf and the shelves of the floors the runner left): game/resident_hunters.rs. They move without a map, at these speeds, every step_seconds, and settle on a walkable dry cell when their chunk is loaded.",
+  "step_seconds": 0.5,
+  "max_step_seconds": 2.0,
+  "wander_speed": 1.2,
+  "drift_speed": 2.4,
+  "entry_radius": 6,
+  "drift_states": ["CHASE", "SEARCH", "INVESTIGATE"]
+}

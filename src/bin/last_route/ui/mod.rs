@@ -3,7 +3,9 @@
 
 pub mod admin;
 pub mod boot;
+pub mod chat_box;
 pub mod clipboard;
+pub mod emote_wheel;
 pub mod hud;
 pub mod hud_bars;
 pub mod map;

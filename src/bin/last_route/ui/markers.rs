@@ -304,6 +304,7 @@ mod tests {
             held: None,
             flash_pitch: None,
             look_pitch: 0.0,
+            emote: None,
             hide: None,
             hide_since: None,
         }

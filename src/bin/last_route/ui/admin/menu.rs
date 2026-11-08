@@ -295,7 +295,7 @@ impl Admin {
         let had_click = ui.click;
         match tab {
             0 => {
-                let status = self.status(g);
+                let status = self.status_with(g, &self.room);
                 for line in wrap(&ui, &status, 8.0, page.w) {
                     let r = col.take(13.0, 0.0);
                     if ui.visible(r) {

@@ -1001,10 +1001,16 @@ impl Admin {
 
     /// _admin_status: the STATUS page readout.
     pub(super) fn status(&self, g: &Game) -> String {
+        self.status_with(g, &RoomStatus::default())
+    }
+
+    /// The STATUS readout with the room the player is in (solo when `room.code` is empty).
+    pub(super) fn status_with(&self, g: &Game, room: &RoomStatus) -> String {
         let server = crate::net::config::PRIMARY_BASE_URL.trim_start_matches("https://").trim_start_matches("http://");
         let mut out = format!(
-            "BUILD {}\nSERVER {server}\n",
-            crate::app::updater::build_label()
+            "BUILD {}\nSERVER {}\n",
+            crate::app::updater::build_label(),
+            room.server_line(server)
         );
         let region = g
             .fac
@@ -1089,6 +1095,75 @@ impl Admin {
             );
         }
         out
+    }
+}
+
+/// What the STATUS page knows of the room (built by the app from the NetSession each frame). The default is solo.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RoomStatus {
+    /// The room code; empty when solo (no room).
+    pub code: String,
+    pub host: bool,
+    /// A server process hosts the room (the host is not a player).
+    pub dedicated: bool,
+    /// The relay accepted this runner.
+    pub linked: bool,
+    /// The relay connection is not over for good.
+    pub alive: bool,
+    pub guests: usize,
+    pub public_route: bool,
+}
+
+impl RoomStatus {
+    /// The STATUS "SERVER" value: the real state of the room, or the plain server for a solo run.
+    pub fn server_line(&self, server: &str) -> String {
+        if self.code.is_empty() {
+            return format!("{server} OFFLINE (SOLO, NO SERVER)");
+        }
+        let link = if !self.alive {
+            "RELAY DOWN"
+        } else if self.linked {
+            "RELAY UP"
+        } else {
+            "RELAY CONNECTING"
+        };
+        let who = match (self.host, self.dedicated) {
+            (true, true) => "DEDICATED HOST",
+            (true, false) => "PLAYER HOST",
+            (false, true) => "GUEST OF DEDICATED HOST",
+            (false, false) => "GUEST OF PLAYER HOST",
+        };
+        let route = if self.public_route { "PUBLIC ROUTE" } else { "PRIVATE ROOM" };
+        let guests = if self.host { format!(" GUESTS {}", self.guests) } else { String::new() };
+        format!("{server} ROOM {} {who} {link}{guests} {route}", self.code.to_uppercase())
+    }
+}
+
+#[cfg(test)]
+mod room_status_tests {
+    use super::RoomStatus;
+
+    #[test]
+    fn solo_shows_offline() {
+        let line = RoomStatus::default().server_line("x.test");
+        assert!(line.contains("OFFLINE") && line.contains("SOLO"), "{line}");
+    }
+
+    #[test]
+    fn a_guest_of_a_dedicated_room_shows_code_and_link_state() {
+        let mut room = RoomStatus { code: "abc123".into(), dedicated: true, alive: true, linked: true, ..Default::default() };
+        let up = room.server_line("x.test");
+        assert!(up.contains("ABC123") && up.contains("GUEST OF DEDICATED") && up.contains("RELAY UP"), "{up}");
+        assert!(!up.contains("OFFLINE") && !up.contains("GUESTS"), "{up}");
+        room.alive = false;
+        assert!(room.server_line("x.test").contains("RELAY DOWN"));
+    }
+
+    #[test]
+    fn a_host_shows_guest_count_and_public_route() {
+        let room = RoomStatus { code: "PUB".into(), host: true, alive: true, linked: true, guests: 3, public_route: true, ..Default::default() };
+        let line = room.server_line("x.test");
+        assert!(line.contains("PLAYER HOST") && line.contains("GUESTS 3") && line.contains("PUBLIC ROUTE"), "{line}");
     }
 }
 

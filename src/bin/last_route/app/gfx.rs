@@ -148,11 +148,94 @@ pub struct GfxRules {
     pub good_frames: u32,
     /// AUTO gives Metal on Apple Silicon. False until Metal is measured faster than OpenGL there.
     pub auto_metal_on_apple_silicon: bool,
+    /// The browser build's choices (the `web` object; absent in an older file, then the defaults).
+    pub web: WebRules,
+}
+
+/// The browser build's graphics choices (data/app/gfx.json `web`). Every field is optional in the file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebRules {
+    /// The quality tier the browser starts on (LOW, MEDIUM or HIGH).
+    pub default_tier: String,
+    /// Whether the canvas is created at device pixels (miniquad `high_dpi`).
+    pub high_dpi: bool,
+    /// The most the device pixel ratio multiplies the 3D target by when `high_dpi` is on.
+    pub max_pixel_ratio: f32,
+    /// The 3D target never renders above this share of the canvas in the browser.
+    pub render_scale_cap: f32,
+    /// requestAnimationFrame paces the loop, so the FPS LIMIT wait is skipped in the browser.
+    pub page_paces_frames: bool,
+    /// The browser times render sections only while the F7 panel shows.
+    pub sections_only_when_shown: bool,
+}
+
+impl Default for WebRules {
+    fn default() -> WebRules {
+        WebRules {
+            default_tier: "LOW".into(),
+            high_dpi: false,
+            max_pixel_ratio: 1.0,
+            render_scale_cap: 0.5,
+            page_paces_frames: true,
+            sections_only_when_shown: true,
+        }
+    }
+}
+
+impl WebRules {
+    fn parse(v: &serde_json::Value) -> Result<WebRules, String> {
+        let mut w = WebRules::default();
+        if v.is_null() {
+            return Ok(w);
+        }
+        if let Some(t) = v.get("default_tier") {
+            let t = t.as_str().map(|t| t.to_ascii_uppercase());
+            w.default_tier = t
+                .filter(|t| matches!(t.as_str(), "LOW" | "MEDIUM" | "HIGH"))
+                .ok_or_else(|| "web.default_tier: must be LOW, MEDIUM or HIGH".to_string())?;
+        }
+        let flag = |key: &str, into: &mut bool| -> Result<(), String> {
+            if let Some(x) = v.get(key) {
+                *into = x.as_bool().ok_or_else(|| format!("web.{key}: must be true or false"))?;
+            }
+            Ok(())
+        };
+        flag("high_dpi", &mut w.high_dpi)?;
+        flag("page_paces_frames", &mut w.page_paces_frames)?;
+        flag("sections_only_when_shown", &mut w.sections_only_when_shown)?;
+        let num = |key: &str, lo: f64, hi: f64, into: &mut f32| -> Result<(), String> {
+            if let Some(x) = v.get(key) {
+                let n = x.as_f64().filter(|n| n.is_finite() && (lo..=hi).contains(n));
+                *into = n.ok_or_else(|| format!("web.{key}: must be a number from {lo} to {hi}"))? as f32;
+            }
+            Ok(())
+        };
+        num("max_pixel_ratio", 1.0, 4.0, &mut w.max_pixel_ratio)?;
+        num("render_scale_cap", 0.1, 1.0, &mut w.render_scale_cap)?;
+        Ok(w)
+    }
+
+    /// The 3D target scale to ask for in the browser: the quality scale capped at `render_scale_cap`. When the canvas
+    /// is at device pixels (`high_dpi`) the window is `dpr` times bigger, so the scale is divided by the ratio and
+    /// multiplied back by the part in use (at most `max_pixel_ratio`).
+    pub fn target_scale(&self, base: f32, dpr: f32) -> f32 {
+        let capped = base.min(self.render_scale_cap);
+        if !self.high_dpi {
+            return capped;
+        }
+        let dpr = if dpr.is_finite() { dpr.max(1.0) } else { 1.0 };
+        capped * dpr.min(self.max_pixel_ratio) / dpr
+    }
 }
 
 impl Default for GfxRules {
     fn default() -> GfxRules {
-        GfxRules { boot_marker: "gfx_boot.marker".into(), good_frames: 120, auto_metal_on_apple_silicon: false }
+        GfxRules {
+            boot_marker: "gfx_boot.marker".into(),
+            good_frames: 120,
+            auto_metal_on_apple_silicon: false,
+            web: WebRules::default(),
+        }
     }
 }
 
@@ -175,7 +258,8 @@ impl GfxRules {
         let auto_metal = v["auto_metal_on_apple_silicon"]
             .as_bool()
             .ok_or_else(|| "auto_metal_on_apple_silicon: must be true or false".to_string())?;
-        Ok(GfxRules { boot_marker: marker.into(), good_frames: frames as u32, auto_metal_on_apple_silicon: auto_metal })
+        let web = WebRules::parse(&v["web"])?;
+        Ok(GfxRules { boot_marker: marker.into(), good_frames: frames as u32, auto_metal_on_apple_silicon: auto_metal, web })
     }
 }
 
@@ -189,6 +273,11 @@ pub fn gfx_rules() -> &'static GfxRules {
             GfxRules::default()
         })
     })
+}
+
+/// The browser build's graphics choices.
+pub fn web_rules() -> &'static WebRules {
+    &gfx_rules().web
 }
 
 /// True when Metal can open a device here. Always false off macOS.
@@ -566,5 +655,51 @@ mod tests {
             assert!(process_alive(crate::shared::task::process_id()));
             assert!(!process_alive(0));
         }
+    }
+
+    #[test]
+    fn web_data_is_the_shipped_default_and_old_files_without_it_parse() {
+        let r = GfxRules::parse(include_str!("../data/app/gfx.json")).unwrap();
+        assert_eq!(r.web, WebRules::default());
+        assert_eq!(web_rules(), &r.web);
+        let old = r#"{ "schema": "lr.gfx/1", "boot_marker": "m", "good_frames": 5, "auto_metal_on_apple_silicon": false }"#;
+        assert_eq!(GfxRules::parse(old).unwrap().web, WebRules::default());
+        // the browser starts on the cheapest tier, as an Intel Air needs
+        assert_eq!(WebRules::default().default_tier, "LOW");
+    }
+
+    #[test]
+    fn web_values_change_behaviour_and_bad_values_are_refused() {
+        let web = |body: &str| {
+            GfxRules::parse(&format!(
+                r#"{{ "schema": "lr.gfx/1", "boot_marker": "m", "good_frames": 5, "auto_metal_on_apple_silicon": false, "web": {{ {body} }} }}"#
+            ))
+        };
+        assert_eq!(web(r#""default_tier": "medium""#).unwrap().web.default_tier, "MEDIUM");
+        assert!(web(r#""default_tier": "ULTRA""#).is_err());
+        assert!(web(r#""render_scale_cap": 0.0"#).is_err());
+        assert!(web(r#""max_pixel_ratio": 0.5"#).is_err());
+        assert!(web(r#""high_dpi": "yes""#).is_err());
+        assert!(!web(r#""page_paces_frames": false"#).unwrap().web.page_paces_frames);
+        // the cap lowers a higher scale and leaves a lower one alone
+        let w = web(r#""render_scale_cap": 0.4"#).unwrap().web;
+        assert_eq!(w.target_scale(0.5, 2.0), 0.4);
+        assert_eq!(w.target_scale(0.32, 2.0), 0.32);
+    }
+
+    #[test]
+    fn device_pixel_ratio_never_raises_the_target_past_the_data_limit() {
+        let mut w = WebRules::default();
+        // CSS-sized canvas: the ratio is ignored
+        assert_eq!(w.target_scale(0.5, 2.0), 0.5);
+        // device-pixel canvas at ratio 2, limit 1: the same pixels as the CSS canvas
+        w.high_dpi = true;
+        assert!((w.target_scale(0.5, 2.0) - 0.25).abs() < 1e-6);
+        // limit 2 gives the full share back
+        w.max_pixel_ratio = 2.0;
+        assert!((w.target_scale(0.5, 2.0) - 0.5).abs() < 1e-6);
+        // a ratio under 1 or a broken one counts as 1
+        assert_eq!(w.target_scale(0.5, 0.5), 0.5);
+        assert_eq!(w.target_scale(0.5, f32::NAN), 0.5);
     }
 }

@@ -86,6 +86,8 @@ pub fn targets(old: Option<Targets>, quality: &str) -> Targets {
 /// [`targets`] at an explicit render scale: the quality manager's (`quality::Live::render_scale`), which follows the AUTO
 /// pick and the governor's notch. A new scale makes new render targets; the same size keeps the old ones.
 pub fn targets_scaled(old: Option<Targets>, scale: f32) -> Targets {
+    // the browser caps the scale and divides out the device pixel ratio (data/app/gfx.json web block)
+    let scale = if crate::shared::task::IN_BROWSER { gfx::web_rules().target_scale(scale, screen_dpi_scale()) } else { scale };
     let w = (screen_width() * scale).max(64.0) as u32;
     let h = (screen_height() * scale).max(36.0) as u32;
     if let Some(t) = old {
@@ -220,6 +222,13 @@ fn read_controls(
     c.flashlight = is_key_pressed(KeyCode::F);
     c.taser = is_key_pressed(KeyCode::G);
     c.drop = is_key_pressed(KeyCode::Q);
+    // how long Q has been held: a hold past data/player/drop.json drops the whole stack (the count restarts when it is up)
+    thread_local!(static DROP_HELD: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) });
+    c.drop_held_for = DROP_HELD.with(|h| {
+        let v = if is_key_down(KeyCode::Q) { h.get() + dt } else { 0.0 };
+        h.set(v);
+        v
+    });
     let digits = [
         KeyCode::Key1,
         KeyCode::Key2,
@@ -673,7 +682,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut net_pending: Option<(NetIntent, Pending<NetSession>)> = None;
     // co-op chat: the lines on screen, the line being typed (T opens it) and the client-side PUBLIC join throttle
     let mut chat_feed = crate::net::chat::ChatFeed::default();
-    let mut chat_input: Option<String> = None;
+    let mut chat_box = crate::ui::chat_box::ChatBox::default();
+    // nearby chat read aloud (audio/tts.rs); silent in the browser
+    let mut tts_speaker = crate::audio::tts::Speaker::new();
+    // the emote wheel's pointer, in pixels from the wheel's centre (a grabbed cursor does not move, so look motion drives it)
+    let mut emote_ptr = Vec2::ZERO;
     let mut public_joins = crate::app::public_route::JoinThrottle::default();
     // PUBLIC ROUTE: the way back into the room after its host left (net/public_reform.rs). The runner keeps playing meanwhile.
     let mut reform: Option<PublicReform> = None;
@@ -1024,6 +1037,20 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 let (ox, oy) = g.window_origin();
                 ([g.p.pos.0 as f64 + ox as f64, g.p.y() as f64, g.p.pos.1 as f64 + oy as f64], g.depth as i64)
             });
+            tts_speaker.set_local_peer(n.local_peer_id());
+            let now_ms = (get_time() * 1000.0) as i64;
+            for line in &lines {
+                tts_speaker.speak_line(
+                    line,
+                    lw,
+                    ld,
+                    crate::audio::tts::Settings { enabled: settings.speech_enabled },
+                    &settings.muted_peers,
+                    now_ms,
+                    settings.master_volume,
+                    settings.voice_volume,
+                );
+            }
             chat_feed.push(lines, lw, ld);
         }
         chat_feed.tick(get_frame_time());
@@ -1039,6 +1066,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 world_sync::Sample::of(&g.p, g.depth, g.window_origin())
                     .with_run_state(g.report.is_some(), g.escape.is_some())
                     .with_held(g.selected_item())
+                    .with_emote(g.emote.wire())
                     .with_body(
                         crate::net::runner_figure::local_state(g).pose(),
                         g.p.vy(),
@@ -1409,6 +1437,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             if screenshot.is_some() && env("LR_SHOT_REMOTE").is_some() {
                 remotes.push(shot_remote(g));
             }
+            g.sync_other_hiders(&remotes);
             let marks = crate::ui::markers::all_markers(g, &remotes);
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
@@ -1423,6 +1452,18 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             // RESET PASSWORD (FIELDS tab) is for the full admin owners, by the server's own flag; the field's request goes out here
             admin.owner = backend.signed_in() && backend.account_info.as_ref().is_some_and(|a| a.admin_owner);
             admin.in_room = net.as_ref().is_some_and(|n| !n.is_host());
+            admin.room = match net.as_ref() {
+                Some(n) => crate::ui::admin::RoomStatus {
+                    code: n.code.clone(),
+                    host: n.is_host(),
+                    dedicated: n.hosted_by_server(),
+                    linked: n.linked(),
+                    alive: n.link_alive(),
+                    guests: n.guest_count(),
+                    public_route: n.is_public_route(),
+                },
+                None => Default::default(),
+            };
             admin.run_password_reset(&backend.config, &backend.account.session_token);
             admin.run_public(&backend.config, &backend.account.session_token);
             let admin_esc = if in_report || pz.open {
@@ -1430,7 +1471,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             } else {
                 admin.input(g)
             };
-            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() && chat_input.is_none() {
+            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() && !chat_box.typing() && !g.emote.is_open() {
                 if pz.open {
                     pause::escape(&mut pz);
                 } else if map_open {
@@ -1534,8 +1575,46 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                     dt,
                 ),
             };
-            if pz.open || map_open || admin.is_open() || update_screen.is_shown() || chat_input.is_some() {
+            if pz.open || map_open || admin.is_open() || update_screen.is_shown() || chat_box.typing() {
                 c = Controls::default();
+            }
+            // the emote wheel: hold the key (data/player/emotes.json), point with the mouse, release to play; Escape drops it
+            if let Some(set) = crate::render::anim::emote_pose::set() {
+                if let Some(k) = crate::game::emote::key_from_name(&set.key) {
+                    let free = !pz.open && !map_open && !admin.is_open() && !update_screen.is_shown() && !chat_box.typing() && !in_report && stress_run.is_none();
+                    if free && g.report.is_none() && is_key_pressed(k) {
+                        g.emote.open();
+                        emote_ptr = Vec2::ZERO;
+                    }
+                    if g.emote.is_open() {
+                        if !free || is_key_pressed(KeyCode::Escape) {
+                            g.emote.cancel_wheel();
+                        } else {
+                            let screen = vec2(screen_width(), screen_height());
+                            let (centre, outer, inner) = crate::ui::emote_wheel::layout(set, screen);
+                            if grabbed {
+                                let per_radian = (settings.sensitivity * look::cfg().multiplier()).max(1e-4);
+                                emote_ptr += c.look / per_radian;
+                                if emote_ptr.length() > outer {
+                                    emote_ptr = emote_ptr.normalize() * outer;
+                                }
+                            } else {
+                                let (mx, my) = mouse_position();
+                                emote_ptr = vec2(mx, my) - centre;
+                            }
+                            let pick = crate::ui::emote_wheel::pick_pointer(set.emotes.len(), Vec2::ZERO, emote_ptr, inner);
+                            g.emote.set_hover(pick);
+                            if is_key_released(k) {
+                                let _ = g.emote.release(set, g.time, g.p.moving, g.p.sprinting);
+                            }
+                        }
+                        // the camera and clicks stay still while the wheel is open
+                        c.look = Vec2::ZERO;
+                        c.use_item = false;
+                        c.interact = false;
+                        c.interact_held = false;
+                    }
+                }
             }
             // the click that took the pointer lock back after a hand-back is a gesture, not a use of the held item
             if relock_click {
@@ -1725,39 +1804,23 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         let _t = perf::section("hud");
                         hud::draw_hud_with_runners(g, &w.assets, fps, s, &marks);
                     }
-                    // co-op chat: T opens the line, Enter sends it to the room, Escape drops it
-                    if net.is_some() && !pz.open && !stress_on && !in_report && !admin.is_open() && !map_open {
-                        hud::draw_chat_feed(&w.assets, &chat_feed);
-                        if chat_input.is_none() && is_key_pressed(KeyCode::T) {
-                            while get_char_pressed().is_some() {}
-                            chat_input = Some(String::new());
-                        } else if let Some(text) = chat_input.as_mut() {
-                            while let Some(ch) = get_char_pressed() {
-                                if !ch.is_control() && text.chars().count() < 200 {
-                                    text.push(ch);
-                                }
-                            }
-                            if is_key_pressed(KeyCode::Backspace) {
-                                text.pop();
-                            }
-                            if is_key_pressed(KeyCode::Escape) {
-                                chat_input = None;
-                            } else if is_key_pressed(KeyCode::Enter) {
-                                let sent = text.trim().to_string();
-                                chat_input = None;
-                                if !sent.is_empty() {
-                                    let (ox, oy) = g.window_origin();
-                                    let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
-                                    if let Some(n) = net.as_mut() {
-                                        n.send_chat(&sent, "team", [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
-                                    }
-                                }
-                            } else {
-                                draw_text(&format!("> {text}_"), 16.0, screen_height() - 56.0, 26.0, WHITE);
-                            }
+                    // the emote wheel over the HUD while its key is held
+                    if g.emote.is_open() {
+                        if let Some(set) = crate::render::anim::emote_pose::set() {
+                            crate::ui::emote_wheel::draw(set, g.emote.hover());
                         }
-                    } else {
-                        chat_input = None;
+                    }
+                    // co-op chat: T opens the line, Enter sends it to the room, Escape drops it (ui/chat_box.rs)
+                    let chat_allowed = net.is_some() && !pz.open && !stress_on && !in_report && !admin.is_open() && !map_open;
+                    if let Some(sent) = chat_box.update(chat_allowed) {
+                        let (ox, oy) = g.window_origin();
+                        let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
+                        if let Some(n) = net.as_mut() {
+                            n.send_chat(&sent, "team", [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
+                        }
+                    }
+                    if chat_allowed {
+                        crate::ui::chat_box::draw_chat(&w.assets, &chat_feed, &chat_box);
                     }
                     // a spectator: LEFT and RIGHT cycle the runners it watches, Escape after the run's end goes back to the card
                     if g.spectating() {
@@ -2410,7 +2473,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, look_pitch: 0.0, hide: None, hide_since: None }
+        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, look_pitch: 0.0, emote: None, hide: None, hide_since: None }
     }
 
     #[test]
@@ -2490,6 +2553,7 @@ fn shot_remote(g: &Game) -> RemoteView {
         held: None,
         flash_pitch: None,
         look_pitch: 0.0,
+        emote: None,
         hide_since: None,
     }
 }

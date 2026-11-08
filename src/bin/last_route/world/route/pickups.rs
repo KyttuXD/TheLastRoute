@@ -481,6 +481,7 @@ mod parity_tests {
         if crate::shared::test_support::skip_without_parity() {
             return;
         }
+        let _godot = crate::world::route::furnished::godot_layout();
         check(&TAGS, load_compact);
     }
 

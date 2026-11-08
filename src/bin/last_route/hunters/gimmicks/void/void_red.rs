@@ -40,12 +40,39 @@ pub fn in_room_at(fac: &Facility, pos: (f32, f32)) -> bool {
     fac.room_at(pos.0 as f64, pos.1 as f64).is_some()
 }
 
-/// The speed multiplier for a room flag (void_red_gimmick.gd:17).
+/// The two multipliers, read from data/gimmicks/void_red.json (the Godot values are the fallback).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scales {
+    pub corridor: f32,
+    pub room: f32,
+}
+
+/// Parse the data text; a missing or non-positive key keeps the Godot value.
+pub fn parse_scales(text: &str) -> Scales {
+    let mut s = Scales { corridor: CORRIDOR_SPEED_SCALE, room: ROOM_SPEED_SCALE };
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        let pick = |k: &str, d: f32| match v.get(k).and_then(|x| x.as_f64()) {
+            Some(n) if n > 0.0 && n.is_finite() => n as f32,
+            _ => d,
+        };
+        s.corridor = pick("corridor_speed_scale", s.corridor);
+        s.room = pick("room_speed_scale", s.room);
+    }
+    s
+}
+
+fn scales() -> Scales {
+    static S: std::sync::OnceLock<Scales> = std::sync::OnceLock::new();
+    *S.get_or_init(|| parse_scales(include_str!("../../../data/gimmicks/void_red.json")))
+}
+
+/// The speed multiplier for a room flag (void_red_gimmick.gd:17), values from data.
 pub fn scale_for(in_room: bool) -> f32 {
+    let s = scales();
     if in_room {
-        ROOM_SPEED_SCALE
+        s.room
     } else {
-        CORRIDOR_SPEED_SCALE
+        s.corridor
     }
 }
 
@@ -61,6 +88,17 @@ mod tests {
         assert_eq!(ROOM_SPEED_SCALE, 0.78, "void_red_gimmick.gd:7");
         assert_eq!(scale_for(false), 1.55, "a hallway runs at 155%");
         assert_eq!(scale_for(true), 0.78, "a room runs at 78%");
+    }
+
+    #[test]
+    fn data_values_drive_the_hall_and_room_scales() {
+        let s = parse_scales(r#"{"corridor_speed_scale": 2.0, "room_speed_scale": 0.5}"#);
+        assert_eq!(s, Scales { corridor: 2.0, room: 0.5 });
+        let bad = parse_scales(r#"{"room_speed_scale": -1}"#);
+        assert_eq!(bad, Scales { corridor: CORRIDOR_SPEED_SCALE, room: ROOM_SPEED_SCALE });
+        let std = scales();
+        assert!(std.corridor > 1.0 && std.room < 1.0, "hall faster, room slower");
+        assert_eq!(std, parse_scales(include_str!("../../../data/gimmicks/void_red.json")));
     }
 
     #[test]

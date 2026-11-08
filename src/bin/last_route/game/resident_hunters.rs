@@ -1188,3 +1188,245 @@ mod shelf_tests {
         assert!(p.0 >= 0.0 && p.1 >= 0.0 && p.0 < size && p.1 < size, "back inside: {p:?}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Coarse life off the window (data/hunters/offscreen.json)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/// The numbers of the coarse offscreen simulation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OffscreenRules {
+    /// How often `Game::simulate_offscreen` takes a step (s).
+    pub step_seconds: f32,
+    /// The longest span a single step may cover (s), so a stall does not teleport a hunter.
+    pub max_step_seconds: f32,
+    /// Speed of a hunter that wanders (m/s).
+    pub wander_speed: f32,
+    /// Speed of a hunter that was after the runner and drifts to the last place it knew (m/s).
+    pub drift_speed: f32,
+    /// How far (cells) a hunter that enters a loaded chunk looks for a walkable dry cell.
+    pub entry_radius: i32,
+    /// The wire state names that make a hunter drift to the runner's last known spot.
+    pub drift_states: Vec<String>,
+}
+
+/// The rules from `data/hunters/offscreen.json`.
+pub fn offscreen_rules() -> &'static OffscreenRules {
+    static R: OnceLock<OffscreenRules> = OnceLock::new();
+    R.get_or_init(|| {
+        parse_offscreen(include_str!("../data/hunters/offscreen.json")).expect("data/hunters/offscreen.json is valid")
+    })
+}
+
+/// `OffscreenRules` from file text; `None` when a number is missing, not finite or out of range.
+pub fn parse_offscreen(text: &str) -> Option<OffscreenRules> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let f = |k: &str, lo: f64, hi: f64| v[k].as_f64().filter(|x| x.is_finite() && *x >= lo && *x <= hi).map(|x| x as f32);
+    let entry_radius = v["entry_radius"].as_i64().filter(|r| (0..=32).contains(r))? as i32;
+    let drift_states = v["drift_states"].as_array()?.iter().filter_map(|s| s.as_str().map(str::to_string)).collect();
+    Some(OffscreenRules {
+        step_seconds: f("step_seconds", 0.05, 60.0)?,
+        max_step_seconds: f("max_step_seconds", 0.05, 600.0)?,
+        wander_speed: f("wander_speed", 0.0, 30.0)?,
+        drift_speed: f("drift_speed", 0.0, 30.0)?,
+        entry_radius,
+        drift_states,
+    })
+}
+
+/// One coarse step of an unsimulated hunter at an absolute position. A dormant hunter stays. One whose state is a drift
+/// state heads for its last known spot (else the runner's chunk centre) at the drift speed; any other wanders in a
+/// direction drawn from `rng` at the wander speed. The path is dropped (the grid is not loaded).
+pub fn coarse_move(b: &mut Brain, runner_chunk: (i32, i32), dt: f32, rng: &mut Rng, rules: &OffscreenRules) {
+    if !b.active {
+        return;
+    }
+    let dt = dt.clamp(0.0, rules.max_step_seconds);
+    let half = CHUNK as f32 * 0.5;
+    let drifting = rules.drift_states.iter().any(|s| s == b.state.name());
+    if drifting {
+        let goal = b
+            .last_known
+            .unwrap_or(((runner_chunk.0 * CHUNK) as f32 + half, (runner_chunk.1 * CHUNK) as f32 + half));
+        let d = pdist(b.pos, goal);
+        let step = rules.drift_speed * dt;
+        if d > 1e-3 {
+            let k = (step / d).min(1.0);
+            b.pos = (b.pos.0 + (goal.0 - b.pos.0) * k, b.pos.1 + (goal.1 - b.pos.1) * k);
+        }
+    } else {
+        let a = rng.next_f32() * std::f32::consts::TAU;
+        let step = rules.wander_speed * dt;
+        b.pos = (b.pos.0 + a.cos() * step, b.pos.1 + a.sin() * step);
+    }
+    b.clear_path();
+}
+
+/// Moves every hunter of a shelf one coarse step. Nothing is added or removed, so the count is kept. The draw of each
+/// hunter is seeded by `seed`, its shelf key and `tick`, so a run replays.
+pub fn coarse_step_shelf<'a>(
+    hunters: impl Iterator<Item = (&'a str, &'a mut Brain)>,
+    runner_chunk: (i32, i32),
+    dt: f32,
+    seed: &str,
+    tick: u64,
+    rules: &OffscreenRules,
+) {
+    for (key, b) in hunters {
+        let mut rng = Rng::new(&format!("{seed}:OFFSCREEN:{key}:{tick}"));
+        coarse_move(b, runner_chunk, dt, &mut rng, rules);
+    }
+}
+
+/// The nearest cell centre to `p` (within `radius` cells, in a growing ring) that a hunter may stand on: open and not
+/// water. `None` when nothing does.
+pub fn settle_cell(fac: &Facility, p: (f32, f32), radius: i32) -> Option<(f32, f32)> {
+    let (cx, cy) = (p.0.floor() as i32, p.1.floor() as i32);
+    for r in 0..=radius.max(0) {
+        let mut best: Option<((f32, f32), f32)> = None;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx.abs().max(dy.abs()) != r {
+                    continue;
+                }
+                let c = crate::world::facility::Cell { x: cx + dx, y: cy + dy };
+                if fac.hunter_may_spawn(c) {
+                    let q = c.center();
+                    let d = pdist(q, p);
+                    if best.map_or(true, |(_, bd)| d < bd) {
+                        best = Some((q, d));
+                    }
+                }
+            }
+        }
+        if let Some((q, _)) = best {
+            return Some(q);
+        }
+    }
+    None
+}
+
+impl Game {
+    /// The coarse life of the hunters on the shelves (the level-0 `stored` and every `floor_hunters` list): every
+    /// `step_seconds` each awake one wanders or drifts toward the runner's last known spot, at data speeds, so it is
+    /// somewhere new when its chunk loads. Only the simulating side runs it: a guest's shelves are display only.
+    pub(super) fn simulate_offscreen(&mut self, dt: f32) {
+        if super::guest_gate::is_display_only(self) {
+            return;
+        }
+        let rules = offscreen_rules();
+        let seed = self.level_seed();
+        let Some(inf) = self.inf.as_mut() else { return };
+        inf.offscreen_clock += dt.max(0.0);
+        if inf.offscreen_clock < rules.step_seconds {
+            return;
+        }
+        let span = inf.offscreen_clock;
+        inf.offscreen_clock = 0.0;
+        inf.offscreen_tick += 1;
+        let (tick, runner) = (inf.offscreen_tick, inf.center);
+        coarse_step_shelf(inf.stored_mut().iter_mut().map(|(k, b)| (k.as_str(), b)), runner, span, &seed, tick, rules);
+        for (lvl, list) in inf.floor_hunters_mut().iter_mut() {
+            let keys: Vec<String> = (0..list.len()).map(|i| format!("L{lvl}#{i}")).collect();
+            coarse_step_shelf(keys.iter().map(String::as_str).zip(list.iter_mut()), runner, span, &seed, tick, rules);
+        }
+    }
+}
+
+#[cfg(test)]
+mod offscreen_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::hunters::brain::State;
+    use crate::world::catalog::Catalog;
+
+    fn brain(pos: (f32, f32), state: State) -> Brain {
+        let content = Content::load();
+        let def = content.hunters.first().expect("a hunter").clone();
+        let mut b = Brain::new(def, pos, "OFFSCREEN-TEST", Difficulty::Standard);
+        b.active = true;
+        b.state = state;
+        b
+    }
+
+    #[test]
+    fn the_rules_load_and_refuse_nonsense() {
+        let r = offscreen_rules();
+        assert!(r.step_seconds > 0.0 && r.wander_speed > 0.0 && r.drift_speed > 0.0);
+        assert!(r.drift_states.iter().any(|s| s == "CHASE"));
+        assert!(parse_offscreen(r#"{"step_seconds": -1}"#).is_none());
+        assert!(parse_offscreen("not json").is_none());
+    }
+
+    #[test]
+    fn a_coarse_hunter_changes_chunk_over_time() {
+        let rules = offscreen_rules();
+        let mut b = brain((10.0, 10.0), State::Wander);
+        let start = residency::chunk_of(b.pos);
+        let mut moved = false;
+        for tick in 0..20000u64 {
+            let mut rng = Rng::new(&format!("T:{tick}"));
+            coarse_move(&mut b, (0, 0), rules.step_seconds, &mut rng, rules);
+            if residency::chunk_of(b.pos) != start {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "a wanderer leaves its chunk");
+    }
+
+    #[test]
+    fn a_chaser_drifts_to_its_last_known_spot_and_a_dormant_hunter_stays() {
+        let rules = offscreen_rules();
+        let mut b = brain((0.0, 0.0), State::Chase);
+        b.last_known = Some((50.0, 0.0));
+        let mut rng = Rng::new("D");
+        let before = pdist(b.pos, (50.0, 0.0));
+        coarse_move(&mut b, (0, 0), 1.0, &mut rng, rules);
+        assert!(pdist(b.pos, (50.0, 0.0)) < before, "closer to the last known spot");
+        assert!(pdist(b.pos, (0.0, 0.0)) <= rules.drift_speed + 1e-3, "no faster than the data speed");
+        let mut d = brain((3.0, 3.0), State::Wander);
+        d.active = false;
+        coarse_move(&mut d, (0, 0), 1.0, &mut rng, rules);
+        assert_eq!(d.pos, (3.0, 3.0));
+    }
+
+    #[test]
+    fn a_long_stall_is_capped_to_the_longest_step() {
+        let rules = offscreen_rules();
+        let mut b = brain((0.0, 0.0), State::Chase);
+        b.last_known = Some((5000.0, 0.0));
+        coarse_move(&mut b, (0, 0), 9999.0, &mut Rng::new("S"), rules);
+        assert!(b.pos.0 <= rules.drift_speed * rules.max_step_seconds + 1e-3);
+    }
+
+    #[test]
+    fn the_shelf_keeps_its_count_over_a_recentre_of_steps() {
+        let rules = offscreen_rules();
+        let mut shelf: std::collections::HashMap<String, Brain> =
+            (0..5).map(|i| (format!("H{i}"), brain((i as f32 * 7.0, 3.0), State::Wander))).collect();
+        for tick in 0..50 {
+            let runner = (tick % 3 - 1, 0);
+            coarse_step_shelf(shelf.iter_mut().map(|(k, b)| (k.as_str(), b)), runner, 0.5, "SEED", tick as u64, rules);
+        }
+        assert_eq!(shelf.len(), 5, "stepping never adds or drops a hunter");
+    }
+
+    #[test]
+    fn a_hunter_entering_the_window_is_placed_on_a_walkable_dry_cell() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-OFFSCREEN", 0, &content, &catalog);
+        let r = offscreen_rules().entry_radius;
+        let size = (CHUNK * 3) as f32;
+        let mut placed = 0;
+        for i in 0..40 {
+            let p = ((i as f32 * 3.7) % size, (i as f32 * 5.3) % size);
+            if let Some(q) = settle_cell(&g.fac, p, r) {
+                let c = crate::world::facility::Cell { x: q.0.floor() as i32, y: q.1.floor() as i32 };
+                assert!(g.fac.hunter_may_spawn(c) && !g.fac.is_water(c), "{q:?} is walkable and dry");
+                placed += 1;
+            }
+        }
+        assert!(placed > 0, "some entry spots settle");
+    }
+}

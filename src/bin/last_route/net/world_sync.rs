@@ -143,6 +143,36 @@ pub struct Sample {
     /// The runner's aim pitch in radians (+ up), whatever its lamp does: it tilts the head. Wire: `"look"`, sent only
     /// when not level. An older peer never sends it, so its head stays level.
     pub look_pitch: f32,
+    /// The emote the runner is playing (an id from data/player/emotes.json) and its start counter. Wire: `"emote"` and
+    /// `"emote_seq"`, both sent only while an emote plays; an older peer never sends or reads them.
+    pub emote: Option<EmoteTag>,
+    pub emote_seq: Option<u32>,
+}
+
+/// An emote id on the wire, held inline so a [`Sample`] stays `Copy`: 1 to [`EmoteTag::MAX`] ASCII letters, digits, `_` or `-`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmoteTag {
+    len: u8,
+    bytes: [u8; EmoteTag::MAX],
+}
+
+impl EmoteTag {
+    pub const MAX: usize = 24;
+
+    /// The tag for `id`; None for an empty, over-long or odd-looking id (a hostile peer cannot send anything else).
+    pub fn new(id: &str) -> Option<EmoteTag> {
+        let b = id.as_bytes();
+        if b.is_empty() || b.len() > Self::MAX || !b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-') {
+            return None;
+        }
+        let mut bytes = [0u8; Self::MAX];
+        bytes[..b.len()].copy_from_slice(b);
+        Some(EmoteTag { len: b.len() as u8, bytes })
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
 }
 
 impl Sample {
@@ -172,6 +202,8 @@ impl Sample {
             held: None,
             flash_pitch: p.beam_lit().then_some(p.pitch),
             look_pitch: p.pitch,
+            emote: None,
+            emote_seq: None,
         }
     }
 
@@ -187,6 +219,15 @@ impl Sample {
         self.vy = vy;
         self.slim = slim;
         self.hide = hide;
+        self
+    }
+
+    /// The sample with the emote the runner is playing (`EmoteState::wire`): its id and start counter.
+    pub fn with_emote(mut self, wire: Option<(&str, u32)>) -> Sample {
+        if let Some((id, seq)) = wire {
+            self.emote = EmoteTag::new(id);
+            self.emote_seq = self.emote.map(|_| seq);
+        }
         self
     }
 
@@ -239,6 +280,13 @@ impl Sample {
             if self.look_pitch != 0.0 {
                 o.insert("look".into(), json!(self.look_pitch));
             }
+            // an emote that plays: its id and start counter (both optional on the wire)
+            if let Some(tag) = self.emote {
+                o.insert("emote".into(), json!(tag.as_str()));
+                if let Some(seq) = self.emote_seq {
+                    o.insert("emote_seq".into(), json!(seq));
+                }
+            }
         }
         v
     }
@@ -274,6 +322,8 @@ impl Sample {
             // a pitch past straight up or down is clamped: a hostile sample cannot aim the beam through the floor
             flash_pitch: flag("flash").then(|| num("pitch").unwrap_or(0.0).clamp(-FLASH_PITCH_LIMIT, FLASH_PITCH_LIMIT)),
             look_pitch: num("look").unwrap_or(0.0).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT),
+            emote: o.get("emote").and_then(Value::as_str).and_then(EmoteTag::new),
+            emote_seq: o.get("emote_seq").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
         })
     }
 }
@@ -369,6 +419,8 @@ pub struct RemoteView {
     pub flash_pitch: Option<f32>,
     /// The runner's aim pitch from its last sample (radians, + up): the head tilts to it.
     pub look_pitch: f32,
+    /// The emote the runner is playing: its id and start counter (None when it plays none or the sender is older).
+    pub emote: Option<(String, u32)>,
     /// Whether the runner was out in the open `HIDE_MOVE_SECONDS` ago: a runner going into a locker stays visible while
     /// it slides in (Godot remote_players.gd 542-563). Set by [`NetSession::remotes_at`].
     pub hide_since: Option<std::time::Duration>,
@@ -396,6 +448,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
         held: shown.held,
         flash_pitch: shown.flash_pitch,
         look_pitch: shown.look_pitch,
+        emote: shown.emote.map(|t| (t.as_str().to_string(), shown.emote_seq.unwrap_or(0))),
         hide: shown.hide.and_then(|h| Some(HideSpot { cell: (h.cell.0.checked_sub(origin.0)?, h.cell.1.checked_sub(origin.1)?), facing: h.facing })),
         hide_since: r.hide_since.map(|t| now.duration_since(t)),
         speed: if !shown.moving {
@@ -1255,6 +1308,20 @@ impl NetSession {
         self.pending_captures.remove(&peer);
         self.last_taser.remove(&peer);
         self.guests.remove(&peer).map(|g| g.name)
+    }
+
+    /// Whether a server process hosts this room (this process is the dedicated host, or the host told us it is).
+    pub fn hosted_by_server(&self) -> bool {
+        self.dedicated || self.host_dedicated
+    }
+
+    /// This runner's peer id in the room, as chat lines carry it (the host is `HOST_PEER_ID`).
+    pub fn local_peer_id(&self) -> i64 {
+        if self.is_host() {
+            HOST_PEER_ID as i64
+        } else {
+            self.coop.link.session() as i64
+        }
     }
 
     /// Host: how many guests the room holds now (the host itself is no runner in a dedicated room).
@@ -2537,6 +2604,8 @@ mod tests {
             held: None,
             flash_pitch: None,
             look_pitch: 0.0,
+            emote: None,
+            emote_seq: None,
         }
     }
 
@@ -2648,6 +2717,23 @@ mod tests {
     }
 
     #[test]
+    fn an_emote_rides_the_sample_and_an_older_sample_has_none() {
+        let plain = sample(1, 0.0, 0.0);
+        let v = plain.to_json();
+        assert!(v.get("emote").is_none() && v.get("emote_seq").is_none(), "no emote, no keys");
+        let waving = plain.with_emote(Some(("wave", 3)));
+        let got = Sample::from_json(&waving.to_json()).unwrap();
+        assert_eq!(got.emote.map(|t| t.as_str().to_string()), Some("wave".to_string()));
+        assert_eq!(got.emote_seq, Some(3));
+        assert_eq!(Sample::from_json(&plain.to_json()).unwrap().emote, None);
+        let mut hostile = waving.to_json();
+        hostile["emote"] = json!("a very long emote id that is far too long");
+        assert_eq!(Sample::from_json(&hostile).unwrap().emote, None, "an over-long id is dropped");
+        hostile["emote"] = json!("no spaces!");
+        assert_eq!(Sample::from_json(&hostile).unwrap().emote, None);
+    }
+
+    #[test]
     fn sample_json_round_trips_and_ignores_keep_alives() {
         let s = Sample {
             seq: 9,
@@ -2671,6 +2757,8 @@ mod tests {
             held: Some(Item::Crowbar),
             flash_pitch: Some(-0.25),
             look_pitch: 0.3,
+            emote: EmoteTag::new("wave"),
+            emote_seq: Some(7),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");

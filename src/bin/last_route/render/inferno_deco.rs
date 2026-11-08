@@ -296,6 +296,114 @@ pub fn scene_cfg() -> &'static SceneCfg {
     })
 }
 
+/// How the lava pit surface looks and moves (the `lava_surface` block of data/render/inferno.json). A table without the
+/// block draws a still, plain surface (`LavaLook::still`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LavaLook {
+    /// Surface colour at the hottest and coolest point of the pulse (0..1 rgb).
+    pub hot: [f32; 3],
+    pub cool: [f32; 3],
+    /// Pulses per second; 0 is still.
+    pub pulse_hz: f32,
+    /// Texture scroll in cells per second along x and z; 0 is still.
+    pub flow_cps: [f32; 2],
+    /// Colour of the pit walls and bed under the surface.
+    pub pit_color: [f32; 3],
+}
+
+impl LavaLook {
+    pub fn still() -> LavaLook {
+        LavaLook { hot: [1.0, 0.45, 0.1], cool: [0.8, 0.25, 0.05], pulse_hz: 0.0, flow_cps: [0.0, 0.0], pit_color: [0.15, 0.05, 0.03] }
+    }
+
+    pub fn parse(text: &str) -> Result<LavaLook, String> {
+        let root: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let s = root.get("lava_surface").ok_or("lava_surface: missing")?;
+        let col = |k: &str| -> Result<[f32; 3], String> {
+            let a = s.get(k).and_then(|x| x.as_array()).filter(|a| a.len() == 3).ok_or_else(|| format!("lava_surface.{k}: expected 3 numbers"))?;
+            let mut o = [0.0; 3];
+            for (i, v) in a.iter().enumerate() {
+                o[i] = v.as_f64().filter(|n| (0.0..=1.0).contains(n)).ok_or_else(|| format!("lava_surface.{k}[{i}]: expected 0..1"))? as f32;
+            }
+            Ok(o)
+        };
+        let num = |k: &str| s.get(k).and_then(|x| x.as_f64()).filter(|n| *n >= 0.0).map(|n| n as f32).ok_or_else(|| format!("lava_surface.{k}: expected a number, zero or more"));
+        Ok(LavaLook { hot: col("hot")?, cool: col("cool")?, pulse_hz: num("pulse_hz")?, flow_cps: [num("flow_x_cps")?, num("flow_z_cps")?], pit_color: col("pit_color")? })
+    }
+
+    /// The surface colour at time `t_s` for a point with pulse `phase` (0..1): between `cool` and `hot`.
+    pub fn surface_color(&self, t_s: f32, phase: f32) -> [f32; 3] {
+        let k = 0.5 + 0.5 * ((t_s * self.pulse_hz + phase) * std::f32::consts::TAU).sin();
+        [0, 1, 2].map(|i| self.cool[i] + (self.hot[i] - self.cool[i]) * k)
+    }
+
+    /// The texture offset (cells) the surface has flowed by at time `t_s`.
+    pub fn uv_offset(&self, t_s: f32) -> [f32; 2] {
+        [(t_s * self.flow_cps[0]).rem_euclid(1.0), (t_s * self.flow_cps[1]).rem_euclid(1.0)]
+    }
+}
+
+/// The lava look compiled into the executable (`LavaLook::still` when the block is missing or bad).
+pub fn lava_look() -> &'static LavaLook {
+    static LOOK: OnceLock<LavaLook> = OnceLock::new();
+    LOOK.get_or_init(|| {
+        let text = crate::content::embedded::data_under(PATH).next().map(|(_, t)| t).unwrap_or("{}");
+        LavaLook::parse(text).unwrap_or_else(|e| {
+            eprintln!("{PATH}: {e}");
+            LavaLook::still()
+        })
+    })
+}
+
+/// One quad of the lava pit in window metres. A horizontal one has its corners in the order of the floor quads
+/// ((x, z), (x+1, z), (x+1, z+1), (x, z+1)); `normal` faces the viewer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PitQuad {
+    pub corners: [[f32; 3]; 4],
+    pub normal: [f32; 3],
+}
+
+/// The geometry of one chunk's lava pits: the glowing surface at `floor.lava_y`, the bed at `floor.lava_basin_y` and the
+/// pit walls (open, from the bed up to the walkable floor) on every side that faces a cell which is not lava.
+#[derive(Clone, Debug, Default)]
+pub struct LavaPit {
+    pub surface: Vec<PitQuad>,
+    pub bed: Vec<PitQuad>,
+    pub walls: Vec<PitQuad>,
+}
+
+/// Builds the pit geometry of the chunk `inf`. `origin` is the chunk's corner in window metres (x, z); `lava_at` tells
+/// whether a chunk-local cell (which may lie outside the chunk, for the neighbour across an edge) is lava, so a pit that
+/// runs over a chunk edge gets no wall in its middle.
+pub fn lava_pit(inf: &InfernoChunk, origin: [f32; 2], lava_at: &dyn Fn(i32, i32) -> bool) -> LavaPit {
+    let r = crate::world::inferno::InfernoRules::builtin();
+    let (top, surf, bed) = (r.walk_height, r.lava_y, r.lava_basin_y);
+    let mut out = LavaPit::default();
+    for c in inf.lava_cells() {
+        let (x, z) = (origin[0] + c.x as f32, origin[1] + c.y as f32);
+        let flat = |y: f32| [[x, y, z], [x + 1., y, z], [x + 1., y, z + 1.], [x, y, z + 1.]];
+        out.surface.push(PitQuad { corners: flat(surf), normal: [0., 1., 0.] });
+        out.bed.push(PitQuad { corners: flat(bed), normal: [0., 1., 0.] });
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            if lava_at(c.x + dx, c.y + dz) {
+                continue;
+            }
+            // the shared edge, its two ends in order along the edge
+            let (a, b) = match (dx, dz) {
+                (-1, 0) => ([x, z], [x, z + 1.]),
+                (1, 0) => ([x + 1., z], [x + 1., z + 1.]),
+                (0, -1) => ([x, z], [x + 1., z]),
+                _ => ([x, z + 1.], [x + 1., z + 1.]),
+            };
+            out.walls.push(PitQuad {
+                corners: [[a[0], bed, a[1]], [b[0], bed, b[1]], [b[0], top, b[1]], [a[0], top, a[1]]],
+                normal: [-dx as f32, 0., -dz as f32],
+            });
+        }
+    }
+    out
+}
+
 /// A placed piece in window metres: `pos` is (x, floor height, z).
 #[derive(Clone, Copy, Debug)]
 pub struct Placed {
@@ -422,6 +530,70 @@ mod tests {
     use crate::world::infinite::INFERNO_LEVEL;
 
     const SEED: &str = "deco-seed";
+
+    fn lava_chunk() -> InfernoChunk {
+        for cx in 0..8 {
+            for cy in 0..8 {
+                let inf = InfernoChunk::carve(SEED, ChunkKey { cx, cy, level: INFERNO_LEVEL });
+                if !inf.lava_cells().is_empty() {
+                    return inf;
+                }
+            }
+        }
+        panic!("no lava in the sample");
+    }
+
+    #[test]
+    fn a_lava_cell_is_not_a_wall_in_the_drawn_grid() {
+        let inf = lava_chunk();
+        for c in inf.lava_cells() {
+            assert!(!inf.draws_wall(c, true), "lava draws no wall mass");
+        }
+        let c = inf.open_cells()[0];
+        assert!(inf.draws_wall(c, true), "a plain wall cell still draws");
+        assert!(!inf.draws_wall(c, false));
+    }
+
+    #[test]
+    fn the_lava_surface_has_quads_at_the_pit_height_and_the_walls_are_open() {
+        let inf = lava_chunk();
+        let r = crate::world::inferno::InfernoRules::builtin();
+        let pit = lava_pit(&inf, [0.0, 0.0], &|x, y| inf.is_lava(Cell::new(x, y)));
+        assert_eq!(pit.surface.len(), inf.lava_cells().len());
+        assert_eq!(pit.bed.len(), pit.surface.len());
+        assert!(pit.surface.iter().all(|q| q.corners.iter().all(|p| p[1] == r.lava_y)));
+        assert!(pit.bed.iter().all(|q| q.corners.iter().all(|p| p[1] == r.lava_basin_y)));
+        assert!(r.lava_basin_y < r.lava_y && r.lava_y < r.walk_height);
+        assert!(!pit.walls.is_empty(), "a pit has a rim");
+        for w in &pit.walls {
+            let hi = w.corners.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
+            let lo = w.corners.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+            assert_eq!((hi, lo), (r.walk_height, r.lava_basin_y));
+        }
+    }
+
+    #[test]
+    fn a_pit_edge_inside_lava_has_no_wall() {
+        let inf = lava_chunk();
+        assert!(lava_pit(&inf, [0.0, 0.0], &|_, _| true).walls.is_empty());
+        assert_eq!(lava_pit(&inf, [0.0, 0.0], &|_, _| false).walls.len(), inf.lava_cells().len() * 4);
+    }
+
+    #[test]
+    fn lava_surface_pulses_between_cool_and_hot_and_flows() {
+        let look = LavaLook { hot: [1.0, 0.5, 0.2], cool: [0.5, 0.2, 0.0], pulse_hz: 1.0, flow_cps: [0.5, 0.0], pit_color: [0.1; 3] };
+        for i in 0..20 {
+            let c = look.surface_color(i as f32 * 0.13, 0.3);
+            assert!((0..3).all(|k| c[k] >= look.cool[k] - 1e-5 && c[k] <= look.hot[k] + 1e-5));
+        }
+        let still = LavaLook::still();
+        assert_eq!(still.surface_color(3.0, 0.2), still.surface_color(0.0, 0.2), "no pulse is still");
+        assert_eq!(look.uv_offset(0.0), [0.0, 0.0]);
+        assert!(look.uv_offset(0.5)[0] > 0.0 && look.uv_offset(0.5)[1] == 0.0);
+        let text = r#"{"lava_surface":{"hot":[1,0.5,0.2],"cool":[0.5,0.2,0],"pulse_hz":1,"flow_x_cps":0.5,"flow_z_cps":0,"pit_color":[0.1,0.1,0.1]}}"#;
+        assert_eq!(LavaLook::parse(text).unwrap().pulse_hz, 1.0);
+        assert!(LavaLook::parse("{}").is_err());
+    }
 
     fn key(cx: i32, cy: i32) -> ChunkKey {
         ChunkKey { cx, cy, level: INFERNO_LEVEL }

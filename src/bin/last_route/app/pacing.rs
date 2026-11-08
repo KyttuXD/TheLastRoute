@@ -232,6 +232,17 @@ pub fn pacing_rules() -> &'static PacingRules {
     })
 }
 
+/// The cap the pacer holds the loop to. In the browser requestAnimationFrame already paces the loop and `pause`
+/// cannot sleep there, so a cap would only spin the page's one thread until the due time (late frames, a doubled
+/// limiter): with `page_paces_frames` (data/app/gfx.json `web`) the browser gets no cap.
+pub fn effective_cap(cap: Option<u32>, in_browser: bool, page_paces_frames: bool) -> Option<u32> {
+    if in_browser && page_paces_frames {
+        None
+    } else {
+        cap
+    }
+}
+
 /// Holds the loop to the FPS LIMIT. Call `wait` once per frame, before the frame is presented.
 #[derive(Default)]
 pub struct Pacer {
@@ -240,6 +251,7 @@ pub struct Pacer {
 
 impl Pacer {
     pub fn wait(&mut self, cap: Option<u32>) {
+        let cap = effective_cap(cap, crate::shared::task::IN_BROWSER, crate::app::gfx::web_rules().page_paces_frames);
         self.wait_with(cap, pacing_rules(), &mut Instant::now, &mut nap);
     }
 
@@ -412,5 +424,24 @@ mod tests {
         assert!((tight.as_secs_f64() - 0.008).abs() < 1e-3, "{tight:?}");
         assert!((loose.as_secs_f64() - 0.005).abs() < 1e-3, "{loose:?}");
         assert!(loose < tight);
+    }
+
+    #[test]
+    fn the_browser_gets_no_extra_limiter_when_the_page_paces_frames() {
+        assert_eq!(effective_cap(Some(60), true, true), None);
+        assert_eq!(effective_cap(Some(60), true, false), Some(60));
+        assert_eq!(effective_cap(Some(60), false, true), Some(60));
+        assert_eq!(effective_cap(None, false, true), None);
+        // shipped data: the page paces the browser
+        assert!(crate::app::gfx::web_rules().page_paces_frames);
+    }
+
+    #[test]
+    fn a_dropped_cap_never_waits() {
+        let f = Fake::new();
+        let mut p = Pacer::default();
+        f.wait(&mut p, effective_cap(Some(30), true, true), &PacingRules::default());
+        assert!(f.naps.borrow().is_empty());
+        assert_eq!(f.elapsed.get(), Duration::ZERO);
     }
 }

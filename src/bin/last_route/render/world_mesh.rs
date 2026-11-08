@@ -52,6 +52,9 @@ pub struct WorldMeshes {
     /// origin before the new parts are built; `follow_origin` keeps the stale drawn set registered to it meanwhile.
     drawn_origin: (i32, i32),
     builds: u64,
+    /// Window parts the last `rebuild` built, and parts it found already held (kept across a recentre, only moved).
+    last_built: usize,
+    last_kept: usize,
     /// Window parts the last rebuild left for a later frame (the frame budget ran out); see `has_pending`. While any
     /// are pending and something is drawn, the drawn set stays as it was, so the floor shows no holes.
     pending: usize,
@@ -434,6 +437,8 @@ impl WorldMeshes {
             self.parts.insert(*key, Part { meshes, origin: f.origin, dy: self.dy, used: build_no });
         }
         self.pending = pending;
+        self.last_built = built;
+        self.last_kept = wanted.len() - queued;
         // with something drawn, the drawn set waits for the window to be whole; with nothing drawn yet (the first
         // load) the built parts show as they come
         if pending > 0 && !self.drawn.is_empty() {
@@ -581,6 +586,11 @@ impl WorldMeshes {
     /// The triangles currently drawn.
     pub fn triangle_count(&self) -> usize {
         self.meshes.iter().map(|m| m.indices.len() / 3).sum()
+    }
+
+    /// (built, kept) window parts of the last `rebuild`: after a recentre only the new chunks are built.
+    pub fn last_rebuild_parts(&self) -> (usize, usize) {
+        (self.last_built, self.last_kept)
     }
 
     /// How many window parts this instance holds (cached parts; the drawn ones stay in `parts` as empty shells).
@@ -3398,5 +3408,69 @@ mod ladder_arrival_tests {
         }
         assert!(hatches > 100, "only {hatches} hatches in the sweep");
         assert!(problems.is_empty(), "{} problems in {hatches} hatches:\n{}", problems.len(), problems.join("\n"));
+    }
+}
+
+/// A recentre of the Infinite window keeps the chunk parts still in it (keyed by absolute chunk) and builds only the new ones.
+#[cfg(test)]
+mod recentre_tests {
+    use super::*;
+    use crate::content::loot::LootTables;
+    use crate::world::catalog::Catalog;
+    use crate::world::infinite::window;
+
+    fn settle(w: &mut WorldMeshes, f: &Facility, frame: ChunkFrame, assets: &Assets, content: &Content) -> (usize, usize) {
+        let (mut built, mut kept) = (0, 0);
+        for _ in 0..200 {
+            w.rebuild(f, &[], Some(frame), assets, content);
+            built += w.last_built;
+            kept = w.last_kept;
+            if !w.has_pending() {
+                break;
+            }
+        }
+        (built, kept)
+    }
+
+    /// The drawn vertices of each part, by key, in the window's coordinates.
+    fn by_key(w: &WorldMeshes) -> HashMap<PartKey, Vec<Vec3>> {
+        let mut out: HashMap<PartKey, Vec<Vec3>> = HashMap::new();
+        for (m, k) in w.meshes.iter().zip(&w.drawn) {
+            if let Some(k) = k {
+                out.entry(*k).or_default().extend(m.vertices.iter().map(|v| v.position));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_recentre_builds_only_the_new_chunks_and_a_kept_chunk_equals_a_fresh_build() {
+        let content = Content::load();
+        let assets = Assets::headless();
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let mut cache = HashMap::new();
+        let (a, _) = window("ROOM-TEST-7", (0, 0), 0, &cat, &loot, &mut cache);
+        let (b, _) = window("ROOM-TEST-7", (1, 0), 0, &cat, &loot, &mut cache);
+        let (fa, fb) = (ChunkFrame { level: 0, center: (0, 0) }, ChunkFrame { level: 0, center: (1, 0) });
+        let mut w = WorldMeshes::default();
+        let (first, _) = settle(&mut w, &a, fa, &assets, &content);
+        assert!(first >= (WINDOW * WINDOW) as usize, "the first load builds the window");
+        let (built, kept) = settle(&mut w, &b, fb, &assets, &content);
+        assert!(kept > 0, "chunks still in the window are kept");
+        assert!(built < first, "a recentre builds fewer parts than a full window: {built} vs {first}");
+        let mut fresh = WorldMeshes::default();
+        settle(&mut fresh, &b, fb, &assets, &content);
+        // the meshes of a part come in the order their materials were met, so match each vertex to one of the other
+        // build's within a millimetre instead of pairing them by index
+        let (got, want) = (by_key(&w), by_key(&fresh));
+        let mut compared = 0;
+        for (k, v) in &got {
+            let Some(r) = want.get(k) else { continue };
+            assert_eq!(v.len(), r.len(), "part {k:?}");
+            let missing: Vec<&Vec3> = v.iter().filter(|p| !r.iter().any(|q| (**p - *q).length() < 1e-3)).collect();
+            assert!(missing.is_empty(), "part {k:?}: {} of {} vertices differ, first {:?}", missing.len(), v.len(), missing.first());
+            compared += 1;
+        }
+        assert!(compared >= (WINDOW * (WINDOW - 1)) as usize / 2, "only {compared} parts compared");
     }
 }

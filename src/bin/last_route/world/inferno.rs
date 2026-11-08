@@ -46,9 +46,9 @@ pub struct InfernoRules {
     pub tier_basin_frac: f32,
     /// Height of every walkable cell relative to the level floor (Godot's Inferno floor is flat).
     pub walk_height: f32,
-    /// Lava surface height (Godot LAVA_Y -0.7 x 1.25). Not drawn yet.
+    /// Lava surface height (Godot LAVA_Y -0.7 x 1.25). Drawn by `render::inferno_deco::lava_pit`.
     pub lava_y: f32,
-    /// Floor of a lava pit (Godot BASIN_Y -1.6 x 1.25). Lava cells are closed and never walkable. Not drawn yet.
+    /// Floor of a lava pit (Godot BASIN_Y -1.6 x 1.25). Lava cells are closed and never walkable. Drawn by `render::inferno_deco::lava_pit`.
     pub lava_basin_y: f32,
     /// The noisy floor and ceiling (`inferno_terrain`).
     pub terrain: super::inferno_terrain::TerrainRules,
@@ -575,6 +575,12 @@ impl InfernoChunk {
 
     pub fn is_lava(&self, c: Cell) -> bool {
         self.caves.as_ref().is_some_and(|v| v.is_lava(c))
+    }
+
+    /// Whether the renderer draws a wall column on cell `c`, given the build's `is_wall` for it: a lava cell is closed to
+    /// walking (the build keeps it a wall cell) but is an open pit to the eye, so it draws no wall mass.
+    pub fn draws_wall(&self, c: Cell, is_wall: bool) -> bool {
+        is_wall && !self.is_lava(c)
     }
 
     /// Elevation band of a chunk-local cell. On caves: lava and a chamber's middle are basin, its outer

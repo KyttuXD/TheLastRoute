@@ -39,7 +39,7 @@ fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
             window_title: "KYTTU: The Last Route".to_owned(),
             window_width: w,
             window_height: h,
-            high_dpi: false,
+            high_dpi: crate::shared::task::IN_BROWSER && app::gfx::web_rules().high_dpi,
             icon: app::assets::window_icon(),
             // miniquad defaults to swap interval 1 (vsync on) whatever the VSYNC row says; a stress run
             // takes --stress-vsync instead of the saved row

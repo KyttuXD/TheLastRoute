@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 const TEXT: &str = include_str!("../data/net/tts.json");
 
@@ -126,6 +126,24 @@ pub fn volume(distance: f64, radius: f64, floor: f64) -> f64 {
 pub fn speech_volume(distance: f64, radius: f64, floor: f64, master: f32, spoken_chat_pct: f32) -> f64 {
     let chat = f64::from(spoken_chat_pct.clamp(0.0, 100.0)) / 100.0;
     (volume(distance, radius, floor) * f64::from(master.clamp(0.0, 1.0)) * chat).clamp(0.0, 1.0)
+}
+
+/// Mute call for the chat box: flips `peer` in the mute set and returns true when the peer is now muted.
+pub fn toggle_mute(muted: &mut HashSet<i64>, peer: i64) -> bool {
+    if !muted.remove(&peer) {
+        muted.insert(peer);
+        return true;
+    }
+    false
+}
+
+/// Set a peer's mute state directly (true = never spoken).
+pub fn set_muted(muted: &mut HashSet<i64>, peer: i64, on: bool) {
+    if on {
+        muted.insert(peer);
+    } else {
+        muted.remove(&peer);
+    }
 }
 
 /// One-at-a-time queue; the oldest lines are dropped beyond `max`.
@@ -272,9 +290,13 @@ fn run(inv: &Invocation) {
 
 /// The speaker: a worker thread speaks one line at a time; `speak_line` never blocks the frame.
 pub struct Speaker {
-    tx: Option<mpsc::Sender<(String, f64)>>,
+    tx: Option<mpsc::Sender<(String, f64, i64)>>,
     pending: Arc<AtomicUsize>,
     recent: Vec<(String, i64)>,
+    /// Senders with a line queued or being spoken: at most one line per sender waits.
+    waiting: Arc<Mutex<HashSet<i64>>>,
+    /// The local player's peer id; their own lines are never spoken.
+    local_peer: Option<i64>,
 }
 
 impl Speaker {
@@ -283,21 +305,31 @@ impl Speaker {
         let pending = Arc::new(AtomicUsize::new(0));
         // the browser has no speech program to run and no thread to run the queue on (shared/task.rs)
         if crate::shared::task::IN_BROWSER {
-            return Speaker { tx: None, pending, recent: Vec::new() };
+            return Speaker { tx: None, pending, recent: Vec::new(), waiting: Default::default(), local_peer: None };
         }
         let Some(program) = find_program(os, config()) else {
             eprintln!("tts: no voice available, chat stays silent");
-            return Speaker { tx: None, pending, recent: Vec::new() };
+            return Speaker { tx: None, pending, recent: Vec::new(), waiting: Default::default(), local_peer: None };
         };
-        let (tx, rx) = mpsc::channel::<(String, f64)>();
+        let (tx, rx) = mpsc::channel::<(String, f64, i64)>();
         let p2 = pending.clone();
+        let waiting: Arc<Mutex<HashSet<i64>>> = Default::default();
+        let w2 = waiting.clone();
         std::thread::spawn(move || {
-            for (t, v) in rx {
+            for (t, v, peer) in rx {
                 run(&build(os, &program, &t, v, config()));
+                if let Ok(mut w) = w2.lock() {
+                    w.remove(&peer);
+                }
                 p2.fetch_sub(1, Ordering::SeqCst);
             }
         });
-        Speaker { tx: Some(tx), pending, recent: Vec::new() }
+        Speaker { tx: Some(tx), pending, recent: Vec::new(), waiting, local_peer: None }
+    }
+
+    /// Tell the speaker which peer is the local player (their own lines are skipped).
+    pub fn set_local_peer(&mut self, peer: i64) {
+        self.local_peer = Some(peer);
     }
 
     /// Feed one received line (called from net/chat.rs). A line arriving while the queue is full is dropped. `master` and
@@ -314,6 +346,9 @@ impl Speaker {
         spoken_chat_pct: f32,
     ) {
         let c = config();
+        if self.local_peer == Some(line.peer_id) {
+            return;
+        }
         let Some(t) = should_speak(line, listener_world, listener_depth, settings, muted, &self.recent, now_ms) else { return };
         let Some(tx) = &self.tx else { return };
         if self.pending.load(Ordering::SeqCst) >= c.queue_max {
@@ -322,8 +357,16 @@ impl Speaker {
         let d: f64 = (0..3).map(|i| (line.world[i] - listener_world[i]).powi(2)).sum::<f64>().sqrt();
         self.recent.retain(|(_, at)| now_ms - *at < c.duplicate_window_ms);
         self.recent.push((t.clone(), now_ms));
+        match self.waiting.lock() {
+            Ok(mut w) => {
+                if !w.insert(line.peer_id) {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = tx.send((t, speech_volume(d, c.radius, c.volume_floor, master, spoken_chat_pct)));
+        let _ = tx.send((t, speech_volume(d, c.radius, c.volume_floor, master, spoken_chat_pct), line.peer_id));
     }
 }
 
@@ -424,6 +467,35 @@ mod tests {
         let w = build(Os::Windows, "powershell", &t, 1.0, c);
         assert!(w.args.iter().all(|a| !a.contains("`c`")));
         assert_eq!(w.stdin.as_deref(), Some(t.as_str()));
+    }
+
+    #[test]
+    fn mute_call_toggles_and_silences_the_peer() {
+        let mut m = HashSet::new();
+        assert!(toggle_mute(&mut m, 5));
+        assert!(speak(&line([1.0, 0.0, 0.0], 1, "hi", 5), ON, &m).is_none());
+        assert!(!toggle_mute(&mut m, 5));
+        assert!(speak(&line([1.0, 0.0, 0.0], 1, "hi", 5), ON, &m).is_some());
+        set_muted(&mut m, 6, true);
+        assert!(m.contains(&6));
+        set_muted(&mut m, 6, false);
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn own_lines_and_second_line_from_a_sender_are_not_queued() {
+        let (tx, rx) = mpsc::channel();
+        let mut sp = Speaker { tx: Some(tx), pending: Default::default(), recent: Vec::new(), waiting: Default::default(), local_peer: Some(1) };
+        let say = |sp: &mut Speaker, peer: i64, t: &str| sp.speak_line(&line([1.0, 0.0, 0.0], 1, t, peer), [0.0; 3], 1, ON, &HashSet::new(), 0, 1.0, 100.0);
+        say(&mut sp, 1, "mine");
+        say(&mut sp, 2, "one");
+        say(&mut sp, 2, "two");
+        say(&mut sp, 3, "three");
+        let got: Vec<(String, f64, i64)> = rx.try_iter().collect();
+        assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), vec![2, 3]);
+        sp.waiting.lock().unwrap().remove(&2);
+        say(&mut sp, 2, "four");
+        assert_eq!(rx.try_iter().count(), 1, "queued again once the earlier line finished");
     }
 
     #[test]

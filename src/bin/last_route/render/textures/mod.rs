@@ -124,12 +124,12 @@ pub const WALL_PAINTERS: &[(&str, Painter, i32)] = &[
     ("mall1", paint_wall_mall, 1),
     ("glasshouse0", paint_wall_glasshouse, 0),
     ("glasshouse1", paint_wall_glasshouse, 1),
-    ("seawall0", paint_wall_seawall, 0),
-    ("seawall1", paint_wall_seawall, 1),
-    ("whitewash0", paint_wall_whitewash, 0),
-    ("whitewash1", paint_wall_whitewash, 1),
-    ("tealpanel0", paint_wall_tealpanel, 0),
-    ("tealpanel1", paint_wall_tealpanel, 1),
+    ("seawall0", styled_seawall, 0),
+    ("seawall1", styled_seawall, 1),
+    ("whitewash0", styled_whitewash, 0),
+    ("whitewash1", styled_whitewash, 1),
+    ("tealpanel0", styled_tealpanel, 0),
+    ("tealpanel1", styled_tealpanel, 1),
 ];
 
 pub const CEILING_PAINTERS: &[(&str, Painter, i32)] = &[
@@ -138,7 +138,7 @@ pub const CEILING_PAINTERS: &[(&str, Painter, i32)] = &[
     ("glass", paint_glass, 0),
     ("rockceil", paint_rock_ceiling, 0),
     ("vault", paint_vault, 0),
-    ("skylight0", paint_skylight, 0),
+    ("skylight0", styled_skylight, 0),
 ];
 
 /// RefTextures.DUCT_PAINTERS (the painters take no variant).
@@ -324,6 +324,58 @@ mod tests {
     #[test]
     fn flat_style_changes_a_grained_wall() {
         assert!(painted_vs_flat_differ("wall", "panel", 0));
+    }
+
+    fn flat_luma(c: [u8; 3]) -> f64 {
+        0.299 * c[0] as f64 + 0.587 * c[1] as f64 + 0.114 * c[2] as f64
+    }
+
+    /// (distinct opaque colours, tone bands): a new band starts where the sorted luma rises by more than 20.
+    fn flat_colours_and_bands(px: &[u8]) -> (usize, usize) {
+        let mut cols: Vec<[u8; 3]> = px
+            .chunks_exact(4)
+            .filter(|p| p[3] == 255)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect();
+        cols.sort_unstable();
+        cols.dedup();
+        let mut lumas: Vec<f64> = cols.iter().map(|c| flat_luma(*c)).collect();
+        lumas.sort_by(f64::total_cmp);
+        (cols.len(), 1 + lumas.windows(2).filter(|w| w[1] - w[0] > 20.0).count())
+    }
+
+    #[test]
+    fn every_kind_has_a_deterministic_flat_painter() {
+        for group in ["floor", "wall", "ceiling", "duct"] {
+            for kind in kinds(group) {
+                let a = paint_flat(group, kind, 0).unwrap_or_else(|| panic!("{group}/{kind}: no flat painter"));
+                assert_eq!(Some(a.clone()), paint_flat(group, kind, 0), "{group}/{kind}: not deterministic");
+                assert_eq!((a.0, a.1), { let p = paint(group, kind, 0).unwrap(); (p.0, p.1) }, "{group}/{kind}: size");
+            }
+        }
+    }
+
+    #[test]
+    fn newly_flattened_kinds_use_2_to_3_tone_families_and_3_to_6_colours() {
+        let floors = [
+            "floral0", "floral1", "star0", "star1", "parquet0", "parquet1", "check0", "check1", "runner", "runnerz",
+            "runner_l", "runner_c", "runner_r", "runnerz_l", "runnerz_c", "runnerz_r", "safe", "safe_plain",
+            "safe_mark", "terrazzo0", "terrazzo1",
+        ];
+        let walls = ["seawall0", "seawall1", "whitewash0", "whitewash1", "tealpanel0", "tealpanel1"];
+        let list = floors
+            .iter()
+            .map(|k| ("floor", *k))
+            .chain(walls.iter().map(|k| ("wall", *k)))
+            .chain([("ceiling", "skylight0")]);
+        for (group, kind) in list {
+            let flat = paint_flat(group, kind, 0).unwrap();
+            let painted = paint(group, kind, 0).unwrap();
+            assert_ne!(flat.2, painted.2, "{group}/{kind}: flat equals painted");
+            let (colours, bands) = flat_colours_and_bands(&flat.2);
+            assert!((3..=6).contains(&colours), "{group}/{kind}: {colours} colours");
+            assert!((2..=3).contains(&bands), "{group}/{kind}: {bands} tone bands");
+        }
     }
 
     #[test]

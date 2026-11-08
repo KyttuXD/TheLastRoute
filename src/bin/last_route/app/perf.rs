@@ -401,7 +401,8 @@ pub fn frame(dt: f32) {
         } else {
             s.frames.iter().sum::<f32>() / s.frames.len() as f32
         };
-        s.spikes.tick(Instant::now(), draws);
+        let now = Instant::now();
+        s.spikes.tick(now, draws);
         if is_spike(r, dt) {
             let (section, section_ms) = s
                 .frame_secs
@@ -434,7 +435,7 @@ pub fn frame(dt: f32) {
             s.parts = PartsLog::open(&r.parts);
         }
         if let Some(p) = s.parts.as_mut() {
-            p.tick(Instant::now(), &s.frame_secs);
+            p.tick(now, &s.frame_secs);
         }
         s.frame_secs.clear();
         if s.frames.len() < r.history {
@@ -453,8 +454,18 @@ pub fn frame(dt: f32) {
 
 pub struct Section(&'static str);
 
+/// Whether a section reads the clock. Each read is a JS call in the browser, and its spike log goes nowhere there, so
+/// with `sections_only_when_shown` (data/app/gfx.json `web`) the browser times sections only while the F7 panel shows.
+/// A section never opened is a no-op when dropped, so the timings that are taken are the same.
+fn section_timed(in_browser: bool, only_when_shown: bool, mode: u8) -> bool {
+    !(in_browser && only_when_shown && mode == 0)
+}
+
 /// Times a named section of this frame until the returned guard is dropped.
 pub fn section(name: &'static str) -> Section {
+    if !section_timed(crate::shared::task::IN_BROWSER, crate::app::gfx::web_rules().sections_only_when_shown, mode()) {
+        return Section(name);
+    }
     S.with(|s| s.borrow_mut().open.insert(name, Instant::now()));
     Section(name)
 }
@@ -815,5 +826,24 @@ mod tests {
         std_log.tick_in(STANDARD_WINDOW, t0, 10);
         std_log.tick_in(STANDARD_WINDOW, t0 + Duration::from_millis(120), 7);
         assert_eq!(std_log.window.frames, 2);
+    }
+
+    #[test]
+    fn the_browser_times_sections_only_while_the_panel_shows() {
+        // native always times; the browser skips the clock at mode 0 when the data says so
+        assert!(section_timed(false, true, 0));
+        assert!(!section_timed(true, true, 0));
+        assert!(section_timed(true, true, 1));
+        assert!(section_timed(true, true, 2));
+        assert!(section_timed(true, false, 0));
+        // shipped data turns the saving on
+        assert!(crate::app::gfx::web_rules().sections_only_when_shown);
+    }
+
+    #[test]
+    fn an_untimed_section_drops_without_changing_the_timings() {
+        let before = section_ms("untimed-test");
+        drop(Section("untimed-test"));
+        assert_eq!(section_ms("untimed-test"), before);
     }
 }

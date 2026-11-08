@@ -33,6 +33,14 @@ pub fn submit_all(meshes: &[Mesh]) {
     }
 }
 
+/// Draws meshes built earlier after joining those that share a texture and blending (see `mesh_batch::merge_for_draw`),
+/// so a run of small props costs fewer meshes. The image is the same; the counts follow the merged meshes.
+pub fn submit_merged(meshes: Vec<Mesh>) {
+    for m in super::mesh_batch::merge_for_draw(meshes) {
+        submit(&m);
+    }
+}
+
 impl Builder {
     pub fn new(tex: Option<Texture2D>) -> Builder {
         Builder {
@@ -150,6 +158,19 @@ impl Builder {
             });
         }
         self.done
+    }
+
+    /// Like `draw_and_clear`, but joins the finished meshes first (same texture, same blending) before drawing.
+    pub fn draw_merged_and_clear(&mut self) {
+        let mut all = std::mem::take(&mut self.done);
+        if !self.verts.is_empty() {
+            all.push(Mesh {
+                vertices: std::mem::take(&mut self.verts),
+                indices: std::mem::take(&mut self.idx),
+                texture: self.tex.clone(),
+            });
+        }
+        submit_merged(all);
     }
 
     /// Draws what was collected and empties the builder (for per-frame batches).

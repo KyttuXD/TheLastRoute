@@ -286,7 +286,14 @@ impl Game {
         self.say("Music box wound. The room settles.");
     }
 
+    /// A tap of the drop key: one item of the selected stack (a non-stackable item drops whole).
     pub(super) fn drop_selected(&mut self) {
+        self.drop_selected_amount(false);
+    }
+
+    /// Drops the selected slot to the floor: one item, or with `whole` the entire stack (Godot: hold the drop key).
+    /// A non-stackable item drops as it is either way. The flashlight never drops.
+    pub(super) fn drop_selected_amount(&mut self, whole: bool) {
         let Some(slot) = self.slots[self.selected] else {
             return;
         };
@@ -298,18 +305,36 @@ impl Game {
             .fac
             .nearest_open_or(self.p.pos.0 + fx * 0.8, self.p.pos.1 + fy * 0.8, 0.2);
         let stack = slot.item.stack_max() > 1;
+        let one = stack && !whole;
         self.pickups.push(FloorPickup {
             pos: p,
             item: slot.item,
-            n: if stack { 1 } else { slot.n },
+            n: if one { 1 } else { slot.n },
             taken: false,
         });
-        if stack {
+        if one {
             self.consume_selected();
         } else {
             self.slots[self.selected] = None;
         }
         self.say(&format!("DROPPED {}", slot.item.label()));
+    }
+
+    /// The drop key each frame: `pressed` is the press edge (drops one), `held_for` the seconds the key has been down
+    /// (0 when up). Held past data/player/drop.json `hold_seconds` drops what is left of the stack, once per hold.
+    pub(super) fn drop_input(&mut self, pressed: bool, held_for: f32) {
+        thread_local!(static FIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+        if held_for <= 0.0 && !pressed {
+            FIRED.with(|f| f.set(false));
+            return;
+        }
+        if pressed {
+            FIRED.with(|f| f.set(false));
+            self.drop_selected_amount(false);
+        }
+        if held_for >= drop_hold_seconds() && !FIRED.with(|f| f.replace(true)) {
+            self.drop_selected_amount(true);
+        }
     }
 
     /// The wheel moves through one ring: the five hotbar slots, then every specialty slot whose hunter is out (an empty
@@ -359,10 +384,22 @@ impl Game {
             }
         }
         // a specialty item cannot be dropped: it leaves with its hunter
-        if c.drop && self.specialty.selected.is_none() {
-            self.drop_selected();
+        if self.specialty.selected.is_none() {
+            self.drop_input(c.drop, c.drop_held_for);
         }
     }
+}
+
+/// Seconds the drop key is held before the whole stack drops (data/player/drop.json `hold_seconds`).
+pub fn drop_hold_seconds() -> f32 {
+    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        crate::content::embedded::data_under("player/drop.json")
+            .next()
+            .and_then(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok())
+            .and_then(|v| v.get("hold_seconds").and_then(|x| x.as_f64()))
+            .unwrap_or(0.5) as f32
+    })
 }
 
 /// The taser's stun in seconds: the profile's escape stun less `stun_offset` (never under `stun_min`), both from
@@ -404,6 +441,53 @@ mod tests {
             }
         }
         None
+    }
+
+    fn game_with_stack(item: Item, n: i32) -> Game {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "DROP-HOLD-7", 0, &content, &catalog);
+        g.pickups.clear();
+        g.slots[g.selected] = Some(Slot { item, n });
+        g
+    }
+
+    fn dropped(g: &Game) -> i32 {
+        g.pickups.iter().map(|p| p.n).sum()
+    }
+
+    #[test]
+    fn a_tap_drops_one_of_a_stack() {
+        let mut g = game_with_stack(Item::Battery, 3);
+        g.drop_input(true, 0.0);
+        g.drop_input(false, 0.0);
+        assert_eq!(dropped(&g), 1);
+        assert_eq!(g.slots[g.selected].map(|s| s.n), Some(2));
+    }
+
+    #[test]
+    fn holding_past_the_threshold_drops_the_whole_stack_once() {
+        let mut g = game_with_stack(Item::Battery, 3);
+        g.drop_input(true, 0.0);
+        g.drop_input(false, drop_hold_seconds() * 0.5);
+        assert_eq!(dropped(&g), 1, "before the threshold only the tap's one");
+        g.drop_input(false, drop_hold_seconds() + 0.01);
+        assert_eq!(dropped(&g), 3);
+        assert!(g.slots[g.selected].is_none());
+        g.drop_input(false, drop_hold_seconds() + 0.5);
+        assert_eq!(dropped(&g), 3, "one drop per hold");
+        assert!(drop_hold_seconds() > 0.0);
+    }
+
+    #[test]
+    fn a_non_stackable_drops_one_either_way() {
+        let mut a = game_with_stack(Item::Crowbar, 10);
+        a.drop_input(true, 0.0);
+        let mut b = game_with_stack(Item::Crowbar, 10);
+        b.drop_input(true, 0.0);
+        b.drop_input(false, drop_hold_seconds() + 0.1);
+        assert_eq!(a.pickups.len(), 1);
+        assert_eq!(b.pickups.len(), 1);
+        assert_eq!(dropped(&a), dropped(&b));
     }
 
     #[test]

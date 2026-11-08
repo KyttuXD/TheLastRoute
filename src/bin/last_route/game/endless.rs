@@ -191,6 +191,10 @@ pub struct InfState {
     /// The hunters of each level off level 0 that the runner has left by a stairwell, at absolute cells (as `stored`), so the
     /// level keeps them for the way back (Godot keeps every hunter in world_state on its own level).
     floor_hunters: HashMap<i32, Vec<Brain>>,
+    /// Seconds gathered toward the next coarse offscreen step (`Game::simulate_offscreen`, data/hunters/offscreen.json).
+    pub(super) offscreen_clock: f32,
+    /// Coarse steps taken, which seeds each step's draw.
+    pub(super) offscreen_tick: u64,
     /// Each level-0 chunk's hunter spawns, read once (`live::hunter_spawns`).
     spawns: HashMap<ChunkKey, Vec<HunterSpawn>>,
     /// Level-0 walls of the discovered chunks, row-major (`live::walls`), read when a chunk is first loaded: Godot keeps
@@ -627,6 +631,8 @@ impl InfState {
             stored: HashMap::new(),
             loaded: Vec::new(),
             floor_hunters: HashMap::new(),
+            offscreen_clock: 0.0,
+            offscreen_tick: 0,
             spawns: HashMap::new(),
             walls: HashMap::new(),
             floor: DiscoveredFloor::default(),
@@ -914,27 +920,22 @@ impl Game {
         }
     }
 
-    /// Generates, one chunk every `PREWARM_GAP` frames, the chunks the window will need when the runner crosses the edge
-    /// of the middle chunk it is within `PREWARM_MARGIN` metres of, into the window's chunk cache. `window` builds
+    /// Generates, one chunk every `gap_frames` frames (data/chunk_prewarm.json), the chunks the window will need when the runner crosses the edge
+    /// of the middle chunk it is within `margin_m` metres of, into the window's chunk cache. `window` builds
     /// missing chunks synchronously, so without this the crossing's frame generated three to seven chunks at once (a
     /// 150 to 190 ms hitch measured on the web build, and the world popping in after it); with it the crossing is a
     /// cache hit. A chunk is a pure function of the seed, so the world is the same either way.
     fn prewarm_chunks(&mut self, content: &Content, catalog: &Catalog) {
-        const PREWARM_MARGIN: f32 = 8.0;
-        const PREWARM_GAP: u32 = 8;
         let pos = self.p.pos;
+        let cfg = super::preload::chunk_prewarm();
         let Some(inf) = self.inf.as_mut() else { return };
         inf.prewarm_wait = inf.prewarm_wait.saturating_sub(1);
-        if inf.prewarm_wait > 0 {
-            return;
-        }
-        let next = infinite::approach_chunks(inf.center, inf.level, pos, PREWARM_MARGIN)
-            .into_iter()
-            .find(|k| !inf.cache.contains_key(k));
-        if let Some(k) = next {
+        let wanted = infinite::approach_chunks(inf.center, inf.level, pos, cfg.margin_m);
+        let step = super::preload::prewarm_step(&cfg, inf.prewarm_wait, &wanted, |k| inf.cache.contains_key(k));
+        for k in step {
             let made = infinite::chunk(&inf.seed, k, catalog, &content.loot);
             inf.cache.insert(k, made);
-            inf.prewarm_wait = PREWARM_GAP;
+            inf.prewarm_wait = cfg.gap_frames;
         }
     }
 
@@ -1280,6 +1281,8 @@ impl Game {
             // on a flight the neighbour is built at the new centre this frame (one hitch; the chunk cache makes it cheap)
             self.keep_stack(content, catalog);
         }
+        // bots that travelled coarsely outside the old window are set down on the floor they now stand on
+        self.npc_rejoin_window();
         if self.inf.as_ref().is_some_and(|i| i.level == 0) {
             // level 0: residency decides who is in the window; a hunter that leaves it is stored, not respawned
             self.residency(content);
@@ -1703,6 +1706,11 @@ impl Game {
             }
             let Some(mut b) = inf.stored.remove(&id) else { continue };
             shift_brain(&mut b, (-o.0, -o.1));
+            // a hunter that drifted while stored comes in on a walkable, dry cell
+            let radius = super::resident_hunters::offscreen_rules().entry_radius;
+            if let Some(q) = super::resident_hunters::settle_cell(&self.fac, b.pos, radius) {
+                b.pos = q;
+            }
             if !b.active {
                 b.activate_at(runner_pos);
             }

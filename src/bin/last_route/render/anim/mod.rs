@@ -14,6 +14,7 @@
 //! carry, so they live here, keyed by the hunter's slot, and advance on the game clock.
 
 pub mod clip;
+pub mod emote_pose;
 #[cfg(test)]
 mod creature_tests;
 pub mod grab;

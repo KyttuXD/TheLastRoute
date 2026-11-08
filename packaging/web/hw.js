@@ -7,6 +7,7 @@
 //   cores      navigator.hardwareConcurrency (0 when the browser hides it)
 //   memory_gb  navigator.deviceMemory, a power of two up to 8 in Chrome and Edge (0 in Firefox and Safari)
 //   mobile     a phone or tablet browser
+//   gpu        the WebGL unmasked renderer name (empty when the browser hides it); AUTO matches Intel HD names to start on LOW
 //   software   WebGL is drawn by a software renderer (SwiftShader, llvmpipe), which is far too slow for the 3D view
 //
 // Nothing here leaves the page: it is read by this game only and is not sent anywhere.
@@ -14,12 +15,13 @@
   try {
     var nav = window.navigator || {};
     var software = false;
+    var renderer = "";
     try {
       var canvas = document.createElement("canvas");
       var gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
       if (gl) {
         var info = gl.getExtension("WEBGL_debug_renderer_info");
-        var renderer = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : "");
+        renderer = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : "");
         software = /swiftshader|llvmpipe|software|softpipe/i.test(renderer);
         var lose = gl.getExtension("WEBGL_lose_context");
         if (lose) lose.loseContext();
@@ -32,6 +34,7 @@
       memory_gb: nav.deviceMemory > 0 ? Number(nav.deviceMemory) : 0,
       mobile: /android|iphone|ipad|ipod|mobile/i.test(String(nav.userAgent || "")) || (nav.maxTouchPoints > 1 && /macintosh/i.test(String(nav.userAgent || ""))),
       software: software,
+      gpu: renderer.slice(0, 120),
     };
     window.localStorage.setItem("last_route.hw", JSON.stringify(report));
   } catch (e) {

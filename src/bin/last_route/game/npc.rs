@@ -154,6 +154,81 @@ pub struct Tuning {
     pub goals: GoalTuning,
     /// Sight, hearing and the route of a bot running from a hunter (data `flee`).
     pub flee: FleeTuning,
+    /// How a bot outside the window travels (data `coarse`).
+    pub coarse: CoarseTuning,
+}
+
+/// The coarse travel of a bot outside the loaded window (data `coarse`). A missing key keeps the default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoarseTuning {
+    /// Metres per second it covers, chunk to chunk, toward the runner.
+    pub speed: f32,
+}
+
+impl Default for CoarseTuning {
+    fn default() -> CoarseTuning {
+        CoarseTuning { speed: PLAYER_WALK_SPEED }
+    }
+}
+
+impl CoarseTuning {
+    pub fn parse(v: &Value) -> CoarseTuning {
+        let d = CoarseTuning::default();
+        CoarseTuning { speed: v["speed"].as_f64().map_or(d.speed, |x| x as f32).max(0.0) }
+    }
+}
+
+/// The next point a bot outside the window walks to: the centre of the adjacent chunk toward the runner's chunk (the
+/// axis with the wider gap first, as the chunk links run), or the runner itself once they share a chunk. Positions are
+/// window cells; chunks are `chunk` cells square from the window's (0, 0).
+pub fn coarse_waypoint(at: (f32, f32), runner: (f32, f32), chunk: f32) -> (f32, f32) {
+    let cell = |p: (f32, f32)| ((p.0 / chunk).floor() as i32, (p.1 / chunk).floor() as i32);
+    let (a, r) = (cell(at), cell(runner));
+    if a == r {
+        return runner;
+    }
+    let (dx, dy) = (r.0 - a.0, r.1 - a.1);
+    let next = if dx.abs() >= dy.abs() { (a.0 + dx.signum(), a.1) } else { (a.0, a.1 + dy.signum()) };
+    ((next.0 as f32 + 0.5) * chunk, (next.1 as f32 + 0.5) * chunk)
+}
+
+/// One coarse step: `speed * dt` metres toward the next waypoint (never past it).
+pub fn coarse_step(at: (f32, f32), runner: (f32, f32), chunk: f32, speed: f32, dt: f32) -> (f32, f32) {
+    let w = coarse_waypoint(at, runner, chunk);
+    let d = pdist(at, w);
+    let reach = speed * dt;
+    if d <= reach || d < 1e-4 {
+        return w;
+    }
+    (at.0 + (w.0 - at.0) * reach / d, at.1 + (w.1 - at.1) * reach / d)
+}
+
+/// True when `p` lies on the facility's cell grid (the loaded window).
+fn on_floor(fac: &Facility, p: (f32, f32)) -> bool {
+    p.0 >= 0.0 && p.1 >= 0.0 && p.0 < fac.cols as f32 && p.1 < fac.rows as f32
+}
+
+/// One frame of a bot outside the window: it steps toward the runner on the coarse level. When the step lands on the
+/// window floor it is placed on the nearest dry open cell.
+fn coarse_travel(n: &mut Npc, home: &Facility, runner: (f32, f32), chunk: f32, c: &CoarseTuning, dt: f32) {
+    n.walk = None;
+    n.edge_clock = 0.0;
+    n.hop = None;
+    n.path.clear();
+    n.path_age = REPATH;
+    n.walking = false;
+    let next = coarse_step(n.at, runner, chunk, c.speed, dt);
+    let (dx, dy) = (next.0 - n.at.0, next.1 - n.at.1);
+    if dx != 0.0 || dy != 0.0 {
+        n.facing = (-dx).atan2(-dy);
+    }
+    n.at = next;
+    if on_floor(home, next) {
+        if let Some(at) = home.nearest_dry_open(next.0, next.1, NAV_RADIUS) {
+            n.at = at;
+            n.y = floor_y_of(n.level) + local_ground(home, at.0, at.1);
+        }
+    }
 }
 
 /// The "goal" intent's numbers (data `goals`). A bot scores every relay, battery, heal item, pickup and the exit on the
@@ -436,6 +511,7 @@ impl Tuning {
                 .collect(),
             goals: GoalTuning::parse(&v["goals"]),
             flee: FleeTuning::parse(&v["flee"]),
+            coarse: CoarseTuning::parse(&v["coarse"]),
         })
     }
 
@@ -2133,6 +2209,26 @@ impl Game {
         }
     }
 
+    /// After a window recentre: every bot of the active level whose position is now on the window floor is set down on
+    /// the nearest dry open cell; a bot still outside keeps its coarse position (it travels in `update_npcs_with`).
+    /// Returns how many were moved.
+    pub(super) fn npc_rejoin_window(&mut self) -> usize {
+        let mut placed = 0;
+        let fac = &self.fac;
+        for n in self.npcs.iter_mut().filter(|n| n.level == fac.level) {
+            if on_floor(fac, n.at) {
+                if let Some(at) = fac.nearest_dry_open(n.at.0, n.at.1, NAV_RADIUS) {
+                    if at != n.at {
+                        n.at = at;
+                        placed += 1;
+                    }
+                    n.y = floor_y_of(n.level) + local_ground(fac, at.0, at.1);
+                }
+            }
+        }
+        placed
+    }
+
     /// The per-frame tick with the embedded tuning (see `update_npcs_with`).
     pub(super) fn update_npcs(&mut self, dt: f32) {
         self.update_npcs_with(dt, Tuning::get());
@@ -2180,7 +2276,20 @@ impl Game {
         let loot = self.npc_loot(t);
         let spots = self.npc_spots(t, &facs);
         let search_all: Vec<(i32, (f32, f32))> = by_level.iter().flat_map(|e| e.2.iter().map(move |p| (e.0, *p))).collect();
+        let chunk = crate::world::infinite::CHUNK as f32;
+        let infinite = self.inf.is_some();
         for n in self.npcs.iter_mut() {
+            // a bot off the window floor keeps travelling toward the runner a chunk at a time; once its position is on
+            // the window floor it is set down on the nearest dry open cell and acts as any other bot
+            if infinite {
+                let own_fac = facs.iter().find(|(l, _)| *l == n.level).or_else(|| facs.iter().find(|(l, _)| *l == level));
+                if let Some(&(_, home)) = own_fac {
+                    if !on_floor(home, n.at) {
+                        coarse_travel(n, home, leader, chunk, &t.coarse, dt);
+                        continue;
+                    }
+                }
+            }
             let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == n.level) else {
                 // a level that is not resident (a summon with a stale level, or a landing on an evicted one): the bot
                 // drops its edge and route and is set down on the runner's level beside where it was
@@ -4589,6 +4698,103 @@ mod level_tests {
         assert_eq!(n.visited.len(), 1, "the same storey keeps its visits");
         set_level(n, same - 1);
         assert!(n.visited.is_empty() && n.errand.is_none(), "another storey starts with none");
+    }
+}
+
+#[cfg(test)]
+mod coarse_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    const CHUNK: f32 = 45.0;
+
+    fn bot(at: (f32, f32), g: &mut Game) -> usize {
+        let runner = g.p.pos;
+        g.npc_spawn_at(1, 50, runner, 0);
+        let i = g.npcs.len() - 1;
+        g.npcs[i].at = at;
+        i
+    }
+
+    #[test]
+    fn the_embedded_coarse_speed_is_the_walking_speed_and_a_missing_key_keeps_it() {
+        assert!((Tuning::get().coarse.speed - PLAYER_WALK_SPEED).abs() < 1e-4);
+        assert_eq!(CoarseTuning::parse(&Value::Null), CoarseTuning::default());
+        let v: Value = serde_json::from_str(r#"{"speed": 9.0}"#).unwrap();
+        assert!((CoarseTuning::parse(&v).speed - 9.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_bot_outside_the_window_gets_closer_every_second() {
+        let runner = (67.5, 67.5);
+        let mut at = (-300.0, 20.0);
+        let mut last = pdist(at, runner);
+        for _ in 0..60 {
+            at = coarse_step(at, runner, CHUNK, 4.0, 1.0);
+            let d = pdist(at, runner);
+            assert!(d < last, "closer each second: {d} vs {last}");
+            last = d;
+        }
+    }
+
+    #[test]
+    fn the_coarse_step_covers_the_speed_and_goes_chunk_to_chunk() {
+        let runner = (67.5, 67.5);
+        let at = (-100.0, 67.5);
+        let next = coarse_step(at, runner, CHUNK, 4.0, 0.5);
+        assert!((pdist(at, next) - 2.0).abs() < 1e-3);
+        // the first stop is the centre of the next chunk along, not the runner
+        assert_eq!(coarse_waypoint(at, runner, CHUNK), (-67.5, 67.5));
+        // in the runner's own chunk the target is the runner
+        assert_eq!(coarse_waypoint((50.0, 50.0), runner, CHUNK), runner);
+    }
+
+    #[test]
+    fn a_bot_whose_position_comes_onto_the_floor_is_placed_on_a_dry_walkable_cell() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let i = bot((-0.5, -0.5), &mut g);
+        let runner = g.p.pos;
+        let home = g.fac.clone();
+        let mut n = g.npcs[i].clone();
+        // a step that lands inside the floor ends on a dry open cell
+        n.at = (home.cols as f32 - 0.2, runner.1);
+        let c = CoarseTuning { speed: 100.0 };
+        coarse_travel(&mut n, &home, runner, CHUNK, &c, 1.0);
+        assert!(on_floor(&home, n.at));
+        let cell = Cell::new(n.at.0.floor() as i32, n.at.1.floor() as i32);
+        assert!(!home.is_water(cell), "dry");
+        assert!(home.nearest_dry_open(n.at.0, n.at.1, 0.5).is_some(), "open");
+    }
+
+    #[test]
+    fn a_bot_off_the_floor_stays_off_it_until_it_arrives() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let i = bot((-500.0, -500.0), &mut g);
+        let home = g.fac.clone();
+        let mut n = g.npcs[i].clone();
+        coarse_travel(&mut n, &home, g.p.pos, CHUNK, &CoarseTuning::default(), 1.0);
+        assert!(!on_floor(&home, n.at));
+        assert!(!n.walking && n.path.is_empty());
+    }
+
+    #[test]
+    fn a_bot_inside_the_window_is_untouched_by_the_coarse_path() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let i = bot(g.p.pos, &mut g);
+        assert!(on_floor(&g.fac, g.npcs[i].at));
+        // a finite floor never runs the coarse branch, and the rejoin leaves an on-floor open bot where it stands
+        let before = g.npcs[i].at;
+        g.update_npcs(0.1);
+        assert!(on_floor(&g.fac, g.npcs[i].at));
+        assert!(pdist(before, g.npcs[i].at) < 1.0);
     }
 }
 

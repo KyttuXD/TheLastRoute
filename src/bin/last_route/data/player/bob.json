@@ -2,5 +2,9 @@
   "phase_per_metre": 1.9,
   "ease_rate": 10.0,
   "sway_ratio": 0.42,
-  "crouch_eye_clearance": 0.08
+  "crouch_eye_clearance": 0.08,
+  "step_locked": true,
+  "amp_walk": 0.024,
+  "amp_sprint": 0.038,
+  "amp_crouch": 0.012
 }

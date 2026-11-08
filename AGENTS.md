@@ -26,6 +26,16 @@ Rules for any AI agent or tool working in this repository. KT's instructions her
 - On KT's PC, use `CARGO_BUILD_JOBS=4` and at most one cargo build at a time per agent. Do not leave builds or servers running.
 - Web deploys: `sh packaging/web/deploy-vps2.sh dist/web` after building the wasm and assembling the page files. See `docs/DEPLOY_VPS2_WEB.md`.
 
+## Agent passes in this repo
+
+The global agent build rules (KT's global CLAUDE.md: edit agents never compile, QA only reads, one build-and-fix agent, then one test-and-fix agent) apply here. This repo's specifics:
+
+- The standard pass is `.claude/workflows/edit-pass.js` (args `{ label, extraRules, tasks: [{ n, files, task }] }`). Each pass compiles into its own `CARGO_TARGET_DIR=target/<pass label>`.
+- The build-and-fix agent runs, in order: `cargo build --bin last_route`, `cargo test --no-run --lib --bin last_route`, `cargo check --target wasm32-unknown-unknown --bin last_route`, `cargo build --bin lr_server --features server`.
+- The test-and-fix agent runs the newest `<target>/debug/deps/last_route-*.exe --test-threads=4`, then `<target>/debug/last_route.exe --headless --test-suite "tests/*.json"`.
+- Off-limits to every agent: `src/bin/lr_story/`, `src/bin/lr_story_server/`, `packaging/story-*`, `Cargo.toml`, `Cargo.lock`, `.gitignore`, `docs/LR_STORY.md` (another agent owns them).
+- Known failures to ignore: `content::npcs::tests::the_bots_tuning_reads_the_embedded_standard_values`, `content::npcs::tests::the_embedded_file_parses_to_the_defaults`, `hunters::brain::wiring_tests::giving_up_leaves_a_chase_a_search_and_a_wander_idle`; headless: the `bot` suite (relays, depth, exploring) and `run_flow` "a capture without a struggle ends the run" (they fail on `7f0ffb8` too).
+
 ## Working with KT
 
 - Keep chat replies short. Put detail in commit messages and in `docs/`.

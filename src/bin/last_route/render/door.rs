@@ -748,4 +748,51 @@ mod tests {
             assert!(close(centre + span as f32 / 2.0, (4 + span) as f32, 1e-5), "span {span}");
         }
     }
+
+    /// The mansion and hotel doors (TODO: "Mansion doors are invisible"): each region's single and double door names
+    /// from the room-door table resolve to a luxury model that builds, so a placed mansion door has a frame (three
+    /// pieces and the crown over the bar) and a swinging leaf per hinge, all finite and with area, closed and open.
+    #[test]
+    fn mansion_and_hotel_door_models_build_a_frame_crown_and_leaves() {
+        use crate::world::route::grid::ROOM_DOOR_TABLE;
+        for region in ["mansion", "hotel"] {
+            let (_, single, double) = *ROOM_DOOR_TABLE.iter().find(|(r, _, _)| *r == region).expect("a door table row");
+            for (ptype, spans, leaves) in [(single, vec![1], 1usize), (double, vec![2, 3], 2)] {
+                let text = all_models().into_iter().find(|(p, _, _)| *p == ptype).unwrap_or_else(|| panic!("{region}: no model for {ptype}")).1;
+                for span in spans {
+                    for open in [0.0, 1.0] {
+                        let b = build(text, ptype, span, open);
+                        let ctx = format!("{region} {ptype} span {span} open {open}");
+                        assert!(b.dims.double == (leaves == 2), "{ctx}: door kind");
+                        assert_eq!(b.leaves.len(), leaves, "{ctx}: leaves");
+                        // the crown and the threshold are ungrouped elements (group "")
+                        let loose = b.frame("");
+                        let bar = b.frame("DoorFrameTop");
+                        assert!(loose.hi.y > bar.hi.y + 0.05, "{ctx}: no crown above the bar ({} vs {})", loose.hi.y, bar.hi.y);
+                        for leaf in &b.leaves {
+                            let size = leaf.hi - leaf.lo;
+                            assert!(size.is_finite() && size.y > 1.5 && size.x.hypot(size.z) > 0.3, "{ctx}: leaf {size:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A luxury door's crown is part of the frame body (it is in no hinge group, so the static batch draws it shut),
+    /// it sits above the bar, and the raised crown stays under the raise cap and inside the wall recess the header
+    /// leaves for it.
+    #[test]
+    fn luxury_crown_is_body_geometry_under_the_raise_cap() {
+        for (ptype, text, double) in all_models().into_iter().filter(|(p, _, _)| p.starts_with("luxury")) {
+            let load = load(text);
+            assert!(load.body.iter().any(|(n, p)| n.is_empty() && p.y > 2.56), "{ptype}: no crown in the body");
+            assert!(load.hinges.iter().all(|h| closed_hinge_deg(&h.name).is_some()), "{ptype}");
+            let span = if double { 2 } else { 1 };
+            let b = build(text, ptype, span, 0.0);
+            assert!(b.dims.top > b.dims.bar_top, "{ptype}: the crown is taller than the bar");
+            assert!(b.dims.top * b.fit.sy <= raise_cap(ptype) + 1e-4, "{ptype}: raised top {}", b.dims.top * b.fit.sy);
+            assert!(header_bottom(b.dims, b.fit.sy, 5.0) >= b.frame("DoorFrameTop").hi.y, "{ptype}: the soffit clears the bar");
+        }
+    }
 }

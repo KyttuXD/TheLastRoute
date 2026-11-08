@@ -37,6 +37,8 @@ pub mod api;
 pub mod backend;
 /// Co-op chat lines (team / nearby, spoken aloud in the original) and their host-side moderation.
 pub mod chat;
+/// Voice chat groundwork: ADPCM codec, packet framing, jitter buffer, range and mute rules (docs/VOICE_CHAT.md).
+pub mod voice;
 /// The name a runner who is not signed in plays under: `GUEST_` and a four digit number.
 pub mod guest_name;
 pub mod held_wire;

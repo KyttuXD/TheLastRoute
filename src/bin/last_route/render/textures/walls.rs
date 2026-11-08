@@ -563,6 +563,92 @@ pub fn paint_wall_rock(variant: i32) -> Img {
     img
 }
 
+// -- beach walls in the flat style -----------------------------------------------------------------------------------
+
+const SEA_STONE: u32 = 0x78807a;
+const SEA_TEAL: u32 = 0x3f8a8a;
+const SEA_CREAM: u32 = 0xb0a68c;
+
+/// Seawall for the wall table: the painted beach look, or flat blocks: stone, a darker mortar (also the cornice and
+/// the skirting) and one algae tone thickening towards the tide line.
+pub fn styled_seawall(variant: i32) -> Img {
+    if !flat() {
+        return super::beach::paint_wall_seawall(variant);
+    }
+    let mut rng = GodotRng::from_key(&format!("wseawall{variant}"));
+    let mut img = Img::new(PX, WALL_H);
+    let base = mul(hex(SEA_STONE), if variant == 0 { 1.0 } else { 0.94 });
+    let mortar = mul(base, 0.68);
+    img.fill(base);
+    img.dot(0, 0, mortar, PX, CORNICE_H);
+    img.dot(0, WALL_H - SKIRT_H, mortar, PX, SKIRT_H);
+    let mut y = CORNICE_H + 1;
+    while y < WALL_H - SKIRT_H {
+        let h = [14, 18, 22][(rng.randi() % 3) as usize];
+        img.dot(0, y, mortar, PX, 1);
+        let x = rng.randi_range(4, 27);
+        img.dot(x, y, mortar, 1, h.min(WALL_H - SKIRT_H - y));
+        y += h;
+    }
+    let algae = hex(0x4f8478);
+    for _ in 0..46 {
+        let ay = WALL_H - SKIRT_H - 1 - (rng.randf().powf(1.8) * 46.0) as i32;
+        let x = rng.randi_range(0, PX - 1);
+        img.dot(x, ay, algae, 1, rng.randi_range(2, 6).min(WALL_H - SKIRT_H - ay));
+    }
+    img
+}
+
+/// Whitewash for the wall table: the painted look, or flat cream boards split by one dark seam, with the turquoise
+/// stripe (variant 0) or dado (variant 1). The cornice is the seam tone; the skirting is the seam or the turquoise.
+pub fn styled_whitewash(variant: i32) -> Img {
+    if !flat() {
+        return super::beach::paint_wall_whitewash(variant);
+    }
+    let mut img = Img::new(PX, WALL_H);
+    let cream = hex(SEA_CREAM);
+    let seam = mul(cream, 0.66);
+    let teal = hex(SEA_TEAL);
+    img.fill(cream);
+    for band in 0..4 {
+        img.dot(band * 8 + 7, CORNICE_H, seam, 1, WALL_H - CORNICE_H);
+    }
+    if variant == 1 {
+        img.dot(0, RAIL_Y, teal, PX, WALL_H - RAIL_Y);
+        for band in 0..4 {
+            img.dot(band * 8 + 7, RAIL_Y, seam, 1, WALL_H - RAIL_Y);
+        }
+    } else {
+        img.dot(0, RAIL_Y + 2, teal, PX, 6);
+    }
+    img.dot(0, 0, seam, PX, CORNICE_H);
+    img.dot(0, WALL_H - SKIRT_H, if variant == 1 { teal } else { seam }, PX, SKIRT_H);
+    img
+}
+
+/// Turquoise panelling for the wall table: the painted look, or flat paint over a sand (variant 1) or matching upper
+/// wall, a cream cap rail (also the cornice) and one groove tone (the beadboard lines and the skirting).
+pub fn styled_tealpanel(variant: i32) -> Img {
+    if !flat() {
+        return super::beach::paint_wall_tealpanel(variant);
+    }
+    let mut img = Img::new(PX, WALL_H);
+    let paint = if variant == 0 { hex(SEA_TEAL) } else { hex(0x58a8a0) };
+    let upper = if variant == 0 { paint } else { hex(0xa89c80) };
+    let groove = mul(paint, 0.72);
+    let cap = hex(0xc0b698);
+    img.dot(0, 0, upper, PX, RAIL_Y);
+    img.dot(0, RAIL_Y, paint, PX, WALL_H - RAIL_Y);
+    for x in range(3, PX, 4) {
+        img.dot(x, CORNICE_H + 1, groove, 1, RAIL_Y - CORNICE_H - 2);
+        img.dot(x, RAIL_Y + 3, groove, 1, WALL_H - RAIL_Y - SKIRT_H - 4);
+    }
+    img.dot(0, 0, cap, PX, CORNICE_H);
+    img.dot(0, RAIL_Y - 2, cap, PX, 3);
+    img.dot(0, WALL_H - SKIRT_H, groove, PX, SKIRT_H);
+    img
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,6 +765,23 @@ mod tests {
     #[test]
     fn flat_inferno_walls() {
         check_flat("inferno", paint_wall_inferno, 0);
+    }
+
+    #[test]
+    fn flat_beach_walls() {
+        for v in 0..2 {
+            check_flat("seawall", styled_seawall, v);
+            check_flat("whitewash", styled_whitewash, v);
+            check_flat("tealpanel", styled_tealpanel, v);
+        }
+    }
+
+    #[test]
+    fn painted_beach_walls_are_the_beach_painters() {
+        let painted = |f: fn(i32) -> Img| with_style(false, || f(0)).px;
+        assert_eq!(painted(styled_seawall), super::super::beach::paint_wall_seawall(0).px);
+        assert_eq!(painted(styled_whitewash), super::super::beach::paint_wall_whitewash(0).px);
+        assert_eq!(painted(styled_tealpanel), super::super::beach::paint_wall_tealpanel(0).px);
     }
 
     #[test]

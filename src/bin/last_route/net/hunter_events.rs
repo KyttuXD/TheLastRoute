@@ -482,7 +482,8 @@ pub fn notice(event: &Map<String, Value>) -> Option<String> {
         ("hunter_grab", Some("end")) => Some(format!("{id} LET THE HOST GO")),
         ("hunter_door", _) if action == Some("close") => Some(format!("{id} SHUT THE DOOR")),
         ("hunter_door", _) => Some(format!("{id} PULLED THE DOOR OPEN")),
-        ("hunter_locker", _) => Some(format!("{id} IS CHECKING A LOCKER")),
+        // Godot prints nothing for a locker check (the furniture rattles and the breath plays): no callout
+        ("hunter_locker", _) => None,
         ("hunter_charge", _) => Some(format!("{id} CHARGES")),
         ("hunter_ability", _) => Some(format!("{id} POUNCES")),
         _ => None,
@@ -751,7 +752,7 @@ mod tests {
         let shut = json!({"what": "hunter_door", "hunter_id": "aki", "action": "close"});
         assert_eq!(notice(shut.as_object().unwrap()).as_deref(), Some("AKI SHUT THE DOOR"));
         let locker = json!({"what": "hunter_locker", "hunter_id": "aki", "spot": 2});
-        assert_eq!(notice(locker.as_object().unwrap()).as_deref(), Some("AKI IS CHECKING A LOCKER"));
+        assert_eq!(notice(locker.as_object().unwrap()), None, "a locker check has no callout (Godot prints none)");
         let charge = json!({"what": "hunter_charge", "hunter_id": "loxelle"});
         assert_eq!(notice(charge.as_object().unwrap()).as_deref(), Some("LOXELLE CHARGES"));
         let pounce = json!({"what": "hunter_ability", "hunter_id": "nyxie", "ability": "pounce"});

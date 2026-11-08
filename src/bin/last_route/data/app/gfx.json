@@ -3,5 +3,14 @@
   "_note": "Graphics API choice (app/gfx.rs). No Godot counterpart: the Godot project uses the engine's own renderer. boot_marker is a file in the per-user folder, holding a process id, written before a Metal window opens and removed by a clean end (after good_frames drawn frames, or at a normal exit); a marker whose process is gone at the next launch means the Metal start crashed and AUTO uses OpenGL. auto_metal_on_apple_silicon: AUTO gives OpenGL everywhere until Metal is measured faster than OpenGL on a device (docs/GRAPHICS_API.md has the numbers); set it to true to give Apple Silicon Metal under AUTO.",
   "boot_marker": "gfx_boot.marker",
   "good_frames": 120,
-  "auto_metal_on_apple_silicon": false
+  "auto_metal_on_apple_silicon": false,
+  "web": {
+    "_note": "The browser build on Intel MacBook Airs (15-65 FPS). default_tier: the quality tier the browser starts on until the hardware report or the governor says otherwise (LOW / MEDIUM / HIGH). high_dpi: whether the canvas is created at device pixels (false: CSS pixels, so a Retina Air fills a quarter of the pixels). max_pixel_ratio: the most the device pixel ratio may multiply the 3D target by when high_dpi is on. render_scale_cap: the 3D target never renders above this share of the canvas in the browser. page_paces_frames: requestAnimationFrame already paces the loop, so the FPS LIMIT wait is skipped in the browser. sections_only_when_shown: the browser times render sections (each a JS clock call) only while the F7 panel shows.",
+    "default_tier": "LOW",
+    "high_dpi": false,
+    "max_pixel_ratio": 1.0,
+    "render_scale_cap": 0.5,
+    "page_paces_frames": true,
+    "sections_only_when_shown": true
+  }
 }
