@@ -21,6 +21,10 @@ const FEED_FOV_DEG: f32 = 62.0;
 const EDGE: f32 = 0.95;
 const NEAR: f32 = 0.05;
 const FAR: f32 = 80.0;
+/// A hunter stands at least this far from a room camera (metres), or she fills the picture and her head is cropped.
+const MIN_DIST_ROOM: f32 = 2.5;
+/// A hunter's head height for the framing check (the shortest of the cast stands about 1.6 m).
+const HEAD_Y: f32 = 1.6;
 
 /// One camera as the feed renders it.
 struct View {
@@ -30,11 +34,34 @@ struct View {
     fov_deg: f32,
     /// The nav rooms this camera watches.
     rooms: Vec<String>,
+    /// The nearest a stand or task spot may be to the camera (metres): nearer and the hunter fills the frame.
+    min_dist: Option<f32>,
 }
 
 impl View {
     fn new(label: &str, pos: Vec3, target: Vec3, fov_deg: f32, rooms: &[&str]) -> View {
-        View { label: label.to_string(), pos, target, fov_deg, rooms: rooms.iter().map(|r| r.to_string()).collect() }
+        View { label: label.to_string(), pos, target, fov_deg, rooms: rooms.iter().map(|r| r.to_string()).collect(), min_dist: None }
+    }
+
+    /// Also check how a hunter is framed: her feet at least `min_dist` metres (across the floor) from the camera, her head inside the
+    /// frame. Rooms use `MIN_DIST_ROOM`, tighter spaces (ducts, the lift) a shorter distance.
+    fn framed(mut self, min_dist: f32) -> View {
+        self.min_dist = Some(min_dist);
+        self
+    }
+
+    /// Why a hunter standing on `p` is badly framed: too near the camera, or her head is cut off by the frame.
+    fn framing(&self, what: &str, p: Vec3) -> Option<String> {
+        let min = self.min_dist?;
+        let dist = ((p.x - self.pos.x).powi(2) + (p.z - self.pos.z).powi(2)).sqrt();
+        if dist < min {
+            return Some(format!("{}: {} is {:.2} m from the camera across the floor (minimum {:.1} m): the hunter fills the frame", self.label, what, dist, min));
+        }
+        let head = p + Vec3::Y * HEAD_Y;
+        match self.project(head) {
+            Some((x, y, _)) if x.abs() <= EDGE && y.abs() <= EDGE => None,
+            _ => Some(format!("{}: {} puts the hunter's head outside the frame", self.label, what)),
+        }
     }
 
     fn fp(&self) -> FpCamera {
@@ -99,11 +126,13 @@ fn problems(view: &View, nav: &NavMap, extra: &[(String, Vec3)]) -> Vec<String> 
         for (key, p) in room_spots(nav, room) {
             checked += 1;
             out.extend(view.problem(&format!("spot {key}"), p));
+            out.extend(view.framing(&format!("spot {key}"), p));
         }
     }
     for (what, p) in extra {
         checked += 1;
         out.extend(view.problem(what, *p));
+        out.extend(view.framing(what, *p));
     }
     if checked == 0 && !view.rooms.is_empty() {
         out.push(format!("{}: nothing to look at in {:?}", view.label, view.rooms));
@@ -206,7 +235,25 @@ fn mask_cameras_show_their_rooms() {
         .iter()
         .map(|r| {
             let c = m.camera(r).unwrap_or_else(|| panic!("mask camera room {r} has no camera"));
-            (View::new(&format!("mask {r}"), c.mount, c.target, c.fov, &[r.as_str()]), Vec::new())
+            // a hunter keeps her distance: 2.5 m in a room, 2 m in a duct, 1 m in the hall (she walks up to the office doors)
+            let min = if r.starts_with("duct") { 2.0 } else if r == "hall" { 1.0 } else { MIN_DIST_ROOM };
+            // the mode's own stand spots, and the duct waypoint the hunters walk through on their way to the vent (the one before it,
+            // DL1 / DR1, is the side entrance from the crawlspace and is out of this camera's picture)
+            let mut extra: Extra = Vec::new();
+            for slot in 0..3 {
+                for at in ["far", "stand", "near"] {
+                    // (the hall's spots are by the office doors, under its high camera, and are not part of this feed's picture)
+                    if r != "hall" && (at == "stand" || r.starts_with("duct")) {
+                        extra.push((format!("stand slot {slot} ({at})"), m.stand_at(r, slot, at)));
+                    }
+                }
+            }
+            if r.starts_with("duct") {
+                for n in nav.nodes().iter().filter(|n| n.room == *r && n.kind == NavKind::Waypoint && (n.key == "DL2" || n.key == "DR2")) {
+                    extra.push((format!("duct waypoint {}", n.key), n.p));
+                }
+            }
+            (View::new(&format!("mask {r}"), c.mount, c.target, c.fov, &[r.as_str()]).framed(min), extra)
         })
         .collect();
     assert_eq!(views.len(), 8);
@@ -246,7 +293,7 @@ fn story_cameras_show_their_rooms() {
     use super::story::world::{layout, NAV_JSON};
     let nav = nav_of(NAV_JSON, "story");
     let views: Vec<(View, Extra)> =
-        layout().cameras.iter().map(|c| (View::new(&format!("story {}", c.room), c.pos, c.target, c.fov, &[c.room.as_str()]), Vec::new())).collect();
+        layout().cameras.iter().map(|c| (View::new(&format!("story {}", c.room), c.pos, c.target, c.fov, &[c.room.as_str()]).framed(MIN_DIST_ROOM), Vec::new())).collect();
     assert_eq!(views.len(), 6);
     assert_covered("story", &views, &nav);
 }

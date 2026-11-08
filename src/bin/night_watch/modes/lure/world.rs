@@ -511,9 +511,9 @@ fn camera_group(sim: &str, centre: Vec3) -> Group {
     let dir = vec3(yaw.sin(), 0.0, yaw.cos());
     let mut g = Group::new(&hall_group(sim, "camera"), centre);
     g.add(Cube::new("CamBracket", vec3(0.06, 0.3, 0.06), local + vec3(0.0, 0.2, 0.0)).kind("metal"));
-    g.add(Cube::new("CamBody", vec3(0.2, 0.18, 0.42), local).kind("metal").tint([0.55, 0.57, 0.62]).rot_y(yaw));
-    g.add(Cube::new("CamLens", vec3(0.1, 0.1, 0.06), local + dir * 0.23).kind("glass").tint([0.3, 0.35, 0.4]).rot_y(yaw));
-    g.add(Cube::new("LedRec", vec3(0.04, 0.04, 0.04), local + vec3(0.0, 0.11, 0.0) - dir * 0.1).kind("red"));
+    g.add(Cube::new("CamBody", vec3(0.2, 0.18, 0.42), local - dir * 0.31).kind("metal").tint([0.55, 0.57, 0.62]).rot_y(yaw));
+    g.add(Cube::new("CamLens", vec3(0.1, 0.1, 0.06), local - dir * 0.07).kind("glass").tint([0.3, 0.35, 0.4]).rot_y(yaw));
+    g.add(Cube::new("LedRec", vec3(0.04, 0.04, 0.04), local + vec3(0.0, 0.11, 0.0) - dir * 0.4).kind("red"));
     g
 }
 
@@ -916,8 +916,13 @@ mod tests {
             let g = hall_groups().into_iter().find(|g| g.name == hall_group(sim, "camera")).expect("camera group");
             let body = g.cubes.iter().find(|c| c.name == "CamBody").expect("body");
             let world = g.origin + body.pos;
+            let lens = g.cubes.iter().find(|c| c.name == "CamLens").expect("lens");
             let (from, _) = m.camera_transform(sim);
-            assert!((world - from).length() < 1e-4, "{sim}");
+            // the eye sits just in front of the housing and its lens, never inside the box (it would film the box's inside)
+            let eye = from - g.origin;
+            assert!((eye - lens.pos).length() < 0.1, "{sim}: the lens is at the eye");
+            let d = (eye - body.pos).abs();
+            assert!(d.x.max(d.z) > body.size.z * 0.5 - 0.02 && (world - from).length() > 0.25, "{sim}: the eye is outside the housing");
             assert!(g.cubes.iter().any(|c| c.name == "LedRec"));
         }
     }

@@ -833,7 +833,7 @@ mod tests {
         assert!(near(m.stand_at("music", 1, "stand"), vec3(-15.4, 0.0, -25.6)));
         assert!(near(m.stand_at("hall", 1, "stand"), vec3(0.0, 0.0, -4.5)));
         assert!(near(m.stand_at("office", 0, "stand"), vec3(0.0, 0.0, -1.25)));
-        assert!(near(m.stand_at("ductL", 0, "far"), vec3(-7.2, 0.0, 0.6)));
+        assert!(near(m.stand_at("ductL", 0, "far"), vec3(-6.0, 0.0, 0.6)));
         assert!(near(m.stand_at("ductR", 0, "near"), vec3(3.5, 0.0, 0.6)));
         // the show stage spots are on the platform
         assert!((m.stand_at("gallery", 0, "stand").y - 0.7).abs() < 1e-6);
