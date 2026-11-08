@@ -454,10 +454,66 @@ struct DepthRow {
     safe_room_min: f32,
 }
 
+/// The HUD danger meter's tunables (data/danger.json `meter`). The route base is a depth/difficulty
+/// floor (`Difficulty::route_danger`) a nearby alert hunter spikes toward 100% (`Game::danger`). The
+/// `Default` is the shipped block, so an absent/broken `meter` leaves the meter's behaviour unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Meter {
+    /// Depth at which the pure-depth ramp reaches 1.0.
+    pub depth_full: f32,
+    /// Max route base, leaving headroom for a hunter spike.
+    pub base_cap: f32,
+    /// Floor so the meter is never empty on a normal run.
+    pub base_min: f32,
+    pub depth_weight: f32,
+    pub speed_weight: f32,
+    /// speed_scale that maps to a full speed term.
+    pub speed_ref: f32,
+    pub hunters_weight: f32,
+    /// extra_hunters that maps to a full hunters term.
+    pub hunters_ref: f32,
+    pub safe_weight: f32,
+    /// safe_room_odds treated as the baseline (lost odds = more danger).
+    pub safe_ref: f32,
+    /// Spike state weight for a Chase hunter.
+    pub spike_chase: f32,
+    /// Spike state weight for an Investigate/Search hunter.
+    pub spike_hunt: f32,
+    /// Spike state weight for any other hunter state.
+    pub spike_idle: f32,
+    /// Cells over which the spike proximity term falls to zero.
+    pub spike_range: f32,
+    /// Extra spike a hunter at zero distance adds on top of its state weight.
+    pub spike_prox: f32,
+}
+
+impl Default for Meter {
+    fn default() -> Self {
+        Meter {
+            depth_full: 24.0,
+            base_cap: 0.85,
+            base_min: 0.05,
+            depth_weight: 0.45,
+            speed_weight: 0.35,
+            speed_ref: 1.25,
+            hunters_weight: 0.12,
+            hunters_ref: 3.0,
+            safe_weight: 0.08,
+            safe_ref: 0.6,
+            spike_chase: 0.75,
+            spike_hunt: 0.4,
+            spike_idle: 0.1,
+            spike_range: 16.0,
+            spike_prox: 0.36,
+        }
+    }
+}
+
 #[derive(Default)]
 struct DangerData {
     scaling: HashMap<String, Scaling>,
     depth: HashMap<String, DepthRow>,
+    meter: Meter,
 }
 
 fn parse_danger(text: &str) -> Result<DangerData, String> {
@@ -493,6 +549,28 @@ fn parse_danger(text: &str) -> Result<DangerData, String> {
             },
         );
     }
+    // `meter` is optional: a missing block, or any missing/non-numeric field, keeps that field's shipped default.
+    if let Some(m) = v["meter"].as_object() {
+        let d = Meter::default();
+        let g = |k: &str, fallback: f32| m.get(k).and_then(|x| x.as_f64()).map_or(fallback, |x| x as f32);
+        data.meter = Meter {
+            depth_full: g("depth_full", d.depth_full),
+            base_cap: g("base_cap", d.base_cap),
+            base_min: g("base_min", d.base_min),
+            depth_weight: g("depth_weight", d.depth_weight),
+            speed_weight: g("speed_weight", d.speed_weight),
+            speed_ref: g("speed_ref", d.speed_ref),
+            hunters_weight: g("hunters_weight", d.hunters_weight),
+            hunters_ref: g("hunters_ref", d.hunters_ref),
+            safe_weight: g("safe_weight", d.safe_weight),
+            safe_ref: g("safe_ref", d.safe_ref),
+            spike_chase: g("spike_chase", d.spike_chase),
+            spike_hunt: g("spike_hunt", d.spike_hunt),
+            spike_idle: g("spike_idle", d.spike_idle),
+            spike_range: g("spike_range", d.spike_range),
+            spike_prox: g("spike_prox", d.spike_prox),
+        };
+    }
     Ok(data)
 }
 
@@ -505,6 +583,11 @@ fn danger_data() -> &'static DangerData {
             DangerData::default()
         })
     })
+}
+
+/// The HUD danger meter's tunables (data/danger.json `meter`), parsed once.
+pub fn meter() -> &'static Meter {
+    &danger_data().meter
 }
 
 fn danger_at(row: &DepthRow, depth: i32) -> Danger {
@@ -534,6 +617,26 @@ impl Difficulty {
             .depth
             .get(self.id())
             .map_or(Danger { speed_scale: 1.0, extra_hunters: 0, safe_room_odds: 0.0 }, |r| danger_at(r, depth))
+    }
+
+    /// The HUD danger meter's ROUTE BASE at a depth: a 0..1 floor that rises with descent and with the
+    /// difficulty's scaling (`Self::danger`), reusing the shipped `Danger` curve and the `meter()` weights.
+    /// It never reaches 0 (the `base_min` floor) and never fills past `base_cap`, leaving room for a hunter
+    /// spike. `Game::danger` blends this base with the nearest-hunter spike (Infinite mode only).
+    pub fn route_danger(self, depth: i32) -> f32 {
+        let m = meter();
+        let d = self.danger(depth);
+        let levels = (depth - 1).max(0) as f32;
+        let depth_t = (levels / (m.depth_full - 1.0)).clamp(0.0, 1.0);
+        let speed_t = ((d.speed_scale - 1.0) / (m.speed_ref - 1.0)).clamp(0.0, 1.0);
+        let hunters_t = (d.extra_hunters as f32 / m.hunters_ref).clamp(0.0, 1.0);
+        let safe_t = ((m.safe_ref - d.safe_room_odds) / m.safe_ref).clamp(0.0, 1.0);
+        let route = (m.depth_weight * depth_t
+            + m.speed_weight * speed_t
+            + m.hunters_weight * hunters_t
+            + m.safe_weight * safe_t)
+            .clamp(0.0, 1.0);
+        (route * m.base_cap).max(m.base_min)
     }
 }
 
@@ -599,5 +702,49 @@ mod danger_tests {
         let data = parse_danger(text).unwrap();
         assert_eq!(danger_at(&data.depth["standard"], 3).speed_scale, 2.0);
         assert!(parse_danger(r#"{"schema":"x"}"#).is_err());
+    }
+
+    /// The route base is never empty: at least `base_min` for every lobby difficulty on the first floor.
+    #[test]
+    fn route_danger_never_zero() {
+        let floor = meter().base_min;
+        for d in LOBBY {
+            assert!(d.route_danger(1) >= floor, "{} d1 below base_min", d.id());
+        }
+    }
+
+    /// The route base rises with descent for every difficulty (deeper is never safer).
+    #[test]
+    fn route_danger_rises_with_depth() {
+        for d in LOBBY {
+            assert!(d.route_danger(10) > d.route_danger(1), "{} did not rise with depth", d.id());
+        }
+    }
+
+    /// A harder difficulty reads a higher route base at the same depth.
+    #[test]
+    fn route_danger_harder_reads_higher() {
+        assert!(Difficulty::Nightmare.route_danger(12) > Difficulty::Standard.route_danger(12));
+        assert!(Difficulty::Hard.route_danger(12) > Difficulty::Standard.route_danger(12));
+    }
+
+    /// An absent `meter` block loads the shipped defaults (no back-compat break on the old schema).
+    #[test]
+    fn meter_block_defaults_when_absent() {
+        let text = r#"{"schema":"lr.danger/1","scaling":{},"depth":{}}"#;
+        let data = parse_danger(text).unwrap();
+        assert_eq!(data.meter, Meter::default());
+        // and the shipped file's block parses (meter() reads real data, not the fallback default alone).
+        assert!(meter().base_min > 0.0 && meter().base_cap <= 1.0);
+    }
+
+    /// A field present in `meter` overrides just that field; the rest keep their defaults.
+    #[test]
+    fn meter_partial_override_keeps_other_defaults() {
+        let text = r#"{"schema":"lr.danger/1","scaling":{},"depth":{},"meter":{"base_min":0.2}}"#;
+        let data = parse_danger(text).unwrap();
+        assert_eq!(data.meter.base_min, 0.2);
+        assert_eq!(data.meter.base_cap, Meter::default().base_cap);
+        assert_eq!(data.meter.spike_chase, Meter::default().spike_chase);
     }
 }

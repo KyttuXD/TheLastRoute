@@ -1,10 +1,9 @@
-//! Locks in the HUD danger meter's one and only source: `Game::danger()`, a live-hunter
-//! proximity readout (ui/hud.rs reads nothing else). These tests exist because Task 4
-//! reported the meter as "stuck/empty" and blamed the flattened Standard `data/danger.json`
-//! or the concept-map level-0 change. Both are refuted here: the meter never reads
-//! `danger.json`, a `DangerProfile`, or any level/region, and an empty meter on a fresh
-//! Standard arrival floor is correct — zero hunters are streamed in until the first
-//! activation relay is banked, so there is nothing within range to raise it.
+//! Locks in the HUD danger meter (`Game::danger()`, Infinite only). The meter is a ROUTE BASE by
+//! depth/difficulty (`Difficulty::route_danger`, from `data/danger.json`) that a nearby alert/chasing
+//! hunter SPIKES toward 100%: `danger() = min(1, base + (1-base)*spike)`. So the meter is never empty
+//! on a normal run (it reads at least `base_min` from the route), it differs by difficulty and depth,
+//! and a point-blank chaser still pins it to exactly 1.0 on every difficulty. On the fixed route the
+//! base is 0, so `danger()` there is the pure hunter spike (and the HUD hides the meter outside Infinite).
 
 use super::Game;
 use crate::config::Difficulty;
@@ -45,10 +44,13 @@ fn empty_run() -> (Game, Content, Catalog) {
 }
 
 #[test]
-fn danger_is_zero_with_no_hunters() {
+fn danger_shows_the_route_base_with_no_hunters() {
     let (g, _c, _cat) = empty_run();
     assert!(g.hunters.is_empty());
-    assert_eq!(g.danger(), 0.0, "an empty window reads no danger");
+    // No hunter means no spike, so the meter reads exactly the Infinite route base: never empty.
+    assert!(g.danger() > 0.0, "an empty Infinite window still shows the route base");
+    assert_eq!(g.danger(), g.difficulty.route_danger(g.depth), "with no spike the meter is the route base");
+    assert!(g.danger() >= crate::config::difficulty::meter().base_min, "the base never drops below base_min");
 }
 
 #[test]
@@ -62,62 +64,75 @@ fn a_chasing_hunter_on_top_of_the_runner_pins_the_meter() {
 #[test]
 fn the_meter_ignores_bot_targets_shadows_and_the_inactive() {
     let (mut g, content, _cat) = empty_run();
+    // the route base with no contributing hunter: an excluded hunter must add no spike over this.
+    let base = g.danger();
+    assert_eq!(base, g.difficulty.route_danger(g.depth));
+
     g.hunters.push(hunter_at(&content, g.p.pos, State::Chase));
-    assert_eq!(g.danger(), 1.0);
+    assert_eq!(g.danger(), 1.0, "a contributing point-blank chaser pins the meter");
 
     // a hunter hunting a bot instead of the runner is not the runner's danger
     g.hunters[0].target_is_bot = true;
-    assert_eq!(g.danger(), 0.0, "a bot-targeting hunter drops out of the meter");
+    assert_eq!(g.danger(), base, "a bot-targeting hunter adds no spike over the route base");
     g.hunters[0].target_is_bot = false;
 
     // a shadow (a guest's remote echo) draws but never counts toward local danger
     g.hunters[0].shadow = true;
-    assert_eq!(g.danger(), 0.0, "a shadow hunter drops out of the meter");
+    assert_eq!(g.danger(), base, "a shadow hunter adds no spike over the route base");
     g.hunters[0].shadow = false;
 
     // an inactive (unstreamed / asleep) hunter does not count
     g.hunters[0].active = false;
-    assert_eq!(g.danger(), 0.0, "an inactive hunter drops out of the meter");
+    assert_eq!(g.danger(), base, "an inactive hunter adds no spike over the route base");
 }
 
 #[test]
-fn danger_is_identical_across_difficulties_proving_it_ignores_danger_json() {
-    // danger.json's depth rows feed only hunter speed_scale / extra_hunters (config/difficulty.rs),
-    // never the meter. The same hunter at the same spot must read the same on every difficulty.
+fn the_route_base_differs_by_difficulty_while_a_point_blank_chaser_still_pins_every_one() {
+    // The route base now DOES read danger.json's depth rows, so it must differ by difficulty and depth;
+    // but the spike saturates, so a Chase hunter at zero distance still reads exactly 1.0 everywhere.
+    assert!(
+        Difficulty::Nightmare.route_danger(12) > Difficulty::Standard.route_danger(12),
+        "a harder difficulty reads a higher route base at the same depth"
+    );
+    assert!(
+        Difficulty::Standard.route_danger(20) > Difficulty::Standard.route_danger(1),
+        "a deeper floor reads a higher route base"
+    );
+
     let content = Content::load();
     let catalog = Catalog::load();
-    let mut values = Vec::new();
     for diff in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
         let mut g = Game::new_infinite_sim(diff, 7, "DANGER-TEST-7", 0, &content, &catalog);
         g.hunters.clear();
         g.hunters.push(hunter_at(&content, g.p.pos, State::Chase));
-        values.push(g.danger());
+        assert_eq!(g.danger(), 1.0, "a point-blank chaser pins the meter to 100% on {}", diff.id());
     }
-    assert!(
-        values.iter().all(|v| (*v - values[0]).abs() < f32::EPSILON),
-        "danger() must be identical across difficulties (independent of danger.json): {values:?}"
-    );
-    assert_eq!(values[0], 1.0);
 }
 
 #[test]
-fn a_fresh_standard_floor_reads_empty_until_the_activation_relay() {
-    // The reported "empty meter": on Standard the arrival floor streams ZERO hunters while
-    // relays_collected < activation_relays (Standard activation_relays = 1), so danger() == 0.
-    // This is working as coded, not a defect in the meter or in danger.json.
+fn a_fresh_standard_floor_shows_the_route_base_not_empty() {
+    // On the fresh arrival floor the residency streams ZERO hunters until the activation relay is
+    // banked, yet the meter is no longer empty: it shows the Infinite route base (>= base_min).
     let content = Content::load();
     let catalog = Catalog::load();
     let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "DANGER-TEST-7", 0, &content, &catalog);
     assert_eq!(g.relays_collected, 0, "a fresh run has banked no relays");
     assert!(g.hunters.is_empty(), "no hunters are streamed before the activation relay");
-    assert_eq!(g.danger(), 0.0, "an empty pre-activation floor reads an empty meter (expected)");
+    assert!(
+        g.danger() >= crate::config::difficulty::meter().base_min,
+        "a pre-activation floor still shows the route base, never an empty meter"
+    );
+    assert_eq!(g.danger(), g.difficulty.route_danger(g.depth), "with no hunter the meter is the route base");
 
-    // Once the activation relay is banked the residency admits hunters; with a loaded hunter
-    // within 16 cells in Chase the meter demonstrably moves off zero.
+    // Once the activation relay is banked the residency admits hunters; a loaded hunter within range
+    // in Chase spikes the meter well past the base.
     g.relays_collected = 1;
     g.ensure_hunters(&content);
     assert!(!g.hunters.is_empty(), "hunters are admitted once the activation relay is banked");
-    // place a loaded hunter beside the runner, chasing, to show the meter responds
+    // place a loaded hunter beside the runner, chasing, to show the spike responds
     g.hunters.push(hunter_at(&content, (g.p.pos.0 + 1.0, g.p.pos.1), State::Chase));
-    assert!(g.danger() > 0.75, "a near chasing hunter moves the meter above the Chase floor");
+    assert!(g.danger() > 0.75, "a near chasing hunter spikes the meter past the Chase floor");
+    // and at zero distance the spike pins it to exactly 100%, whatever the base.
+    g.hunters.push(hunter_at(&content, g.p.pos, State::Chase));
+    assert_eq!(g.danger(), 1.0, "a point-blank chaser still pins the meter to 100%");
 }

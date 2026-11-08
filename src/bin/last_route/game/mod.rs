@@ -1260,23 +1260,29 @@ impl Game {
         std::mem::take(&mut self.sightings)
     }
 
+    /// The HUD danger meter, 0..1. A depth/difficulty ROUTE BASE (Infinite only) a nearby alert hunter
+    /// spikes toward 100%: `min(1, base + (1-base)*spike)`. The spike is the nearest contributing hunter's
+    /// state weight plus a proximity term; its constants and the blend live in data (data/danger.json
+    /// `meter`). On the fixed route the base is 0, so the meter is the pure spike (and hidden by the HUD).
     pub fn danger(&self) -> f32 {
-        let mut best: f32 = 0.0;
+        let m = crate::config::difficulty::meter();
+        let mut spike: f32 = 0.0;
         for h in self
             .hunters
             .iter()
             .filter(|h| h.active && !h.target_is_bot && !h.shadow && !h.gimmick.hidden_from_view())
         {
             let d = pdist(h.pos, self.p.pos);
-            let base = match h.state {
-                crate::hunters::brain::State::Chase => 0.75,
+            let state_w = match h.state {
+                crate::hunters::brain::State::Chase => m.spike_chase,
                 crate::hunters::brain::State::Investigate
-                | crate::hunters::brain::State::Search => 0.4,
-                _ => 0.1,
+                | crate::hunters::brain::State::Search => m.spike_hunt,
+                _ => m.spike_idle,
             };
-            best = best.max((base + (1.0 - d / 16.0).clamp(0.0, 1.0) * 0.36).min(1.0));
+            spike = spike.max((state_w + (1.0 - d / m.spike_range).clamp(0.0, 1.0) * m.spike_prox).min(1.0));
         }
-        best
+        let route = if self.inf.is_some() { self.difficulty.route_danger(self.depth) } else { 0.0 };
+        (route + (1.0 - route) * spike).min(1.0)
     }
 
     pub fn teleport_beside(&mut self, cell: crate::world::Cell) {

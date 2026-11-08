@@ -1167,7 +1167,7 @@ use std::time::Duration;
         g.hunters[0].target_is_bot = true;
         let (near, pursued) = audio(&g);
         assert!(near.is_none() && !pursued);
-        assert_eq!(g.danger(), 0.0);
+        assert_eq!(g.danger(), g.difficulty.route_danger(g.depth), "a bot-targeting hunter adds no spike over the route base");
         g.hunters[0].target_is_bot = false;
         let (near, pursued) = audio(&g);
         assert!(near.is_some() && pursued);
@@ -1544,7 +1544,7 @@ use std::time::Duration;
         for h in g.hunters.iter_mut().skip(1) {
             h.active = false;
         }
-        assert_eq!(g.danger(), 0.0, "a hunter chasing an NPC teammate feeds no danger");
+        assert_eq!(g.danger(), g.difficulty.route_danger(g.depth), "a hunter chasing an NPC teammate adds no spike over the route base");
         g.hunters[0].target_is_bot = false;
         assert!(g.danger() > 0.0, "the same hunter after the runner does");
     }
@@ -2076,10 +2076,11 @@ mod resident_floor_tests {
         assert_eq!((s.pos, s.state), (below, State::Chase), "only the host's frames move it");
 
         // a shadow on the viewer's own level feeds neither the danger readout nor the chase cue ...
+        let base = guest.danger(); // the Infinite route base with no contributing hunter
         guest.apply_hunter_frame(&[frame(0, near)]);
         assert_eq!(guest.hunters.len(), 1, "it came up to the viewer's list");
         assert!(guest.hunters[0].shadow);
-        assert_eq!(guest.danger(), 0.0, "a shadow chasing at one metre is no danger readout");
+        assert_eq!(guest.danger(), base, "a shadow chasing at one metre adds no spike over the route base");
         let audio = |g: &Game| -> (Option<f64>, bool) {
             let list: Vec<crate::audio::world::HunterAudio> = g
                 .hunters

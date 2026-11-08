@@ -1,6 +1,6 @@
 {
   "schema": "lr.danger/1",
-  "_note": "Difficulty scaling (config/difficulty.rs). scaling: per difficulty, extra director team members, the inspect-odds scale (peek odds come from data/peek.json) and the pounce table id of data/hard_abilities.json ('' = none). depth: per difficulty, the danger by level number (level 1 is the base): hunter speed grows speed_per_level per level up to speed_cap, one extra hunter every extra_every levels up to max_extra, and the safe-room odds fall from safe_room_base by safe_room_per_level down to safe_room_min. Standard is flat (speed 1.0, no extra hunters, the shipped safe-room base 0.055 of world/route/danger.rs SAFE_ROOM_BASE_CHANCE), so Standard plays as before.",
+  "_note": "Difficulty scaling (config/difficulty.rs). scaling: per difficulty, extra director team members, the inspect-odds scale (peek odds come from data/peek.json) and the pounce table id of data/hard_abilities.json ('' = none). depth: per difficulty, the danger by level number (level 1 is the base): hunter speed grows speed_per_level per level up to speed_cap, one extra hunter every extra_every levels up to max_extra, and the safe-room odds fall from safe_room_base by safe_room_per_level down to safe_room_min. Standard is flat (speed 1.0, no extra hunters, the shipped safe-room base 0.055 of world/route/danger.rs SAFE_ROOM_BASE_CHANCE), so Standard plays as before. meter (optional; absent = the shipped defaults, no schema break): the HUD danger meter (Infinite only). It is a ROUTE BASE by depth/difficulty (Difficulty::route_danger) that a nearby alert hunter SPIKES toward 100% (Game::danger). route = depth_weight*depth_t + speed_weight*speed_t + hunters_weight*hunters_t + safe_weight*safe_t (weights sum to 1), where depth_t ramps to 1 at depth_full, speed_t/hunters_t/safe_t normalise this difficulty's speed_scale / extra_hunters / lost safe-room odds by speed_ref/hunters_ref/safe_ref; base = max(route*base_cap, base_min). The spike_* are the nearest-hunter readout's constants (state weight chase/hunt/idle + up to spike_prox within spike_range cells); they reproduce the pre-meter numbers exactly. danger() = min(1, base + (1-base)*spike), so a point-blank chaser pins 100% on any depth/difficulty.",
   "scaling": {
     "relaxed": { "team_bonus": 0, "inspect_chance": 0.6, "pounce_table": "" },
     "standard": { "team_bonus": 0, "inspect_chance": 1.0, "pounce_table": "standard" },
@@ -12,5 +12,22 @@
     "standard": { "speed_per_level": 0.0, "speed_cap": 1.0, "extra_every": 0, "max_extra": 0, "safe_room_base": 0.055, "safe_room_per_level": 0.0, "safe_room_min": 0.055 },
     "hard": { "speed_per_level": 0.008, "speed_cap": 1.15, "extra_every": 6, "max_extra": 2, "safe_room_base": 0.25, "safe_room_per_level": -0.01, "safe_room_min": 0.08 },
     "nightmare": { "speed_per_level": 0.012, "speed_cap": 1.25, "extra_every": 4, "max_extra": 3, "safe_room_base": 0.12, "safe_room_per_level": -0.01, "safe_room_min": 0.0 }
+  },
+  "meter": {
+    "depth_full": 24,
+    "base_cap": 0.85,
+    "base_min": 0.05,
+    "depth_weight": 0.45,
+    "speed_weight": 0.35,
+    "speed_ref": 1.25,
+    "hunters_weight": 0.12,
+    "hunters_ref": 3,
+    "safe_weight": 0.08,
+    "safe_ref": 0.6,
+    "spike_chase": 0.75,
+    "spike_hunt": 0.4,
+    "spike_idle": 0.1,
+    "spike_range": 16.0,
+    "spike_prox": 0.36
   }
 }
