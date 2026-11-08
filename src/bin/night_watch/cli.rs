@@ -4,6 +4,7 @@
 //! night_watch                              the full game (title screen)
 //! night_watch --mode ID --level N [--seed S]   start a shift directly
 //! night_watch --shot PATH [--mode ID --level N] [--frames N] [--monitor ROOM]
+//! night_watch --shots DIR [--frames N]   one run: office view and every camera of every mode into DIR
 //! night_watch --check                      validate the data, simulate every built mode, exit 0/1
 //! ```
 #![allow(dead_code)]
@@ -20,9 +21,11 @@ pub struct Args {
     pub shot: Option<String>,
     pub frames: u32,
     pub monitor: Option<String>,
+    pub shots: Option<String>,
+    pub frames_given: bool,
 }
 
-pub const USAGE: &str = "night_watch [--mode ID --level N [--seed S]] [--shot PATH [--frames N] [--monitor ROOM]] [--check]";
+pub const USAGE: &str = "night_watch [--mode ID --level N [--seed S]] [--shot PATH [--frames N] [--monitor ROOM]] [--check] [--shots DIR [--frames N]]";
 
 impl Args {
     /// Parse the arguments after the program name. An unknown flag or a bad value is an error string.
@@ -51,7 +54,9 @@ impl Args {
                 "--frames" => {
                     let v = value("--frames")?;
                     a.frames = v.parse::<u32>().map_err(|_| format!("--frames: '{v}' is not a number"))?.max(1);
+                    a.frames_given = true;
                 }
+                "--shots" => a.shots = Some(value("--shots")?),
                 "--monitor" => a.monitor = Some(value("--monitor")?),
                 other => return Err(format!("unknown argument '{other}'")),
             }
@@ -90,8 +95,8 @@ pub fn run_check() -> i32 {
             continue;
         }
         for level in 1..=levels {
-            let first = nw::run_headless(&factory, id, level);
-            let second = nw::run_headless(&factory, id, level);
+            let first = nw::run_headless_quick(&factory, id, level);
+            let second = nw::run_headless_quick(&factory, id, level);
             match (first, second) {
                 (Ok(a), Ok(b)) => {
                     println!("{id} level {level}: {} {:016x}", a.outcome_name(), a.digest);
@@ -166,6 +171,14 @@ mod tests {
         assert_eq!(a.shot.as_deref(), Some("a.png"));
         assert_eq!(a.monitor.as_deref(), Some("stage"));
         assert!(p(&["--check"]).unwrap().check);
+    }
+
+    #[test]
+    fn shots_flag_and_frames_given() {
+        let a = p(&["--shots", "out"]).unwrap();
+        assert_eq!(a.shots.as_deref(), Some("out"));
+        assert!(!a.frames_given);
+        assert!(p(&["--frames", "5"]).unwrap().frames_given);
     }
 
     #[test]

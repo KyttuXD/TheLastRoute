@@ -29,6 +29,11 @@ use crate::ui::{ButtonStyle, Ui};
 use macroquad::prelude::*;
 use std::rc::Rc;
 
+/// The task list (virtual 480x270): small text in the clear band right of the NOISE / BEACON bars, above the monitor banks.
+const TASK_X: f32 = 84.0;
+const TASK_Y: f32 = 20.0;
+const TASK_TEXT: f32 = 6.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
     Playing,
@@ -91,6 +96,19 @@ pub struct StoryGame {
     admin_frozen: bool,
     admin_no_scare: bool,
     admin_noclip: bool,
+}
+
+/// The dim backing rectangle (x, y, w, h) under the task panels, or none when they are empty.
+fn task_backing(panels: &[HudPanel]) -> Option<(f32, f32, f32, f32)> {
+    let mut w = 0.0f32;
+    let mut h = 0.0f32;
+    for p in panels {
+        for (s, _, size) in &p.lines {
+            w = w.max(s.chars().count() as f32 * size * 0.45);
+            h += size + 3.0;
+        }
+    }
+    (w > 0.0).then(|| (TASK_X - 4.0, TASK_Y - 2.0, w + 8.0, h + 6.0))
 }
 
 fn title_case(s: &str) -> String {
@@ -588,7 +606,7 @@ impl StoryGame {
             } else {
                 [0.93, 0.89, 0.8]
             };
-            lines.push((format!("{} {}  ({})", mark, t.label, title_case(&rules().label(&t.room))), col, 7.0));
+            lines.push((format!("{} {}  ({})", mark, t.label, title_case(&rules().label(&t.room))), col, TASK_TEXT));
         }
         let mut tag = if sim.moving.is_some() { "WALKING".to_string() } else { rules().label(&sim.room) };
         if sim.hidden {
@@ -598,10 +616,10 @@ impl StoryGame {
         } else if sim.working {
             tag = "HOLDING THE BUTTON".to_string();
         }
-        let list_h = lines.len() as f32 * 10.0;
+        let list_h = lines.len() as f32 * (TASK_TEXT + 3.0);
         vec![
-            HudPanel { x: 8.0, y: 78.0, lines },
-            HudPanel { x: 8.0, y: 78.0 + list_h + 4.0, lines: vec![(tag, [0.8, 0.9, 1.0], 7.0)] },
+            HudPanel { x: TASK_X, y: TASK_Y, lines },
+            HudPanel { x: TASK_X, y: TASK_Y + list_h + 3.0, lines: vec![(tag, [0.8, 0.9, 1.0], TASK_TEXT)] },
         ]
     }
 
@@ -633,7 +651,8 @@ impl StoryGame {
             ("NOISE".to_string(), (self.sim.noise / 100.0) as f32, [0.9, 0.5, 0.2]),
             (format!("BEACON  {beacon_key}"), (self.sim.charge / 100.0) as f32, [1.0, 0.9, 0.5]),
         ];
-        h.panels = panels;
+        // the list sits in the clear band above the monitor banks, and never over the monitor screen itself
+        h.panels = if h.monitor_up { Vec::new() } else { panels };
         h.cam_map = Some(cam_layout());
         h.cam_pulse = staring;
         h.hint = if h.monitor_up {
@@ -883,16 +902,8 @@ impl Mode for StoryGame {
         // a dim backing under the task list so it reads over the bright monitors (the HUD text is drawn after this)
         set_default_camera();
         if !ctx.hud.monitor_up {
-            let mut w = 0.0f32;
-            let mut h = 0.0f32;
-            for p in &self.task_panels() {
-                for (s, _, size) in &p.lines {
-                    w = w.max(s.chars().count() as f32 * size * 0.45);
-                    h += size + 3.0;
-                }
-            }
-            if w > 0.0 {
-                fill(Rect::new(4.0, 76.0, w + 10.0, h + 8.0), Color::new(0.02, 0.03, 0.05, 0.72));
+            if let Some((x, y, w, h)) = task_backing(&self.task_panels()) {
+                fill(Rect::new(x, y, w, h), Color::new(0.02, 0.03, 0.05, 0.72));
             }
         }
     }
@@ -1278,6 +1289,18 @@ mod tests {
         assert_eq!(panels[1].lines[0].0, "CONTROL");
         g.sim.hidden = true;
         assert_eq!(g.task_panels()[1].lines[0].0, "HIDING");
+    }
+
+    #[test]
+    fn the_task_list_sits_clear_of_the_bars_and_the_monitor_banks() {
+        let g = StoryGame::new(&session(1, 3));
+        let panels = g.task_panels();
+        let (x, y, w, h) = task_backing(&panels).expect("a backing");
+        assert!(x >= 78.0, "right of the 70 wide NOISE / BEACON bars (x 8..78): {x}");
+        assert!(y + h <= 71.0, "the four-task night stays above the banks (virtual y 71): {}", y + h);
+        assert!(x + w < 480.0 && y >= 0.0);
+        assert!(panels[1].lines[0].2 == TASK_TEXT && panels[1].y > panels[0].y);
+        assert!(task_backing(&[]).is_none());
     }
 
     #[test]

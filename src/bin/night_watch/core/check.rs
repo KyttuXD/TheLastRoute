@@ -308,25 +308,45 @@ pub fn run_limit_ms(mode: &str) -> f64 {
     }
 }
 
+/// Simulated milliseconds a `--check` run covers per mode and level (short: determinism and panics show early).
+pub const CHECK_LIMIT_MS: f64 = 30_000.0;
+/// The coarse step `--check` uses.
+pub const CHECK_STEP_MS: f64 = 200.0;
+
 /// Run one shift headlessly in 100 ms steps. A panic is caught and returned as an error.
 pub fn run_headless(factory: &dyn Fn(&Session) -> Option<Box<dyn Headless>>, mode: &str, level: i32) -> Result<ModeRun, String> {
+    run_headless_with(factory, mode, level, run_limit_ms(mode), 100.0)
+}
+
+/// The short coarse run `--check` uses: `CHECK_LIMIT_MS` in `CHECK_STEP_MS` steps.
+pub fn run_headless_quick(factory: &dyn Fn(&Session) -> Option<Box<dyn Headless>>, mode: &str, level: i32) -> Result<ModeRun, String> {
+    run_headless_with(factory, mode, level, CHECK_LIMIT_MS, CHECK_STEP_MS)
+}
+
+/// Run one shift headlessly for at most `limit` ms in `step` ms steps. A panic is caught and returned as an error.
+pub fn run_headless_with(
+    factory: &dyn Fn(&Session) -> Option<Box<dyn Headless>>,
+    mode: &str,
+    level: i32,
+    limit: f64,
+    step: f64,
+) -> Result<ModeRun, String> {
     let mut session = Session::new();
     session.start_mode(mode, level, BTreeMap::new(), Some(CHECK_SEED));
     let mut sim = match factory(&session) {
         Some(s) => s,
         None => return Err(format!("{mode} level {level}: no headless sim")),
     };
-    let limit = run_limit_ms(mode);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut events = 0usize;
         let mut hash = Fnv::new();
         let mut t = 0.0;
         while t < limit && sim.outcome() == Outcome::Running {
-            for e in sim.step_ms(100.0) {
+            for e in sim.step_ms(step) {
                 events += 1;
                 hash.str(&e);
             }
-            t += 100.0;
+            t += step;
         }
         (events, hash.finish())
     }));
@@ -357,8 +377,8 @@ pub fn run_all_modes(factory: &dyn Fn(&Session) -> Option<Box<dyn Headless>>) ->
             continue;
         }
         for level in 1..=levels {
-            let first = run_headless(factory, id, level);
-            let second = run_headless(factory, id, level);
+            let first = run_headless_quick(factory, id, level);
+            let second = run_headless_quick(factory, id, level);
             match (first, second) {
                 (Ok(a), Ok(b)) => {
                     if a.digest != b.digest || a.event_hash != b.event_hash || a.events != b.events || a.outcome != b.outcome {
@@ -429,8 +449,10 @@ mod tests {
         let modes = super::super::data::ModesData::load();
         let expected: usize = modes.modes.iter().map(|m| m.levels.len()).sum();
         assert_eq!(runs.len(), expected);
-        assert!(runs.iter().all(|r| r.outcome == Outcome::Won && r.elapsed_ms == 270_000.0));
-        assert!(runs.iter().all(|r| r.events == 3));
+        assert!(runs.iter().all(|r| r.outcome == Outcome::Running && r.elapsed_ms == CHECK_LIMIT_MS));
+        assert!(runs.iter().all(|r| r.events == 0));
+        let full = run_headless(&good, "classic", 1).expect("full run");
+        assert!(full.outcome == Outcome::Won && full.elapsed_ms == 270_000.0 && full.events == 3);
         assert!(check_modes(&good).is_empty());
     }
 

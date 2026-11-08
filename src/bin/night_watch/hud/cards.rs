@@ -7,7 +7,7 @@ use super::status::*;
 use crate::ui::text as ut;
 use macroquad::prelude::*;
 
-pub const PAUSE_BUTTONS: [&str; 2] = ["RESUME  ESC", "QUIT TO MENU  BACKSPACE"];
+pub const PAUSE_BUTTONS: [&str; 2] = ["RESUME  ESC", "QUIT TO HUB  BACKSPACE"];
 pub const BUTTON_H: f32 = 16.0;
 pub const BUTTON_GAP: f32 = 6.0;
 

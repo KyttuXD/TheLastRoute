@@ -668,6 +668,9 @@ fn crawl(out: &mut Vec<Group>, sim: &str, c: Vec3, hw: f32, hd: f32) {
     out.push(riser);
 }
 
+/// How much of the shared feed ambient a station camera gets: enough that the floor and the props read in every room.
+const FEED_AMBIENT: f32 = 0.9;
+
 /// The lights of a camera feed: a flat bright ambient (the shared feed look, a little dimmer) and a ceiling light in the room.
 pub fn feed_lights(sim: &str) -> LightSet {
     let m = map();
@@ -675,8 +678,8 @@ pub fn feed_lights(sim: &str) -> LightSet {
     let h = if m.is_vent(sim) { m.crawl_height } else { m.height };
     let base = LightSet::feed();
     LightSet {
-        ambient: s3(base.ambient, 0.62),
-        omni: vec![Omni { pos: c + vec3(0.0, h - 0.6, 0.0), color: [1.0, 0.92, 0.8], energy: 1.2, range: 10.0 }],
+        ambient: s3(base.ambient, FEED_AMBIENT),
+        omni: vec![Omni { pos: c + vec3(0.0, h - 0.6, 0.0), color: [1.0, 0.92, 0.8], energy: 1.8, range: 14.0 }],
         spot: Vec::new(),
         fog: None,
     }
@@ -970,6 +973,17 @@ mod tests {
         }
         for (name, text) in PROP_FILES {
             assert!(text.contains("elements"), "{name} is a bbmodel");
+        }
+    }
+
+    #[test]
+    fn every_camera_room_is_dressed_and_lit_to_be_read() {
+        let m = map();
+        for sim in ["lobby", "arcade", "party", "ballpit", "prize", "storage"] {
+            assert!(m.props_in(sim).len() >= 4, "{sim} has too few props");
+            let l = feed_lights(sim);
+            assert!(l.ambient.iter().all(|a| *a >= 0.8), "{sim} feed ambient {:?}", l.ambient);
+            assert_eq!(l.omni.len(), 1);
         }
     }
 

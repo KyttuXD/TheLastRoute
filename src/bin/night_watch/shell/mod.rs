@@ -21,6 +21,7 @@ mod menu_custom;
 mod menu_misc;
 mod menu_title;
 pub mod modes_data;
+pub mod offices;
 
 pub use modes_data::*;
 

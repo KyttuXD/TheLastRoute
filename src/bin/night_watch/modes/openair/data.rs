@@ -581,6 +581,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn footprints_are_the_godot_office_spec_rects() {
+        // openair_office.gd make_spec(): Rect2(x, z, w, h) as (x0, z0, x1, z1)
+        let want = [(-6.0, -4.5, 6.0, 4.5), (-13.0, 0.4, 13.0, 6.6), (-9.5, -9.0, 9.5, 8.0)];
+        for (w, f) in want.iter().enumerate() {
+            let m = map_of(w);
+            assert_eq!(m.footprint, *f, "watch {w}");
+            assert!(m.spawn.x > f.0 && m.spawn.x < f.2 && m.spawn.z > f.1 && m.spawn.z < f.3, "spawn inside, watch {w}");
+        }
+    }
+
+    #[test]
     fn tunables_are_whole_and_hold_the_listed_numbers() {
         let t = tun();
         assert!(t.missing.is_empty(), "missing keys: {:?}", t.missing);

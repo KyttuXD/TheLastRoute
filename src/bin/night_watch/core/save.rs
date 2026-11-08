@@ -148,6 +148,51 @@ impl Save {
         save
     }
 
+    /// Migration: merge a website progress blob (`night-watch:v1` / the account's progress: `cleared: ["mode:n"]`,
+    /// `night`, `best: {key: score}`) into this save, keeping the best of both. Returns true when anything
+    /// changed. Bad input changes nothing. The account link is the same blob: the host sends `to_account_progress()`.
+    pub fn import_website_progress(&mut self, text: &str) -> bool {
+        let v: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let before = self.to_json();
+        if let Some(list) = v.get("cleared").and_then(|x| x.as_array()) {
+            for key in list.iter().filter_map(|k| k.as_str()) {
+                if let Some((mode, n)) = key.split_once(':') {
+                    if let Ok(n) = n.parse::<i32>() {
+                        if n >= 1 && !mode.is_empty() {
+                            self.record_level_clear(mode, n);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(n) = v.get("night").and_then(|x| x.as_f64()) {
+            self.unlocked = self.unlocked.max((n as i64).clamp(1, NIGHTS as i64) as u32);
+        }
+        if let Some(Value::Object(o)) = v.get("best") {
+            for (mode, score) in o {
+                if let Some(sc) = score.as_f64() {
+                    self.record_best(mode, sc as i32);
+                }
+            }
+        }
+        self.to_json() != before
+    }
+
+    /// The progress blob in the website / account shape (`cleared` keys "mode:n", `night`, `beatFive`, `best`).
+    pub fn to_account_progress(&self) -> Value {
+        let mut cleared: Vec<String> = Vec::new();
+        for (mode, levels) in &self.cleared {
+            for n in levels {
+                cleared.push(format!("{}:{}", mode, n));
+            }
+        }
+        let beat_five = self.cleared.get("classic").map_or(false, |l| l.contains(&5));
+        json!({ "night": self.unlocked, "beatFive": beat_five, "cleared": cleared, "best": self.best })
+    }
+
     pub fn to_json(&self) -> String {
         let v = json!({
             "version": 1,
@@ -236,6 +281,11 @@ impl Save {
         self.scare != "full"
     }
 
+    /// Scare setting Off: no death moment at all.
+    pub fn scare_off(&self) -> bool {
+        self.scare == "off"
+    }
+
     pub fn reduced_motion(&self) -> bool {
         self.calm
     }
@@ -313,6 +363,22 @@ mod tests {
         let mut s = Save::default();
         s.debug_run = true;
         s
+    }
+
+    #[test]
+    fn website_progress_imports_and_round_trips() {
+        let mut s = scratch();
+        let blob = "{\"night\":3,\"cleared\":[\"classic:1\",\"classic:2\",\"mask:1\",\"bad\",\"x:y\"],\"best\":{\"classic\":90}}";
+        assert!(s.import_website_progress(blob));
+        assert_eq!(s.cleared.get("classic"), Some(&vec![1, 2]));
+        assert_eq!(s.cleared.get("mask"), Some(&vec![1]));
+        assert!(s.unlocked >= 3);
+        assert_eq!(s.best_score("classic"), 90);
+        assert!(!s.import_website_progress(blob));
+        assert!(!s.import_website_progress("not json"));
+        let out = s.to_account_progress();
+        assert!(out["cleared"].as_array().unwrap().iter().any(|k| k == "mask:1"));
+        assert_eq!(out["best"]["classic"], 90);
     }
 
     #[test]

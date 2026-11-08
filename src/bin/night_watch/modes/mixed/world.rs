@@ -555,6 +555,15 @@ fn room_colour(map_room: &str) -> [f32; 3] {
     }
 }
 
+/// The z of a banner hung flat on the wall of `a` nearest to a spot at `sz`.
+pub fn banner_wall_z(a: &Area, sz: f32) -> f32 {
+    if (sz - a.rect[2]).abs() <= (sz - a.rect[3]).abs() {
+        a.rect[2] + 0.12
+    } else {
+        a.rect[3] - 0.12
+    }
+}
+
 fn accent(g: &mut Group, a: &Area, ai: usize) {
     let c = a.centre();
     let (w, l) = a.size();
@@ -563,7 +572,9 @@ fn accent(g: &mut Group, a: &Area, ai: usize) {
     let size = if l > w { [1.0, 0.02, (l * 0.6).min(14.0)] } else { [(w * 0.6).min(14.0), 0.02, 1.0] };
     put(g, &format!("RunnerRoom{ai}"), "fabric", col, size, [c.x, 0.012, c.z]);
     if let Some((sx, sz)) = a.spots.first() {
-        put(g, &format!("BannerRoom{ai}"), "fabric", col, [2.2, 0.6, 0.06], [*sx, 3.0, *sz]);
+        // hung on the nearer long wall of the room, never in mid air over the lane
+        let wz = banner_wall_z(a, *sz);
+        put(g, &format!("BannerRoom{ai}"), "fabric", col, [2.2, 0.6, 0.06], [*sx, 3.0, wz]);
     }
 }
 
@@ -1057,6 +1068,17 @@ mod tests {
         assert!(flash.cubes.iter().all(|c| c.emissive), "the glow is emissive by its name");
         assert_eq!(vent_station(Side::T).id, "ventT");
         assert!(vent_station(Side::L).prompt.contains("HOLD TO SEAL"));
+    }
+
+    #[test]
+    fn banners_hang_on_a_wall_inside_their_room() {
+        for a in map().areas.iter() {
+            let Some((sx, sz)) = a.spots.first() else { continue };
+            let z = banner_wall_z(a, *sz);
+            assert!(z > a.rect[2] && z < a.rect[3], "{}", a.id);
+            assert!((z - a.rect[2]).abs() < 0.2 || (z - a.rect[3]).abs() < 0.2, "{} banner floats at {z}", a.id);
+            assert!(a.contains(*sx, z), "{}", a.id);
+        }
     }
 
     #[test]

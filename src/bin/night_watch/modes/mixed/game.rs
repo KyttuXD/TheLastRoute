@@ -760,6 +760,16 @@ impl MixedGame {
 
     /// A winding hold jumps the monitor to the music box's camera (the rules do it): follow it on screen.
     fn sync_feed(&mut self, ctx: &mut ShiftCtx) {
+        // the HUD's camera was set from outside (`--monitor ROOM`, a sim id or a map room): follow it, so the header and the
+        // minimap name the camera on screen
+        if ctx.hud.monitor_up && !self.monitor_up {
+            let want = world::map_for(&ctx.hud.monitor_room);
+            if want != self.monitor_map_room() {
+                self.sim.set_room(&world::sim_for(&want));
+                self.set_cam(ctx);
+            }
+            return;
+        }
         if self.monitor_up && self.monitor_map_room() != ctx.hud.monitor_room {
             self.set_cam(ctx);
             self.flash(ctx);
@@ -1542,6 +1552,21 @@ mod tests {
         let h = MixedGame::new(&session(4, 77));
         assert_eq!(g.sim.roster(), h.sim.roster());
         assert_eq!(g.skin, h.skin);
+    }
+
+    #[test]
+    fn every_camera_room_has_its_own_header_and_a_minimap_button() {
+        let layout = world::layout_for(0);
+        let mut seen = Vec::new();
+        for room in tun().cam_rooms.iter() {
+            let map = world::map_for(room);
+            assert_eq!(world::sim_for(&map), *room);
+            assert!(layout.cams.contains(&map), "{room}");
+            let title = skin::skin(0).cam_title(&map);
+            assert!(title.starts_with("CAM "), "{room}");
+            assert!(!seen.contains(&title), "{title}");
+            seen.push(title);
+        }
     }
 
     #[test]

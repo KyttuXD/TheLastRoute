@@ -888,4 +888,13 @@ mod tests {
         m.debug_lose();
         assert_eq!(m.pending, vec!["money_quota".to_string(), "@win".to_string(), "@lose".to_string()]);
     }
+
+    #[test]
+    fn the_hub_lists_a_custom_night_for_dayshift() {
+        let e = crate::core::data::ModeEntry::parse(crate::assets::mode_json("dayshift")).expect("dayshift mode json");
+        assert_eq!(e.custom.as_ref().map(|c| c.len()), Some(3));
+        assert_eq!(e.presets.len(), 4);
+        assert_eq!(e.custom_level, Some(3));
+        assert_eq!(e.presets[3].ai.len(), 3);
+    }
 }

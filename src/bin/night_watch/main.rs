@@ -21,6 +21,7 @@ mod net;
 mod player;
 mod registry;
 mod shell;
+mod shots;
 mod ui;
 
 use crate::audio::{cue_names, Sounds};
@@ -282,8 +283,11 @@ fn shift_frame(env: &mut Env, run: &mut ShiftRun, raw: &InputFrame) -> Flow {
             }
             Outcome::Lost => {
                 if let Some((hid, cause)) = run.mode.killer() {
-                    let short = env.save.short_death_scenes();
-                    env.hud.start_death_moment(&capitalize(&hid), &hid, &cause, env.session.seed_value, env.session.night, short);
+                    // Scare Off shows only the end card
+                    if !env.save.scare_off() {
+                        let short = env.save.short_death_scenes();
+                        env.hud.start_death_moment(&capitalize(&hid), &hid, &cause, env.session.seed_value, env.session.night, short);
+                    }
                 }
             }
             Outcome::Running => {}
@@ -386,6 +390,18 @@ async fn amain(args: cli::Args) {
         cursor_grabbed: false,
         admin_reg: build_admin_registry(),
     };
+
+    if let Some(dir) = args.shots.clone() {
+        let frames = shots::frames_or_default(args.frames_given, args.frames);
+        let code = shots::run(&mut env, &dir, frames).await;
+        #[cfg(not(target_arch = "wasm32"))]
+        std::process::exit(code);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = code;
+            return;
+        }
+    }
 
     let mut scene = menu_scene(&env, Screen::Title);
     if let Some(mode) = args.mode.clone() {

@@ -2642,6 +2642,18 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_quiet_shift_is_won_at_dawn() {
+        let mut sim = MixedSim::new(9, 0);
+        sim.threats.clear();
+        let mut t = 0.0;
+        while t < NIGHT_MS + 2_000.0 && sim.c.over == Over::None {
+            sim.step(500.0);
+            t += 500.0;
+        }
+        assert_eq!(sim.c.over, Over::Win, "an empty roster survives to dawn");
+    }
+
+    #[test]
     fn quiet_has_no_threat_before_its_grace() {
         let mut sim = MixedSim::new(5, 0);
         for _ in 0..800 {

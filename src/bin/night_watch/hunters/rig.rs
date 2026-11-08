@@ -112,9 +112,15 @@ pub struct Actor {
 }
 
 impl Actor {
+    /// Re-scales this actor for a mode (data/hunter_scale.json per_mode). Call once after the actor is built in a mode;
+    /// without it the actor uses the base world scale.
+    pub fn set_scale_mode(&mut self, mode: &str) {
+        self.scale = super::place::world_scale(&self.rig, &self.id, mode);
+    }
+
     /// An actor from loaded parts (no GL needed when `model` is None: it then draws the box figure).
     pub fn from_parts(id: &str, rig: Rc<Rig>, model: Option<Rc<Model>>, blends: Rc<HashMap<String, f32>>) -> Actor {
-        let scale = rig.draw_scale();
+        let scale = super::place::world_scale(&rig, id, "");
         let mut a = Actor {
             id: id.to_string(),
             pos: Vec3::ZERO,
@@ -422,9 +428,94 @@ impl HunterLib {
     }
 }
 
+/// One of the 26 shared Last Route characters (docs LAST_ROUTE_MATCH.md): her id, display name and the role she
+/// plays in Night Watch. 25 have a rig and a bbmodel; Zellia is the dispatcher, a voice on the headset with no body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RosterEntry {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub role: &'static str,
+    pub has_body: bool,
+}
+
+const fn r(id: &'static str, name: &'static str, role: &'static str) -> RosterEntry {
+    RosterEntry { id, name, role, has_body: true }
+}
+
+/// The shared roster, in the order of the match table (by Last Route letter, Zellia last).
+pub const ROSTER: [RosterEntry; 26] = [
+    r("aki", "Aki", "Classic: only moves while the cameras are down"),
+    r("briselle", "Briselle", "Dead Air: a phantom that breaks one system until you reboot it"),
+    r("ceryth", "Ceryth", "Salvage Run: waits at the right door"),
+    r("dovelle", "Dovelle", "Classic: the left-door stalker, the reference"),
+    r("elise", "Elise", "The Descent: climbs the shaft behind the window cage"),
+    r("ferryn", "Ferryn", "Dead Air: a phantom that takes the cameras"),
+    r("glyra", "Glyra", "Masked Hours: the music box"),
+    r("haelith", "Haelith", "Bedtime: waits where the breathing is"),
+    r("ilyra", "Ilyra", "Classic: freezes while you watch her room"),
+    r("javelle", "Javelle", "Bedtime: the hall door"),
+    r("kathy", "Kathy", "Every game: the observer from night 2"),
+    r("loxelle", "Loxelle", "Bedtime: the closet door"),
+    r("mavrine", "Mavrine", "Dead Air: breaks the heater and the fan with the vents"),
+    r("nyxie", "Nyxie", "Classic and Masked Hours: comes only with the dark"),
+    r("opalie", "Opalie", "The Facility: hears noise, warns Porcelle"),
+    r("porcelle", "Porcelle", "The Facility: moves in the dark, only the beacon shows her"),
+    r("quenelle", "Quenelle", "The Facility: the lift on its schedule"),
+    r("ravelle", "Ravelle", "Classic (right door) and Salvage Run (left door)"),
+    r("solyth", "Solyth", "Dead Air: the heat of the temperature pair"),
+    r("thessine", "Thessine", "Masked Hours: a hall walker"),
+    r("umbriel", "Umbriel", "Masked Hours: a hall walker"),
+    r("verrine", "Verrine", "Masked Hours: the vents; Open Air: the rooftop"),
+    r("wynelle", "Wynelle", "Dead Air: the cold of the temperature pair; Open Air: the bus stop"),
+    r("xivvy", "Xivvy", "Dead Air: the hunter in the vents"),
+    r("ysolde", "Ysolde", "Salvage Run: the window; Open Air: the campfire"),
+    RosterEntry { id: "zellia", name: "Zellia", role: "The dispatcher: the voice on the headset in every game", has_body: false },
+];
+
+/// The roster entry for an id (lowercase).
+pub fn roster_entry(id: &str) -> Option<&'static RosterEntry> {
+    ROSTER.iter().find(|e| e.id == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roster_has_26_and_matches_the_embedded_rigs() {
+        assert_eq!(ROSTER.len(), 26);
+        for e in ROSTER.iter() {
+            assert!(!e.role.is_empty() && !e.name.is_empty());
+            assert_eq!(crate::assets::HUNTER_IDS.contains(&e.id), e.has_body, "{}", e.id);
+        }
+        for id in crate::assets::HUNTER_IDS {
+            assert!(roster_entry(id).is_some(), "{id} missing from the roster");
+        }
+        assert!(!roster_entry("zellia").unwrap().has_body);
+        assert!(roster_entry("nobody").is_none());
+    }
+
+    #[test]
+    fn every_actor_is_built_through_from_parts_only() {
+        fn walk(dir: &std::path::Path, hits: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, hits);
+                } else if p.extension().map_or(false, |x| x == "rs") {
+                    let t = std::fs::read_to_string(&p).unwrap_or_default();
+                    if t.contains("Actor::from_parts(") {
+                        hits.push(p.file_name().unwrap().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        let mut hits = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/night_watch"), &mut hits);
+        hits.sort();
+        // rig.rs (HunterLib::actor and its test helper) is the only caller; every mode asks HunterLib::actor.
+        assert_eq!(hits, vec!["rig.rs".to_string()], "Actor::from_parts outside rig.rs");
+    }
     use crate::hunters::poses::compile_nw_poses;
 
     const DOVELLE: &str = include_str!("../../last_route/assets/hunters/anim/dovelle.json");
@@ -570,6 +661,8 @@ mod tests {
     #[test]
     fn the_humanoid_rig_draws_at_one_and_a_half_over_its_unit() {
         let a = actor("dovelle", DOVELLE);
-        assert!((a.scale - 1.5 / 65.0).abs() < 1e-6);
+        assert!((a.rig.draw_scale() - 1.5 / 65.0).abs() < 1e-6);
+        let f = super::super::place::HunterScale::get().factor("dovelle", "");
+        assert!((a.scale - 1.5 / 65.0 * f).abs() < 1e-6);
     }
 }

@@ -1561,6 +1561,9 @@ mod tests {
                     tasks += 1;
                 }
             }
+            if tasks > 0 {
+                break;
+            }
         }
         assert!(tasks > 0, "she does something in 10 simulated minutes");
         // once the rules put her at a stage, her brain is off
@@ -1687,6 +1690,18 @@ mod tests {
         assert_eq!(c.on_event(&SimEvent::Restless, 0.0)[0].name, "crackle");
         assert!(c.on_event(&SimEvent::Win, 0.0).is_empty());
         assert!(c.on_event(&SimEvent::Task("javelle".into(), "sits".into()), 0.0).is_empty());
+    }
+
+    #[test]
+    fn a_real_run_to_the_breath_stage_is_heard_through_the_cue_clock() {
+        let mut l = neutral(2, [None, Some(0), Some(0)], true);
+        let mut c = CueClock::new();
+        let mut heard = 0;
+        run_until(&mut l, &DARK, 40000.0, |l, _| {
+            heard += c.breathing(l).iter().filter(|q| q.name == "breath").count();
+            l.doors[0].state == Stage::Near
+        });
+        assert!(heard >= 1, "the breathing before the catch is audible, not only shown");
     }
 
     #[test]
