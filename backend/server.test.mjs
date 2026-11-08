@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createDirectoryServer, createLastRouteServer, deploymentPorts } from "./server.mjs";
+import { createDirectoryServer, createLastRouteServer, deploymentPorts, forwardedClient } from "./server.mjs";
 import { parseAgentTokens, signAgentRequest } from "./regions.mjs";
 
 test("deployment separates legacy Pterodactyl HTTP and ENet allocations", () => {
@@ -573,9 +573,10 @@ test("room-bound admin tickets prove KYTTU without exposing an account session",
 test("trusted proxy address is used only when explicitly enabled", async () => {
   const app = await fixtureWith(() => createLastRouteServer({ trustProxy: true }));
   try {
+    // the client sent "198.51.100.7" itself; the proxy appended the address it really saw
     const response = await fetch(`${app.url}/api/enet/rooms/register`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.25, 127.0.0.1" },
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.7, 203.0.113.25" },
       body: JSON.stringify({ code: "Z8X7C", port: 8421 }),
     });
     assert.equal(response.status, 201);
@@ -583,6 +584,21 @@ test("trusted proxy address is used only when explicitly enabled", async () => {
   } finally {
     await app.close();
   }
+});
+
+test("the forwarded client is the entry the trusted proxy appended, never the client's own prefix", () => {
+  assert.equal(forwardedClient("spoofed, 203.0.113.9"), "203.0.113.9");
+  assert.equal(forwardedClient("1.2.3.4, 203.0.113.9"), "203.0.113.9");
+  assert.equal(forwardedClient("203.0.113.9"), "203.0.113.9");
+  // two trusted proxies: the second entry from the right
+  assert.equal(forwardedClient("1.2.3.4, 203.0.113.9, 10.0.0.2", 2), "203.0.113.9");
+  // a header shorter than the hop count was written by proxies only
+  assert.equal(forwardedClient("203.0.113.9", 3), "203.0.113.9");
+  // malformed or empty: the caller falls back to the peer address
+  assert.equal(forwardedClient("203.0.113.9, not-an-ip"), null);
+  assert.equal(forwardedClient("203.0.113.9, "), null);
+  assert.equal(forwardedClient(""), null);
+  assert.equal(forwardedClient("::ffff:203.0.113.9"), "203.0.113.9");
 });
 
 test("rate limits sensitive account endpoints per requester", async () => {

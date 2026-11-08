@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRoomService, DEFAULT_ROOM_SETTINGS } from "./room_service.mjs";
+import { createRoomService, DEFAULT_ROOM_SETTINGS, MAX_DEPTH_CLAIM_STEP, depthClaimAllowed } from "./room_service.mjs";
 
 function serviceAt(now = 1_000_000, limits = {}) {
   let clock = now;
@@ -150,6 +150,30 @@ test("updates clamp state, share host world and items, and page discovery", () =
   assert.deepEqual(reset.world.hunters, []);
   assert.equal(reset.discoveredReset, true);
   assert.equal(reset.discoveredTotal, 0);
+});
+
+test("only the host advances the depth, and by a bounded step once the room has one", () => {
+  const { service } = serviceAt();
+  const host = join(service, { room: "DEPTH", playerId: "host", name: "Ann" });
+  const guest = join(service, { room: "DEPTH", playerId: "guest", name: "Bob" });
+  const hostAuth = { room: "DEPTH", playerId: "host", sessionToken: host.sessionToken };
+  const guestAuth = { room: "DEPTH", playerId: "guest", sessionToken: guest.sessionToken };
+  service.updateRoom({ ...hostAuth, claimDepth: 1, world: { depth: 1, hunters: [{ id: "h1", x: 1, y: 1 }] },
+    itemClaims: [{ kind: "battery", id: "b1", depth: 1, changes: { collected: true } }] });
+  // a guest's claim (old clients still send one) changes nothing and is not an error
+  const [status, guestView] = service.updateRoom({ ...guestAuth, claimDepth: 9_999 });
+  assert.equal(status, 200);
+  assert.equal(guestView.activeDepth, 1);
+  assert.equal(guestView.world.hunters[0].id, "h1");
+  assert.equal(guestView.items["battery:b1"].collected, true);
+  // too large a jump from the host is ignored too
+  assert.equal(service.updateRoom({ ...hostAuth, claimDepth: 1 + MAX_DEPTH_CLAIM_STEP + 1 })[1].activeDepth, 1);
+  // the next floor still works, and the host's world for it is kept
+  const next = service.updateRoom({ ...hostAuth, claimDepth: 2, world: { depth: 2, hunters: [{ id: "h2", x: 1, y: 1 }] } })[1];
+  assert.equal(next.activeDepth, 2);
+  assert.equal(next.world.hunters[0].id, "h2");
+  assert.equal(depthClaimAllowed(0, 40), true, "a room with no depth yet takes the host's starting depth");
+  assert.equal(depthClaimAllowed(5, 5), false);
 });
 
 test("only the host changes settings, and an invalid patch leaves them alone", () => {

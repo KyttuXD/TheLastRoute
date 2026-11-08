@@ -1,5 +1,6 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,15 +134,31 @@ function cleanAddress(value) {
   return address;
 }
 
-function requesterAddress(request, trustProxy) {
-  // A proxy running on this machine (the site's same-origin /godot2-api forwarder) is trusted for the real client
-  // address: only local processes can connect from loopback, so a remote caller cannot forge the header.
+export const DEFAULT_TRUSTED_PROXY_HOPS = 1;
+const MAX_TRUSTED_PROXY_HOPS = 8;
+
+// The client address in an X-Forwarded-For value behind `hops` trusted proxies. A proxy (Caddy, the site's
+// /godot2-api forwarder) APPENDS the address it saw, so the leftmost entries are whatever the client sent and the
+// rightmost is what the nearest proxy wrote: the client is the hops-th entry from the right (the leftmost when the
+// header is shorter). Null for an empty header or an entry that is not a plain IP address.
+export function forwardedClient(header, hops = DEFAULT_TRUSTED_PROXY_HOPS) {
+  const text = String(header || "");
+  if (!text.trim()) return null;
+  const entries = text.split(",").map((entry) => entry.trim());
+  const count = Math.min(MAX_TRUSTED_PROXY_HOPS, Math.max(1, Math.trunc(Number(hops)) || 1));
+  const address = cleanAddress(entries[Math.max(0, entries.length - count)]);
+  return isIP(address) ? address : null;
+}
+
+function requesterAddress(request, trustProxy, hops = DEFAULT_TRUSTED_PROXY_HOPS) {
+  // A proxy running on this machine is trusted for the real client address: only local processes can connect from
+  // loopback, so a remote caller cannot reach the header path at all. Mirrors requester_address in lr_server.
   const direct = cleanAddress(request.socket.remoteAddress);
   if (trustProxy || direct === "127.0.0.1") {
-    const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
-    if (forwarded) return cleanAddress(forwarded);
+    const forwarded = forwardedClient(request.headers["x-forwarded-for"], hops);
+    if (forwarded) return forwarded;
   }
-  return cleanAddress(request.socket.remoteAddress);
+  return direct;
 }
 
 // Which game a room belongs to ("last_route" or "city"); servers and clients that predate the field mean "last_route".
@@ -314,6 +331,7 @@ export function createLastRouteServer({
   updates = {},
   updatesProvider = null,
   trustProxy = false,
+  trustedProxyHops = DEFAULT_TRUSTED_PROXY_HOPS,
   relayAddress = "",
   relayPort = 0,
   publicRouteStorePath = null,
@@ -496,7 +514,7 @@ export function createLastRouteServer({
     const maximum = Math.max(1, Number(sensitive ? accountRateLimitMax : mods ? modRateLimitMax : apiRateLimitMax) || 1);
     const windowMs = Math.max(1000, Number(rateLimitWindowMs) || DEFAULT_RATE_LIMIT_WINDOW_MS);
     const timestamp = now();
-    const address = requesterAddress(request, trustProxy) || "unknown";
+    const address = requesterAddress(request, trustProxy, trustedProxyHops) || "unknown";
     const key = `${sensitive ? "account" : mods ? "mods" : "api"}|${address}`;
     let rate = requestRates.get(key);
     if (!rate || timestamp >= rate.resetAt) {
@@ -746,7 +764,7 @@ export function createLastRouteServer({
     // Crash / freeze reports (CrashWatch): store and echo only; per-client rate limit and field caps in crash_reports.mjs.
     if (url.pathname === "/api/v1/crash-reports") {
       if (!crashReports) return json(response, 404, { ok: false, code: "UNKNOWN_ENDPOINT", error: "Unknown endpoint" });
-      const client = `${requesterAddress(request, trustProxy) || "unknown"}|${String(body.device_id || "").slice(0, 64)}`;
+      const client = `${requesterAddress(request, trustProxy, trustedProxyHops) || "unknown"}|${String(body.device_id || "").slice(0, 64)}`;
       const result = crashReports.submit(body, client);
       return json(response, result[0], result[1]);
     }
@@ -768,7 +786,7 @@ export function createLastRouteServer({
       const publicEnet = enetRooms.get(PUBLIC_CODES[publicGame]);
       const hostTokenValid = Boolean(publicEnet && body.hostToken && safeEqual(body.hostToken, publicEnet.token));
       if (hostTokenValid) publicEnet.expiresAt = now() + PUBLIC_ENET_TTL_MS;
-      const address = requesterAddress(request, trustProxy);
+      const address = requesterAddress(request, trustProxy, trustedProxyHops);
       if (url.pathname === "/api/public/join") {
         const refused = moderation.checkPublicJoin({ address, deviceId: body.deviceId,
           username: accountService.sessionUsername(body.sessionToken) || "" });
@@ -915,14 +933,14 @@ export function createLastRouteServer({
       }
       if (publicCodes.has(code)) {
         const refused = moderation.checkHostPublic({ username: hostUser, deviceId: body.deviceId,
-          address: requesterAddress(request, trustProxy) });
+          address: requesterAddress(request, trustProxy, trustedProxyHops) });
         if (refused) return json(response, refused[0], refused[1]);
       }
       const token = randomBytes(24).toString("base64url");
       const room = {
         code,
         token,
-        address: requesterAddress(request, trustProxy),
+        address: requesterAddress(request, trustProxy, trustedProxyHops),
         port,
         transport: webRoom ? "ws" : "enet",
         hostUser,                                   // reporting identity for moderation (may be empty)
@@ -1104,19 +1122,22 @@ export function createLastRouteServer({
       if (!room || !safeEqual(body.hostToken, room.token)) {
         return json(response, 403, { ok: false, code: "INVALID_HOST_TOKEN", error: "INVALID HOST TOKEN" });
       }
-      const result = url.pathname === "/api/moderation/report"
-        ? moderation.reportKick(body, { room: code, host: room.hostUser ? `user:${room.hostUser}` : `room:${room.instance}` })
-        : moderation.peers(body);
+      // The server never sees who is in an ENet room, so the username is the host's word. It is recorded only for a
+      // host the caller cannot reset: a signed-in host (one host however many codes it mints) or a dedicated host the
+      // owner spawned. A guest host could register fresh codes forever and name any account: status only.
+      const host = room.hostUser ? `user:${room.hostUser}` : room.dedicated ? `dedicated:${code}` : "";
+      const result = url.pathname === "/api/moderation/peers" ? moderation.peers(body)
+        : host ? moderation.reportKick(body, { room: code, host }) : moderation.reportStatus(body);
       return json(response, result[0], result[1]);
     }
     if (url.pathname === "/api/moderation/integrity") {
-      const result = moderation.integrity(body, { address: requesterAddress(request, trustProxy),
+      const result = moderation.integrity(body, { address: requesterAddress(request, trustProxy, trustedProxyHops),
         username: body.sessionToken ? accountService.sessionUsername(body.sessionToken) || "" : "" });
       return json(response, result[0], result[1]);
     }
     if (url.pathname === "/api/moderation/status") {
       return json(response, 200, { ok: true, status: moderation.status({ deviceId: body.deviceId,
-        address: requesterAddress(request, trustProxy),
+        address: requesterAddress(request, trustProxy, trustedProxyHops),
         username: body.sessionToken ? accountService.sessionUsername(body.sessionToken) || "" : "" }) });
     }
     if (url.pathname.startsWith("/api/admin/mods/")) {
@@ -1351,6 +1372,7 @@ export function startLastRouteServerFromEnvironment() {
     } : null,
     adminPassword: String(process.env.LASTROUTE_ADMIN_PASSWORD || process.env.KYTTU_DEV_PASSWORD || ""),
     trustProxy: /^(1|true|yes|on)$/i.test(String(process.env.TRUST_PROXY || "")),
+    trustedProxyHops: Number(process.env.LASTROUTE_TRUSTED_PROXY_HOPS) || DEFAULT_TRUSTED_PROXY_HOPS,
     relayAddress: relayEnabled ? relayAddress : "",
     relayPort: relayEnabled ? relayPort : 0,
     publicRouteStorePath: environmentPath("LASTROUTE_PUBLIC_ROUTE_STORE") || join(dataDirectory, "lastroute", "godot_publicroom.json"),

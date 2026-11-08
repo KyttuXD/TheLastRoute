@@ -223,6 +223,26 @@ fn owner_identity(accounts: &AccountService, body: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// The moderation report for a host's room KICK/BAN: the host's body (reason, strikes, deviceId) with `username`
+/// replaced by `account`, the removed player's account as the server verified it at join. Whatever `username` the
+/// host sent is dropped, matching or not, so the record can only ever name the account that was really removed.
+/// `None` for a guest (no verified account): the player still leaves the room, but no account is recorded.
+pub(crate) fn room_action_report(body: &Value, account: &str) -> Option<Value> {
+    if account.is_empty() {
+        return None;
+    }
+    let mut report = match body {
+        Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    report.insert("username".into(), Value::String(account.to_string()));
+    Some(Value::Object(report))
+}
+
+/// The health route the root page points at: a const here, outside the POST handlers, so the route-table scan in
+/// `route_tests` does not read this GET path as a POST route.
+const HEALTH_PATH: &str = "/api/health";
+
 /// The build revision baked in at compile time from `LASTROUTE_BUILD_REVISION`; null when the build did not set it.
 const BUILD_REVISION: Option<&str> = option_env!("LASTROUTE_BUILD_REVISION");
 
@@ -240,7 +260,7 @@ impl LastRouteServer {
         } else {
             self.config.api_rate_limit_max
         };
-        let address = or_default(requester_address(request, self.config.trust_proxy), "unknown");
+        let address = or_default(requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops), "unknown");
         let bucket = if auth && self.config.auth_rate_limit_max > 0 {
             "auth"
         } else if sensitive {
@@ -371,7 +391,7 @@ impl LastRouteServer {
                 return found;
             }
             if method == "GET" && path == "/" {
-                return json_response(200, &json!({ "ok": true, "service": "Last Route backend", "health": "/api/health",
+                return json_response(200, &json!({ "ok": true, "service": "Last Route backend", "health": HEALTH_PATH,
                     "staticFiles": self.config.public_directory.is_some() }), &[]);
             }
             return json_response(404, &json!({ "ok": false, "code": "NOT_FOUND", "error": "Not found" }), &[]);
@@ -437,7 +457,7 @@ impl LastRouteServer {
             return response;
         }
         let result = self.route_accounts(guard, &body, path);
-        log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy), &caller.username);
+        log_account_event(self.now(), path, &body, &result, &requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops), &caller.username);
         reply(result)
     }
 
@@ -589,7 +609,7 @@ impl LastRouteServer {
         let path = request.path.as_str();
         let now = self.now();
         let (relay_address, relay_port) = (self.config.relay_address.as_str(), self.config.relay_port);
-        let address = requester_address(request, self.config.trust_proxy);
+        let address = requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops);
 
         if path == "/api/v1/crash-reports" {
             let Some(crash) = state.crash_reports.as_mut() else { return Some(reply(unknown_endpoint())) };
@@ -752,7 +772,17 @@ impl LastRouteServer {
             if path == "/api/moderation/peers" {
                 return Some(reply(state.moderation.peers(body)));
             }
-            let host = if room.host_user.is_empty() { format!("room:{}", room.instance) } else { format!("user:{}", room.host_user) };
+            // The server never sees who is in an ENet room, so the `username` here is the host's word. It is recorded
+            // only when the host has an identity it cannot reset: a signed-in host (`user:<account>`, one host however
+            // many codes it mints) or a dedicated host the owner spawned (`dedicated:<code>`). A guest host could
+            // register fresh codes forever and name any account, so its report only answers the status.
+            let host = if !room.host_user.is_empty() {
+                format!("user:{}", room.host_user)
+            } else if room.dedicated {
+                format!("dedicated:{code}")
+            } else {
+                return Some(reply(state.moderation.report_status(body)));
+            };
             let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
             return Some(reply(state.moderation.report_kick(&ctx, body, &code, &host)));
         }
@@ -948,7 +978,8 @@ impl LastRouteServer {
         let mut guard = guard;
         // Admin rooms: whether the caller is a full-admin owner is decided from the account session (`accountToken`, or
         // `sessionToken` when that is an account session), never from the body. The lookup runs without the state lock.
-        let admin_name: Option<String> = if matches!(path, "/api/rooms/join" | "/api/rooms/settings") {
+        // The same verified name is the account a room player joins with (what a host KICK/BAN is recorded against).
+        let caller_account: Option<String> = if matches!(path, "/api/rooms/join" | "/api/rooms/settings") {
             let token = match str_or_empty(body.get("accountToken")) {
                 t if t.is_empty() => str_or_empty(body.get("sessionToken")),
                 t => t,
@@ -956,13 +987,15 @@ impl LastRouteServer {
             if token.is_empty() {
                 None
             } else {
-                let (owner, g) = self.with_accounts(guard, |accounts| accounts.session_username(&token).filter(|name| accounts.is_admin_owner(name)));
+                let (name, g) = self.with_accounts(guard, |accounts| accounts.session_username(&token));
                 guard = g;
-                owner
+                name.map(|n| n.trim().to_uppercase()).filter(|n| !n.is_empty())
             }
         } else {
             None
         };
+        let admin_name: Option<String> = caller_account.clone().filter(|name| guard.accounts.is_admin_owner(name));
+        let joined_account = caller_account.unwrap_or_default();
         let mut result: Reply = match path {
             "/api/rooms/join" => {
                 let state = &mut *guard;
@@ -970,9 +1003,9 @@ impl LastRouteServer {
                     let saved = state.dir.reserved.as_ref().and_then(|r| r.admin_room(&str_or_empty(body.get("room"))));
                     let dir = &state.dir;
                     let taken = |c: &str| dir.reserved.as_ref().map(|r| r.is_reserved(c)).unwrap_or(false) || dir.enet_rooms.contains_key(c);
-                    state.room_service.join_with(body, &JoinContext::admin(saved, Some(&taken)))
+                    state.room_service.join_with(body, &JoinContext::admin(saved, Some(&taken)).with_account(&joined_account))
                 } else {
-                    state.room_service.join_room(body)
+                    state.room_service.join_with(body, &JoinContext::plain().with_account(&joined_account))
                 }
             }
             "/api/rooms/state" => guard.room_service.update_room(body),
@@ -991,21 +1024,23 @@ impl LastRouteServer {
                 r
             }
             "/api/rooms/moderate" => {
-                // host KICK / BAN; owners are protected, and each removal goes into the kick log and review rules
+                // Host KICK / BAN; owners are protected, and each removal goes into the kick log and review rules.
+                // `moderate_player_accounts` only answers the room's real host (its session token), and the report
+                // is recorded against the removed player's own verified account: a `username` in the body is
+                // ignored, so a host cannot point the kick log at an account that was never in the room. A guest
+                // (no account session at join) is removed from the room but no account is recorded.
                 let state = &mut *guard;
                 let ctx = ModCtx { accounts: &state.accounts, updates: self.current_updates() };
-                let r = state.room_service.moderate_player(body, &|n| crate::moderation::Moderation::is_protected(&ctx, n));
+                let (r, who) = state.room_service.moderate_player_accounts(body, &|n| crate::moderation::Moderation::is_protected(&ctx, n));
                 if r.0 == 200 {
                     let room = str_or_empty(body.get("room")).trim().to_uppercase();
                     let action = str_or_empty(r.1.get("action"));
-                    let mut report = body.clone();
-                    if let Value::Object(map) = &mut report {
-                        if !map.contains_key("username") {
-                            map.insert("username".into(), r.1.get("target").cloned().unwrap_or(Value::Null));
-                        }
+                    if let Some(report) = room_action_report(body, &who.target) {
+                        // one account hosting several fresh room codes still counts as one host; a guest host can
+                        // mint codes freely, so its kicks are logged as `guest` and never count as different hosts
+                        let host = if who.host.is_empty() { crate::moderation::GUEST_HOST.to_string() } else { format!("user:{}", who.host) };
+                        let _ = state.moderation.report_room_action(&ctx, &action, &report, &room, &host);
                     }
-                    let host = format!("room:{room}");
-                    let _ = state.moderation.report_room_action(&ctx, &action, &report, &room, &host);
                 }
                 r
             }
@@ -1192,7 +1227,7 @@ impl LastRouteServer {
         let room = EnetRoom {
             code: code.clone(),
             token: token.clone(),
-            address: requester_address(request, self.config.trust_proxy),
+            address: requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops),
             port: port as i64,
             transport: if web_room { "ws".into() } else { "enet".into() },
             host_user,

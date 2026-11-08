@@ -340,6 +340,64 @@ server only forwards them. Tunables are environment variables, read once at star
 - **Body limits**: `POST_ROUTES` in `server/routes.rs` lists every POST route with its own limit; `server/route_tests.rs` fails when a
   route is added without an entry.
 
+### Client address, room kicks and room depth (2026-11-08)
+
+**Client address** (rate limits, account audit lines, moderation, the ENet room address): `requester_address` in
+`server/support.rs`, mirrored by `requesterAddress` in `backend/server.mjs`.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `TRUST_PROXY` | off | Treat every peer as a trusted proxy. Only for a proxy on another machine with the port firewalled to it. |
+| `LASTROUTE_TRUSTED_PROXY_HOPS` | 1 (1 to 8) | How many trusted proxies sit in a row in front of the server. |
+
+- A loopback peer (a proxy on the same machine, such as Caddy with `reverse_proxy 127.0.0.1:8105`) is always treated as a
+  trusted proxy; a remote caller cannot connect from loopback. Any other peer, with `TRUST_PROXY` off, gets its own
+  address and its `X-Forwarded-For` is ignored.
+- Caddy (and the Node `/godot2-api` forwarder) **appends** the address it saw to whatever `X-Forwarded-For` the client
+  sent. So the server reads the header from the right: the client is the entry `LASTROUTE_TRUSTED_PROXY_HOPS` places from
+  the right (`spoofed, 203.0.113.9` from Caddy gives `203.0.113.9`). A header shorter than that was written by
+  proxies only, so its leftmost entry is used. An empty header, or a chosen entry that is not a plain IP address, falls
+  back to the peer address. Before this change the leftmost entry was used, which let a client behind the proxy pick
+  its own address (and so its own rate-limit bucket).
+- Set the hop count to the number of proxies that each append one entry. With a CDN in front of Caddy that is 2; a
+  proxy that **replaces** the header instead of appending still works with 1.
+- Whether `lr_server` on vps3 runs behind Caddy is still open (Open below); a server reached directly is not affected,
+  because only loopback or `TRUST_PROXY` peers are read at all. `lr_story_server` already reads the rightmost entry.
+
+**Room KICK / BAN** (`POST /api/rooms/moderate {room, playerId, sessionToken, action, targetId | targetName[, reason]}`):
+only the room's host (its own room session token) can call it. The kick log and review entry go to the removed
+player's **own account**, the one the server verified from that player's `accountToken` (or account `sessionToken`)
+when they joined the room (`Player::account`). A `username` in the body is ignored, so a caller who mints a fresh room
+code cannot get another account flagged; a guest player is removed but nothing is recorded. The host is counted as
+`user:<account>` when the host joined signed in, so one account behind several fresh room codes is one host for the
+"kicked by 2 different hosts" signal. A guest host (no account at join) can mint codes freely, so its kicks are logged
+with host `guest` (`moderation::GUEST_HOST`) and open a plain `kick` review, but never count toward
+`KICK_FLAG_THRESHOLD`. An owner account is protected by the account behind a player as well as by the name shown.
+
+**ENet kick reports** (`POST /api/moderation/report {code, hostToken, username, ...}`, both servers): the server never
+sees who is in an ENet room, so `username` is the host's word. A kick is recorded only when the room's host has an
+identity the caller cannot reset: a host that registered signed in (`user:<account>`, one host however many codes it
+registers) or a dedicated host the owner spawned (`dedicated:<code>`). A guest-hosted room's report records nothing
+and answers `{ok, flagged: false, recorded: false, status}`, so registering fresh codes as a guest can no longer log
+kicks against any account or open the "different hosts" review. `/api/moderation/peers` is unchanged.
+
+**Room depth** (`POST /api/rooms/state` `claimDepth`): only the host's claim moves the room's `activeDepth` (a guest's
+claim is ignored with no state change and no error, so older clients keep working). Once the room has a depth, one claim
+may move it at most `MAX_DEPTH_CLAIM_STEP` = 3 floors (`rooms/room_service.rs`, same constant in
+`backend/room_service.mjs`): the game's lift goes one floor at a time, and 3 leaves room for lifts taken between two state
+posts. A room at depth 0 (new, or reset by a route start or abandon) takes the host's first claim at any depth up to
+9 999, which is where a resumed run starts. A larger jump is ignored, so the items, the host's hunter snapshot and the
+discovery are kept.
+
+**Tests:** `server/tests.rs` `a_room_kick_is_recorded_against_the_removed_players_verified_account_never_a_body_username`,
+`a_guest_hosted_enet_rooms_report_records_nothing_however_many_fresh_codes_it_registers`; `ops/moderation.rs`
+`guest_host_kicks_are_logged_but_never_count_as_different_hosts`; `backend/moderation.test.mjs` "a guest-hosted ENet room's
+report records nothing";
+`the_client_address_is_the_entry_the_trusted_proxy_appended_and_a_direct_client_cannot_pick_one`; `rooms/room_tests.rs`
+`a_kick_reports_the_accounts_the_server_verified_at_join_never_a_name_from_the_body`,
+`only_the_host_advances_the_depth_and_a_jump_past_the_step_is_ignored`; `backend/room_service.test.mjs` and
+`backend/server.test.mjs` (`forwardedClient`).
+
 ### Data directory: `.data`
 
 `lr_server` keeps `accounts.json`, `saves/`, `skins/` and the public route in `.data` beside where it starts, unless
@@ -358,6 +416,11 @@ down, 2 = HTTP fine but the relay is off. It sends and prints no secrets. It has
 
 - What `vps1` is for.
 - Whether `lr_server` should sit behind Caddy, and the account forwarding variable `LASTROUTE_ACCOUNT_UPSTREAM` (TODO.md).
+  Behind Caddy on the same host the client address already comes out right (see "Client address" above).
+- `POST /api/moderation/report` (ENet rooms) still takes `username` from a **signed-in** host, so one account can log
+  kicks against any account (one host, so never the "different hosts" signal on its own; two accounts can reach it).
+  The relay does not track which account each peer is (`EnetRoom` has only a player count), so the name cannot be
+  checked against the room's peers yet. It needs the relay or the join to tell the server which account each peer is.
 - Default data folder: `.data` (kept) or the old Node `data/`. Stays open for KT (see "Data directory" above).
 - Log rotation for the `lr_server` service log on the VPS (journald or logrotate) is a server change and is not done from this repo.
 - The website's slot list for `/api/v1/saves` could not be compared; `ALLOWED_SAVES` is the Rust side's list.

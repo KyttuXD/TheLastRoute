@@ -24,6 +24,10 @@ const HOUR_MS: i64 = 60 * 60 * 1000;
 const DAY_MS: i64 = 24 * HOUR_MS;
 pub const KICK_WINDOW_MS: i64 = 7 * DAY_MS;
 pub const KICK_FLAG_THRESHOLD: usize = 2;
+/// The `host` of a kick whose reporter has no identity the caller cannot reset (a guest room host: anyone can
+/// mint a fresh room code). Such a kick is logged and reviewed with host `guest`, but never counts toward
+/// `KICK_FLAG_THRESHOLD`'s "different hosts", so fresh codes cannot fake the stronger signal.
+pub const GUEST_HOST: &str = "guest";
 const AUTOMATIC_COOLDOWNS: bool = false;
 pub const MAX_EXTEND_HOURS: f64 = 24.0 * 90.0;
 pub const MAX_PEER_ENTRIES: usize = 16;
@@ -566,7 +570,11 @@ impl Moderation {
         let username = username_of(body.get("username"));
         if username_pattern().is_match(&username) && host_ctx.account_exists(&username) {
             let index = self.record_create(&username).expect("valid username");
-            let host_hash: String = self.hash_str(&format!("host:{}", if host.is_empty() { room } else { host })).chars().take(16).collect();
+            let host_hash: String = if host == GUEST_HOST {
+                GUEST_HOST.to_string()
+            } else {
+                self.hash_str(&format!("host:{}", if host.is_empty() { room } else { host })).chars().take(16).collect()
+            };
             let strikes = {
                 let n = crate::util::number_or(body.get("strikes"), 0.0).trunc();
                 n.min(99.0).max(0.0)
@@ -579,6 +587,7 @@ impl Moderation {
                 .kicks
                 .iter()
                 .filter(|kick| (timestamp as f64) - js_number(kick.get("at")) < KICK_WINDOW_MS as f64)
+                .filter(|kick| str_nullish(kick.get("host")) != GUEST_HOST)
                 .map(|kick| {
                     let h = str_or_empty(kick.get("host"));
                     if h.is_empty() {
@@ -598,6 +607,18 @@ impl Moderation {
         self.persist();
         let status = self.status(&Who { username, device_id: body.get("deviceId").cloned(), address: String::new() });
         (200, json!({ "ok": true, "flagged": flagged, "status": status }))
+    }
+
+    /// The answer to a kick report that records nothing (an ENet room whose host is not signed in): the same
+    /// reply shape as `report_kick`, plus `recorded: false`.
+    pub fn report_status(&self, body: &Value) -> Reply {
+        let kind = str_or_empty(body.get("kind"));
+        if !kind.is_empty() && kind != "kick" {
+            return (400, json!({ "ok": false, "code": "INVALID_KIND", "error": "kind must be kick" }));
+        }
+        let username = username_of(body.get("username"));
+        let status = self.status(&Who { username, device_id: body.get("deviceId").cloned(), address: String::new() });
+        (200, json!({ "ok": true, "flagged": false, "recorded": false, "status": status }))
     }
 
     /// Accounts a room host may never KICK or BAN: owners.
@@ -841,6 +862,32 @@ mod tests {
         let (_, list) = m.admin_list();
         assert_eq!(list["accounts"].as_array().unwrap().len(), 2, "KYTTU's kick is logged but never reviewed");
         assert_eq!(list["reviews"], json!(["CHEATER"]));
+    }
+
+    #[test]
+    fn guest_host_kicks_are_logged_but_never_count_as_different_hosts() {
+        let (clock, handle) = manual_clock(1_793_188_800_000);
+        let mut m = Moderation::new(ModerationOptions { store_path: None, salt: "s".into(), now: clock });
+        for room in ["RMAAA", "RMAAB", "RMAAC"] {
+            m.report_kick(&Host, &json!({ "username": "cheater", "reason": "speed" }), room, GUEST_HOST);
+            handle.advance(1);
+        }
+        let (_, list) = m.admin_list();
+        let entry = &list["accounts"][0];
+        let hosts: Vec<_> = entry["kicks"].as_array().unwrap().iter().map(|k| k["host"].clone()).collect();
+        assert_eq!(hosts, vec![json!("guest"); 3]);
+        let reasons: Vec<_> = entry["reviews"].as_array().unwrap().iter().map(|r| r["reason"].clone()).collect();
+        assert_eq!(reasons, vec![json!("kick"); 3], "guest-hosted kicks never reach the different-hosts signal");
+        // one signed-in host on top of them is still only one host
+        m.report_kick(&Host, &json!({ "username": "cheater", "reason": "speed" }), "RMAAD", "user:HOST_A");
+        let (_, list) = m.admin_list();
+        assert_eq!(list["accounts"][0]["reviews"][3]["reason"], json!("kick"));
+        // a report that records nothing answers the status only
+        let (status, body) = m.report_status(&json!({ "username": "cheater", "kind": "kick" }));
+        assert_eq!((status, body["recorded"].clone(), body["flagged"].clone()), (200, json!(false), json!(false)));
+        assert_eq!(m.report_status(&json!({ "kind": "ban" })).0, 400);
+        let (_, list) = m.admin_list();
+        assert_eq!(list["accounts"][0]["kicks"].as_array().unwrap().len(), 4, "report_status records nothing");
     }
 
     #[test]

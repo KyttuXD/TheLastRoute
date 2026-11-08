@@ -32,6 +32,14 @@ const DISCOVERY_LIMIT = 512;
 const DISCOVERY_TOTAL_LIMIT = 30_000;
 // Endless rooms keep more discovered cells, but bounded. Matches DISCOVERY_ENDLESS_LIMIT in room_service.rs.
 const DISCOVERY_ENDLESS_LIMIT = 250_000;
+// Most floors one host claimDepth may move a room past its activeDepth (the client's lift goes one floor at a time;
+// 3 leaves room for lifts taken between two state posts). A room at depth 0 takes the host's first claim at any depth.
+// A larger jump, and any guest's claim, is ignored. Matches MAX_DEPTH_CLAIM_STEP in lr_server rooms/room_service.rs.
+export const MAX_DEPTH_CLAIM_STEP = 3;
+
+export function depthClaimAllowed(active, claim) {
+  return claim > active && (active === 0 || claim - active <= MAX_DEPTH_CLAIM_STEP);
+}
 
 function finite(value, fallback, minimum, maximum) {
   const number = Number(value);
@@ -395,8 +403,9 @@ export function createRoomService({
     const timestamp = now();
     current.lastSeen = timestamp;
     room.lastActiveAt = timestamp;
+    // Only the host advances the depth: a guest's claim would wipe the items, the host's world and discovery.
     const claimDepth = Math.round(finite(body.claimDepth, 0, 0, 9_999));
-    if (claimDepth > room.activeDepth) {
+    if (current.id === room.hostPlayerId && depthClaimAllowed(room.activeDepth, claimDepth)) {
       room.activeDepth = claimDepth;
       room.items = {};
       room.world = emptyWorld();

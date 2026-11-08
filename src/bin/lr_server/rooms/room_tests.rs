@@ -1,11 +1,12 @@
 //! Tests of the room rules: reserved reconnect slots, host leave, capacity, KICK/BAN, admin rooms, listing and sweep.
 //! The windows and limits are tunables of the service, so the tests set them and check behaviour, not the defaults.
 
-use super::admin_rooms::JoinContext;
+use super::admin_rooms::{JoinContext, ModeratedAccounts};
 use super::reserved_rooms::{ReservedRooms, ReservedRoomsOptions};
 use super::room_service::{
-    apply_item_claim_within, claim_discovery_cells, discovery_cap, RoomService, RoomServiceOptions,
+    apply_item_claim_within, claim_discovery_cells, depth_claim_allowed, discovery_cap, RoomService, RoomServiceOptions,
     DISCOVERY_ENDLESS_LIMIT, DISCOVERY_LIMIT, DISCOVERY_TOTAL_LIMIT, HOST_LEFT_REASON, ITEM_LIMIT, ITEM_TOTAL_LIMIT,
+    MAX_DEPTH_CLAIM_STEP,
 };
 use std::collections::HashSet;
 use crate::util::{manual_clock, ManualClock};
@@ -175,6 +176,74 @@ fn kick_removes_a_player_and_ban_also_blocks_the_return() {
     assert_eq!(s.join_room(&json!({ "room": "KICK1", "playerId": "p2", "name": "Cy" })).1["code"], "BANNED");
     assert_eq!(s.join_room(&json!({ "room": "KICK1", "playerId": "other", "name": "Cy" })).1["code"], "BANNED");
     assert_eq!(s.join_room(&json!({ "room": "KICK1", "playerId": "other", "name": "Di" })).0, 200);
+}
+
+#[test]
+fn a_kick_reports_the_accounts_the_server_verified_at_join_never_a_name_from_the_body() {
+    let mut c = service(10_000);
+    let s = &mut c.service;
+    let joined = |s: &mut RoomService, id: &str, name: &str, account: &str| {
+        let (status, payload) = s.join_with(&json!({ "room": "KICK2", "playerId": id, "name": name }), &JoinContext::plain().with_account(account));
+        assert_eq!(status, 200, "{payload}");
+        payload
+    };
+    let host = joined(s, "host", "Ann", "HOSTER");
+    joined(s, "p1", "Bob", "REALBOB");
+    joined(s, "p2", "Cy", "");
+    let none = |_: &str| false;
+    let kick = |s: &mut RoomService, target: &str| {
+        s.moderate_player_accounts(&with(auth("KICK2", "host", &host), json!({ "action": "kick", "targetId": target, "username": "VICTIM" })), &none)
+    };
+    let (reply, who) = kick(s, "p1");
+    assert_eq!(reply.0, 200);
+    assert_eq!(who, ModeratedAccounts { target: "REALBOB".into(), host: "HOSTER".into() });
+    // a guest has no account to record, whatever the body says
+    let (reply, who) = kick(s, "p2");
+    assert_eq!((reply.0, who.target.as_str()), (200, ""));
+    // a refused call reports nobody
+    let (reply, who) = kick(s, "nobody");
+    assert_eq!((reply.0, who), (404, ModeratedAccounts::default()));
+    // an owner is protected by the account behind the player, not only by the name shown
+    joined(s, "p3", "Plain", "OWNERACC");
+    let (reply, _) = s.moderate_player_accounts(&with(auth("KICK2", "host", &host), json!({ "action": "ban", "targetId": "p3" })), &|n| n == "OWNERACC");
+    assert_eq!(reply.1["code"], "PROTECTED_PLAYER");
+}
+
+#[test]
+fn only_the_host_advances_the_depth_and_a_jump_past_the_step_is_ignored() {
+    let mut c = service(10_000);
+    let s = &mut c.service;
+    let host = join(s, "DEPTH", "host", "Ann");
+    let guest = join(s, "DEPTH", "guest", "Bob");
+    let host_auth = auth("DEPTH", "host", &host);
+    let guest_auth = auth("DEPTH", "guest", &guest);
+    s.update_room(&with(
+        host_auth.clone(),
+        json!({ "claimDepth": 1, "world": { "depth": 1, "hunters": [{ "id": "h1", "x": 1, "y": 1 }] }, "itemClaims": [battery_claim(0, 1)] }),
+    ));
+    let epoch = s.rooms["DEPTH"].discovered_epoch;
+    // A guest's claim (old clients still send one) changes nothing and is not an error.
+    let (status, seen) = s.update_room(&with(guest_auth.clone(), json!({ "claimDepth": 9_999 })));
+    assert_eq!(status, 200, "{seen}");
+    assert_eq!(seen["activeDepth"], 1);
+    assert_eq!(seen["world"]["hunters"][0]["id"], "h1");
+    assert_eq!(seen["items"]["battery:b0"]["collected"], true);
+    assert_eq!(s.rooms["DEPTH"].discovered_epoch, epoch);
+    assert_eq!(s.update_room(&with(guest_auth, json!({ "claimDepth": 2 }))).1["activeDepth"], 1);
+    // The host's own over-large jump is ignored too.
+    let (status, jumped) = s.update_room(&with(host_auth.clone(), json!({ "claimDepth": 1 + MAX_DEPTH_CLAIM_STEP + 1 })));
+    assert_eq!((status, jumped["activeDepth"].clone()), (200, json!(1)));
+    assert_eq!(jumped["world"]["hunters"][0]["id"], "h1");
+    // The next floor works, and the host's world for it is kept afterwards.
+    let next = s.update_room(&with(host_auth, json!({ "claimDepth": 2, "world": { "depth": 2, "hunters": [{ "id": "h2", "x": 1, "y": 1 }] } }))).1;
+    assert_eq!(next["activeDepth"], 2);
+    assert_eq!(next["world"]["hunters"][0]["id"], "h2");
+    assert_eq!(next["items"], json!({}));
+    // The rule itself: deeper only, bounded once the room has a depth, free for its first (starting) depth.
+    assert!(depth_claim_allowed(0, 40));
+    assert!(depth_claim_allowed(5, 5 + MAX_DEPTH_CLAIM_STEP));
+    assert!(!depth_claim_allowed(5, 5 + MAX_DEPTH_CLAIM_STEP + 1));
+    assert!(!depth_claim_allowed(5, 5) && !depth_claim_allowed(5, 4));
 }
 
 #[test]

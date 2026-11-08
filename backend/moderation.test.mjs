@@ -159,6 +159,22 @@ test("owner-flagged accounts cannot join or host PUBLIC or upload skins; private
   } finally { await app.close(); }
 });
 
+test("a guest-hosted ENet room's report records nothing, however many fresh codes it registers", async () => {
+  const app = await fixture();
+  try {
+    const owner = await signUp(app.url, "KYTTU", { adminProof: "server setup proof" });
+    await signUp(app.url, "VICTIM");
+    for (const room of [await host(app.url), await host(app.url)]) {
+      const result = await kick(app.url, room, { username: "VICTIM" });
+      assert.deepEqual([result.status, result.body.recorded, result.body.flagged], [200, false, false]);
+      assert.equal(result.body.status.flagged, false);
+    }
+    const list = await post(app.url, "/api/admin/flags", { sessionToken: owner });
+    assert.ok(list.body.accounts.every((account) => account.username !== "VICTIM"), "a guest host's body username is never recorded");
+    assert.deepEqual(list.body.reviews, []);
+  } finally { await app.close(); }
+});
+
 test("kicks never put a device or IP on a public-join cooldown", async () => {
   const app = await fixture();
   try {
@@ -237,7 +253,7 @@ test("admin endpoints require a full owner and every action is logged", async ()
     assert.ok(result.body.record.flags.every((flag) => flag.by === "KYTTU"));
     assert.equal(result.body.record.flags[0].detail, "manual");
     assert.equal((await set("explode")).status, 400);
-    const room = await host(app.url);
+    const room = await host(app.url, await signUp(app.url, "HOST_A"));
     await kick(app.url, room, { username: "TARGET" });
     result = await set("dismiss", { note: "lag" });
     assert.equal(result.body.record.reviewOpen, 0, "an owner action closes the open reviews");

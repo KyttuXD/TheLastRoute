@@ -14,6 +14,9 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 export const KICK_WINDOW_MS = 7 * DAY_MS;
 export const KICK_FLAG_THRESHOLD = 2;
+// The host of a kick whose reporter has no identity the caller cannot reset (a guest room host can mint fresh codes):
+// logged and reviewed with host "guest", never counted toward KICK_FLAG_THRESHOLD's "different hosts".
+export const GUEST_HOST = "guest";
 const AUTOMATIC_COOLDOWNS = false;
 export const MAX_EXTEND_HOURS = 24 * 90;
 export const MAX_PEER_ENTRIES = 16;
@@ -282,9 +285,9 @@ export function createModeration({
     const username = usernameOf(body.username);
     if (USERNAME_PATTERN.test(username) && accountExists(username)) {
       const entry = record(username, true);
-      entry.kicks.push({ at: timestamp, room, host: hashOf(`host:${host || room}`).slice(0, 16), reason, strikes: Math.max(0, Math.min(99, Math.trunc(Number(body.strikes) || 0))) });
+      entry.kicks.push({ at: timestamp, room, host: host === GUEST_HOST ? GUEST_HOST : hashOf(`host:${host || room}`).slice(0, 16), reason, strikes: Math.max(0, Math.min(99, Math.trunc(Number(body.strikes) || 0))) });
       entry.kicks = entry.kicks.slice(-MAX_LOG_ENTRIES);
-      const recent = new Set(entry.kicks.filter((kick) => timestamp - kick.at < KICK_WINDOW_MS)
+      const recent = new Set(entry.kicks.filter((kick) => timestamp - kick.at < KICK_WINDOW_MS && kick.host !== GUEST_HOST)
         .map((kick) => kick.host || `${kick.room}:${kick.at}`)).size;
       // every kick is reviewable; kicks by 2+ different hosts in 7 days are marked as the stronger signal
       addReview(entry, recent >= KICK_FLAG_THRESHOLD ? "kicks" : "kick",
@@ -292,6 +295,12 @@ export function createModeration({
     }
     persist();
     return [200, { ok: true, flagged, status: status({ username, deviceId: body.deviceId }) }];
+  }
+
+  // The answer to a kick report that records nothing (an ENet room whose host is not signed in).
+  function reportStatus(body = {}) {
+    if (String(body.kind || "kick") !== "kick") return [400, { ok: false, code: "INVALID_KIND", error: "kind must be kick" }];
+    return [200, { ok: true, flagged: false, recorded: false, status: status({ username: usernameOf(body.username), deviceId: body.deviceId }) }];
   }
 
   function peers(body = {}) {
@@ -407,6 +416,6 @@ export function createModeration({
     persist();
   }
 
-  return { status, integrity, reportKick, peers, checkPublicJoin, checkHostPublic, checkSkinUpload,
+  return { status, integrity, reportKick, reportStatus, peers, checkPublicJoin, checkHostPublic, checkSkinUpload,
     adminList, adminSet, addBuild, removeBuild, renameAccount, prune, hashOf };
 }

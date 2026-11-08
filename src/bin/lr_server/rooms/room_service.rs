@@ -27,6 +27,14 @@ pub const DISCOVERY_TOTAL_LIMIT: usize = 30_000;
 /// Discovery cap for endless (Infinite) rooms: far above a standard map, but bounded so memory cannot grow forever.
 /// Matches DISCOVERY_ENDLESS_LIMIT in backend/room_service.mjs.
 pub const DISCOVERY_ENDLESS_LIMIT: usize = 250_000;
+/// Most floors one host `claimDepth` may move the room past its `activeDepth`. The client only ever goes one floor
+/// down at a time (the service lift is `depth += 1`; stairs, ladders, route lifts and the sewer stay inside one depth's
+/// level space), so a real host claims `activeDepth + 1`. Three leaves room for a host that took two more lifts
+/// between two state posts. A room at depth 0 (new, or reset by a route start or abandon) takes the host's first claim
+/// at any depth up to the 9 999 cap, because that is where the host's run starts (a resumed run can begin deep).
+/// A larger jump is ignored, not an error, so the room keeps its items, world and discovery.
+/// Matches MAX_DEPTH_CLAIM_STEP in backend/room_service.mjs.
+pub const MAX_DEPTH_CLAIM_STEP: i64 = 3;
 
 const PERSONAS: [&str; 27] = [
     "none", "aki", "briselle", "ceryth", "dovelle", "elise", "ferryn", "glyra", "haelith", "ilyra", "javelle", "kathy",
@@ -206,6 +214,12 @@ impl Dialog {
     }
 }
 
+/// Whether a host's `claimDepth` moves a room at `active` depth: deeper, and at most `MAX_DEPTH_CLAIM_STEP` floors
+/// deeper unless the room has no depth yet (0).
+pub(crate) fn depth_claim_allowed(active: i64, claim: i64) -> bool {
+    claim > active && (active == 0 || claim - active <= MAX_DEPTH_CLAIM_STEP)
+}
+
 fn empty_world() -> Value {
     json!({ "depth": 0, "endlessExpansion": 0, "hostId": "", "at": 0, "hunters": [], "mannequins": [], "rooms": [] })
 }
@@ -215,6 +229,9 @@ pub struct Player {
     pub id: String,
     pub session_token: String,
     pub name: String,
+    /// The account the player signed in with, as the server verified it from the join's account session (canonical
+    /// UPPER CASE), or empty for a guest. Never read from the body. A room KICK/BAN is recorded only against this.
+    pub account: String,
     pub spawn_index: i64,
     pub depth: f64,
     pub x: f64,
@@ -872,6 +889,9 @@ impl RoomService {
                 let mut player = room.players[index].clone();
                 player.name = name;
                 player.last_seen = timestamp;
+                if !ctx.account.is_empty() {
+                    player.account = ctx.account.clone();
+                }
                 player
             }
             None => {
@@ -882,6 +902,7 @@ impl RoomService {
                     id: id.clone(),
                     session_token: hex(&random_bytes(24)),
                     name,
+                    account: ctx.account.clone(),
                     spawn_index,
                     depth: 0.0,
                     x: 0.0,
@@ -980,8 +1001,10 @@ impl RoomService {
         room.players[index].last_seen = timestamp;
         room.last_active_at = timestamp;
         let current_id = room.players[index].id.clone();
+        // Only the host advances the depth (a guest's claim is ignored: it would wipe the room's items, the host's
+        // hunter snapshot and discovery), and by at most MAX_DEPTH_CLAIM_STEP floors once the room has a depth.
         let claim_depth = js_math_round(finite(field(body, "claimDepth"), 0.0, 0.0, 9_999.0)) as i64;
-        if claim_depth > room.active_depth {
+        if current_id == room.host_player_id && depth_claim_allowed(room.active_depth, claim_depth) {
             room.active_depth = claim_depth;
             room.items = Map::new();
             room.world = empty_world();

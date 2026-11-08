@@ -98,8 +98,11 @@ game UI. This exception applies only to the hardcoded primary origin (plus
 loopback development); arbitrary public HTTP origins remain blocked. Terminate
 TLS in a trusted reverse proxy and update the hardcoded client origin when
 possible.
-Set `TRUST_PROXY=true` only when that trusted proxy overwrites
-`X-Forwarded-For`; otherwise all proxied players share one rate-limit identity.
+Set `TRUST_PROXY=true` only for a trusted proxy on another machine that appends
+to (or overwrites) `X-Forwarded-For`; otherwise all proxied players share one
+rate-limit identity. The client address is the entry the proxy appended (the
+rightmost, or `LASTROUTE_TRUSTED_PROXY_HOPS` from the right), never the
+client's own leftmost entries.
 Do not enable it on a service exposed directly to untrusted clients. The Node
 service enforces its own limits, and proxy/firewall limits are useful defense
 in depth.
@@ -147,7 +150,8 @@ Point that DNS name at the panel's public address and expose TCP 8105 plus UDP
 | `LASTROUTE_GITHUB_BRANCH` | `main` | branch watched for backend source changes |
 | `LASTROUTE_SOURCE_POLL_SECONDS` | `30` (minimum `15`) | source-commit check interval |
 | `LASTROUTE_DEPLOYED_REVISION` | local `git rev-parse HEAD` | exact deployed SHA when the server directory has no `.git` folder |
-| `TRUST_PROXY` | `false` | trust the first `X-Forwarded-For` address |
+| `TRUST_PROXY` | `false` | treat every peer as a trusted proxy for `X-Forwarded-For` (a loopback peer always is); the client is read from the right end of the header |
+| `LASTROUTE_TRUSTED_PROXY_HOPS` | `1` (1 to 8) | trusted proxies in a row, each appending one `X-Forwarded-For` entry; the client is this many entries from the right |
 | `ENET_ROOM_TTL_SECONDS` | `60` | remove hosts that stop heartbeating |
 | `LASTROUTE_RATE_LIMIT_WINDOW_SECONDS` | `60` | rolling API/account throttle window |
 | `LASTROUTE_API_RATE_LIMIT` | `600` | general requests permitted per address/window |

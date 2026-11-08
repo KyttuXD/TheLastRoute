@@ -457,6 +457,9 @@ pub struct ServerOptions {
     pub updates: Value,
     pub updates_provider: Option<UpdatesProvider>,
     pub trust_proxy: bool,
+    /// Trusted proxies in front of the server (`LASTROUTE_TRUSTED_PROXY_HOPS`, 1 to 8, default 1): the client address
+    /// is this many entries from the right of `X-Forwarded-For` (see `requester_address`).
+    pub trusted_proxy_hops: usize,
     pub relay_address: String,
     pub relay_port: u16,
     pub public_route_store_path: Option<PathBuf>,
@@ -507,6 +510,7 @@ impl Default for ServerOptions {
             updates: json!({}),
             updates_provider: None,
             trust_proxy: false,
+            trusted_proxy_hops: DEFAULT_TRUSTED_PROXY_HOPS,
             relay_address: String::new(),
             relay_port: 0,
             public_route_store_path: None,
@@ -545,6 +549,7 @@ pub(crate) struct Config {
     pub updates: Value,
     pub updates_provider: Option<UpdatesProvider>,
     pub trust_proxy: bool,
+    pub trusted_proxy_hops: usize,
     pub relay_address: String,
     pub relay_port: u16,
     pub rate_limit_window_ms: i64,
@@ -692,6 +697,7 @@ impl LastRouteServer {
                 updates: opts.updates,
                 updates_provider: opts.updates_provider,
                 trust_proxy: opts.trust_proxy,
+                trusted_proxy_hops: opts.trusted_proxy_hops.clamp(1, MAX_TRUSTED_PROXY_HOPS),
                 relay_address: opts.relay_address,
                 relay_port: opts.relay_port,
                 rate_limit_window_ms: opts.rate_limit_window_ms,
@@ -1013,6 +1019,9 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
             .cloned()
             .unwrap_or_default(),
         trust_proxy: Regex::new(r"(?i)^(1|true|yes|on)$").unwrap().is_match(env.get("TRUST_PROXY").map(String::as_str).unwrap_or("")),
+        trusted_proxy_hops: number("LASTROUTE_TRUSTED_PROXY_HOPS", DEFAULT_TRUSTED_PROXY_HOPS as f64)
+            .trunc()
+            .clamp(1.0, MAX_TRUSTED_PROXY_HOPS as f64) as usize,
         relay_address: if relay_enabled { relay_address } else { String::new() },
         relay_port: if relay_enabled { relay_port } else { 0 },
         public_route_store_path: Some(

@@ -519,6 +519,114 @@ fn peers_and_report_require_the_rooms_host_token_and_admin_endpoints_require_a_f
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn a_room_kick_is_recorded_against_the_removed_players_verified_account_never_a_body_username() {
+    let root = temp_root("mod_room_kick");
+    let (server, _) = moderation_app(&root);
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": "server setup proof" }));
+    sign_up(&server, "VICTIM", json!({}));
+    let hoster = sign_up(&server, "HOSTER", json!({}));
+    let runner = sign_up(&server, "RUNNER", json!({}));
+    let join = |room: &str, id: &str, name: &str, account: &str| {
+        let mut body = json!({ "room": room, "playerId": id, "name": name });
+        if !account.is_empty() {
+            body["accountToken"] = json!(account);
+        }
+        let (status, joined) = post(&server, "/api/rooms/join", body);
+        assert_eq!(status, 200, "{joined}");
+        joined["sessionToken"].as_str().unwrap().to_string()
+    };
+    let kick = |room: &str, host_session: &str, target: &str| {
+        post(&server, "/api/rooms/moderate", json!({ "room": room, "playerId": "host", "sessionToken": host_session,
+            "action": "kick", "targetId": target, "username": "VICTIM", "reason": "speed" }))
+    };
+    // Fresh room codes from one host account: each kick names VICTIM in the body.
+    for room in ["MODRA", "MODRB"] {
+        let host_session = join(room, "host", "Ann", &hoster);
+        join(room, "p1", "Bob", &runner);
+        join(room, "p2", "Guesty", "");
+        assert_eq!(kick(room, &host_session, "p1").0, 200);
+        assert_eq!(kick(room, &host_session, "p2").0, 200, "a guest is removed, nothing is recorded");
+        // a guest who mints the room is still only a guest host, and cannot moderate as someone else
+        let (status, refused) = post(&server, "/api/rooms/moderate", json!({ "room": room, "playerId": "host", "sessionToken": "forged",
+            "action": "ban", "targetId": "p1", "username": "VICTIM" }));
+        assert_eq!((status, refused["code"].clone()), (403, json!("INVALID_SESSION")));
+    }
+    let (_, list) = post(&server, "/api/admin/flags", json!({ "sessionToken": owner }));
+    let accounts = list["accounts"].as_array().unwrap();
+    assert!(accounts.iter().all(|e| e["username"] != json!("VICTIM")), "the spoofed name is never flagged: {list}");
+    let entry = accounts.iter().find(|e| e["username"] == json!("RUNNER")).expect("the removed account is recorded").clone();
+    assert_eq!(entry["kicks"].as_array().unwrap().len(), 2);
+    // one host account behind two room codes is one host, so it never reaches the "different hosts" signal
+    assert_eq!(entry["reviews"].as_array().unwrap().iter().map(|r| r["reason"].clone()).collect::<Vec<_>>(), vec![json!("kick"), json!("kick")]);
+    // A guest host (no accountToken) behind two fresh codes: the kicks are logged as `guest` and never count as
+    // two different hosts, so minting codes cannot fake the stronger signal.
+    let walker = sign_up(&server, "WALKER", json!({}));
+    for room in ["MODRC", "MODRD"] {
+        let host_session = join(room, "host", "Ann", "");
+        join(room, "p1", "Wal", &walker);
+        assert_eq!(kick(room, &host_session, "p1").0, 200);
+    }
+    let (_, list) = post(&server, "/api/admin/flags", json!({ "sessionToken": owner }));
+    let entry = list["accounts"].as_array().unwrap().iter().find(|e| e["username"] == json!("WALKER")).expect("the removed account is recorded").clone();
+    assert_eq!(entry["kicks"].as_array().unwrap().iter().map(|k| k["host"].clone()).collect::<Vec<_>>(), vec![json!("guest"), json!("guest")]);
+    assert_eq!(entry["reviews"].as_array().unwrap().iter().map(|r| r["reason"].clone()).collect::<Vec<_>>(), vec![json!("kick"), json!("kick")]);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_guest_hosted_enet_rooms_report_records_nothing_however_many_fresh_codes_it_registers() {
+    let root = temp_root("mod_enet_guest");
+    let (server, _) = moderation_app(&root);
+    let owner = sign_up(&server, "KYTTU", json!({ "adminProof": "server setup proof" }));
+    sign_up(&server, "VICTIM", json!({}));
+    for code in ["RMAAD", "RMAAE"] {
+        let room = host_room(&server, code, "");
+        let result = kick(&server, &room, json!({ "username": "VICTIM" }));
+        assert_eq!((result["ok"].clone(), result["recorded"].clone(), result["flagged"].clone()), (json!(true), json!(false), json!(false)));
+        assert_eq!(result["status"]["flagged"], json!(false));
+    }
+    let (_, list) = post(&server, "/api/admin/flags", json!({ "sessionToken": owner }));
+    assert!(list["accounts"].as_array().unwrap().iter().all(|e| e["username"] != json!("VICTIM")), "{list}");
+    assert_eq!(list["reviews"], json!([]));
+    // a signed-in host's report is still recorded, keyed to its account
+    let room = host_room(&server, "RMAAF", &sign_up(&server, "HOST_A", json!({})));
+    assert_ne!(kick(&server, &room, json!({ "username": "VICTIM" }))["recorded"], json!(false));
+    let (_, list) = post(&server, "/api/admin/flags", json!({ "sessionToken": owner }));
+    assert_eq!(list["reviews"], json!(["VICTIM"]));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_client_address_is_the_entry_the_trusted_proxy_appended_and_a_direct_client_cannot_pick_one() {
+    let at = |remote: &str, forwarded: &str, trust: bool, hops: usize| {
+        let mut request = Request::new("GET", "/api/health").with_header("x-forwarded-for", forwarded);
+        request.remote = remote.into();
+        requester_address(&request, trust, hops)
+    };
+    // behind Caddy on this machine (loopback peer): the rightmost entry, which Caddy appended
+    assert_eq!(at("127.0.0.1", "spoofed, 203.0.113.9", false, 1), "203.0.113.9");
+    assert_eq!(at("::1", "1.2.3.4, 203.0.113.9", false, 1), "203.0.113.9");
+    assert_eq!(at("::ffff:127.0.0.1", "203.0.113.9", false, 1), "203.0.113.9");
+    // TRUST_PROXY for a proxy on another machine, and two proxies in a row
+    assert_eq!(at("10.0.0.5", "1.2.3.4, 203.0.113.9", true, 1), "203.0.113.9");
+    assert_eq!(at("127.0.0.1", "1.2.3.4, 203.0.113.9, 10.0.0.2", false, 2), "203.0.113.9");
+    assert_eq!(at("127.0.0.1", "203.0.113.9", false, 3), "203.0.113.9", "a short header was written by proxies only");
+    // a malformed or empty header falls back to the peer
+    assert_eq!(at("127.0.0.1", "203.0.113.9, not-an-ip", false, 1), "127.0.0.1");
+    assert_eq!(at("127.0.0.1", "203.0.113.9, ", false, 1), "127.0.0.1");
+    assert_eq!(at("127.0.0.1", "", false, 1), "127.0.0.1");
+    // a direct remote client never chooses its own address
+    assert_eq!(at("198.51.100.4", "203.0.113.9", false, 1), "198.51.100.4");
+    assert_eq!(at("198.51.100.4", "1.2.3.4, 203.0.113.9", false, 2), "198.51.100.4");
+    // the setting comes from the environment, bounded
+    let hops = |value: &str| {
+        let env: HashMap<String, String> = [("LASTROUTE_TRUSTED_PROXY_HOPS".to_string(), value.to_string())].into_iter().collect();
+        options_from_environment(&env, Path::new(".")).unwrap().options.trusted_proxy_hops
+    };
+    assert_eq!((hops("2"), hops("0"), hops("x"), hops("99")), (2, DEFAULT_TRUSTED_PROXY_HOPS, DEFAULT_TRUSTED_PROXY_HOPS, MAX_TRUSTED_PROXY_HOPS));
+}
+
 // --- enet_relay.test.mjs: "server: an explicit quit invalidates the code at once; a killed relay host's code is gone within ~1 s"
 #[test]
 fn server_an_explicit_quit_invalidates_the_code_at_once_a_killed_relay_hosts_code_is_gone_within_about_1_s() {

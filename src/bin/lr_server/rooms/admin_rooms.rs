@@ -32,15 +32,24 @@ pub struct JoinContext<'a> {
     pub saved: Option<Value>,
     /// True for a code used by another kind of room (reserved or ENet), which an admin may not take.
     pub taken_by_other: Option<&'a dyn Fn(&str) -> bool>,
+    /// The caller's account as the route verified it from the account session (canonical UPPER CASE), or empty for a
+    /// guest. Stored on the room player so a KICK/BAN is recorded against the real account, never a body name.
+    pub account: String,
 }
 
 impl<'a> JoinContext<'a> {
     pub fn plain() -> JoinContext<'static> {
-        JoinContext { admin: false, saved: None, taken_by_other: None }
+        JoinContext { admin: false, saved: None, taken_by_other: None, account: String::new() }
     }
 
     pub fn admin(saved: Option<Value>, taken_by_other: Option<&'a dyn Fn(&str) -> bool>) -> JoinContext<'a> {
-        JoinContext { admin: true, saved, taken_by_other }
+        JoinContext { admin: true, saved, taken_by_other, account: String::new() }
+    }
+
+    /// The same context for a caller whose account session the route verified.
+    pub fn with_account(mut self, account: &str) -> Self {
+        self.account = account.to_string();
+        self
     }
 
     pub fn taken(&self, code: &str) -> bool {
@@ -157,33 +166,48 @@ impl RoomService {
     /// Host KICK / BAN: `{ room, playerId, sessionToken, action: "kick" | "ban", targetId | targetName }`.
     /// `protected` says an account name the host may not remove (owners, from `ops/moderation.rs`).
     pub fn moderate_player(&mut self, body: &Value, protected: &dyn Fn(&str) -> bool) -> Reply {
-        let (code, _) = match self.authenticate(body, true) {
+        self.moderate_player_accounts(body, protected).0
+    }
+
+    /// `moderate_player`, plus who the server knows the two sides to be: the removed player's verified account and
+    /// the host's (each empty for a guest). Only the caller that `authenticate` proves to be the room's host gets
+    /// here; the route records the KICK/BAN against these and never against a name in the body.
+    pub fn moderate_player_accounts(&mut self, body: &Value, protected: &dyn Fn(&str) -> bool) -> (Reply, ModeratedAccounts) {
+        let none = ModeratedAccounts::default();
+        let (code, host_index) = match self.authenticate(body, true) {
             Ok(found) => found,
-            Err(reply) => return reply,
+            Err(reply) => return (reply, none),
         };
+        self.moderate_in(&code, host_index, body, protected)
+    }
+
+    fn moderate_in(&mut self, code: &str, host_index: usize, body: &Value, protected: &dyn Fn(&str) -> bool) -> (Reply, ModeratedAccounts) {
+        let none = ModeratedAccounts::default();
         let action = str_or_empty(body.get("action")).trim().to_lowercase();
         if action != "kick" && action != "ban" {
-            return error(400, "INVALID_ACTION", "Action must be kick or ban");
+            return (error(400, "INVALID_ACTION", "Action must be kick or ban"), none);
         }
         let target_id = clean_player_id(field(body, "targetId"));
         let target_name = clean_name(field(body, "targetName"));
         let now = self.now();
-        let room = self.rooms.get_mut(&code).expect("room exists");
+        let room = self.rooms.get_mut(code).expect("room exists");
+        let host_account = room.players[host_index].account.clone();
         let found = room
             .players
             .iter()
-            .map(|p| (&p.id, &p.name))
-            .chain(room.held.iter().map(|h| (&h.player.id, &h.player.name)))
-            .find(|(id, name)| (!target_id.is_empty() && **id == target_id) || (target_id.is_empty() && !target_name.is_empty() && **name == target_name))
-            .map(|(id, name)| (id.clone(), name.clone()));
-        let Some((id, name)) = found else {
-            return error(404, "PLAYER_NOT_IN_ROOM", "That player is not in this room");
+            .map(|p| (&p.id, &p.name, &p.account))
+            .chain(room.held.iter().map(|h| (&h.player.id, &h.player.name, &h.player.account)))
+            .find(|(id, name, _)| (!target_id.is_empty() && **id == target_id) || (target_id.is_empty() && !target_name.is_empty() && **name == target_name))
+            .map(|(id, name, account)| (id.clone(), name.clone(), account.clone()));
+        let Some((id, name, target_account)) = found else {
+            return (error(404, "PLAYER_NOT_IN_ROOM", "That player is not in this room"), none);
         };
         if id == room.host_player_id {
-            return error(400, "CANNOT_REMOVE_HOST", "The host cannot remove themselves");
+            return (error(400, "CANNOT_REMOVE_HOST", "The host cannot remove themselves"), none);
         }
-        if protected(&name) {
-            return error(403, "PROTECTED_PLAYER", "That player cannot be removed");
+        // An owner is protected by the account they signed in with as well as by the name they show.
+        if protected(&name) || (!target_account.is_empty() && protected(&target_account)) {
+            return (error(403, "PROTECTED_PLAYER", "That player cannot be removed"), none);
         }
         room.players.retain(|p| p.id != id);
         room.held.retain(|h| h.player.id != id);
@@ -194,7 +218,7 @@ impl RoomService {
         room.removed.insert(id.clone(), why.to_string());
         if action == "ban" {
             if room.bans.len() >= MAX_BANS_PER_ROOM * 2 {
-                return error(409, "BAN_LIST_FULL", "This room cannot ban any more players");
+                return (error(409, "BAN_LIST_FULL", "This room cannot ban any more players"), none);
             }
             room.bans.insert(id);
             room.bans.insert(format!("name:{name}"));
@@ -206,6 +230,15 @@ impl RoomService {
         out.insert("action".into(), Value::String(action));
         out.insert("target".into(), Value::String(name));
         out.insert("roomSize".into(), json!(room.players.len()));
-        (200, Value::Object(out))
+        ((200, Value::Object(out)), ModeratedAccounts { target: target_account, host: host_account })
     }
+}
+
+/// The verified accounts behind a room KICK/BAN (`RoomService::moderate_player_accounts`); empty for a guest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModeratedAccounts {
+    /// The removed player's account.
+    pub target: String,
+    /// The host's account.
+    pub host: String,
 }

@@ -360,17 +360,40 @@ pub fn clean_address(value: &str) -> String {
     address.to_string()
 }
 
-/// `requesterAddress(request, trustProxy)`: loopback peers (a same-machine proxy) are trusted for X-Forwarded-For.
-pub fn requester_address(request: &Request, trust_proxy: bool) -> String {
+/// Default of `LASTROUTE_TRUSTED_PROXY_HOPS`: one trusted proxy (Caddy on the same machine) in front of the server.
+pub const DEFAULT_TRUSTED_PROXY_HOPS: usize = 1;
+/// Most trusted proxy hops the setting accepts.
+pub const MAX_TRUSTED_PROXY_HOPS: usize = 8;
+
+/// `requesterAddress(request, trustProxy)`: the address rate limits, logs and moderation see.
+///
+/// A peer is a trusted proxy when `TRUST_PROXY` is on or it connects from loopback (a proxy on this machine; a remote
+/// caller cannot connect from there). Only then is `X-Forwarded-For` read, and only its trusted end: a proxy such as
+/// Caddy APPENDS the address it saw to whatever header the client sent, so the leftmost entries are the client's own
+/// choice and the rightmost one is what the nearest proxy wrote. With `hops` trusted proxies in a row
+/// (`LASTROUTE_TRUSTED_PROXY_HOPS`, default 1) the client is the `hops`-th entry from the right; a shorter header
+/// means every entry was written by a proxy, so its leftmost entry is used. An empty header, or a chosen entry that
+/// is not a plain IP address, falls back to the peer address. Any other peer always gets its own address.
+pub fn requester_address(request: &Request, trust_proxy: bool, hops: usize) -> String {
     let direct = clean_address(&request.remote);
     if trust_proxy || direct == "127.0.0.1" {
-        let forwarded = request.header("x-forwarded-for");
-        let first = forwarded.split(',').next().unwrap_or("").trim().to_string();
-        if !first.is_empty() {
-            return clean_address(&first);
+        if let Some(client) = forwarded_client(&request.header("x-forwarded-for"), hops) {
+            return client;
         }
     }
     direct
+}
+
+/// The client address in an `X-Forwarded-For` value behind `hops` trusted proxies (see `requester_address`).
+pub fn forwarded_client(header: &str, hops: usize) -> Option<String> {
+    let entries: Vec<&str> = header.split(',').map(str::trim).collect();
+    if header.trim().is_empty() {
+        return None;
+    }
+    let hops = hops.clamp(1, MAX_TRUSTED_PROXY_HOPS);
+    let chosen = entries[entries.len().saturating_sub(hops)];
+    let address = clean_address(chosen);
+    address.parse::<std::net::IpAddr>().ok().map(|_| address)
 }
 
 /// `cleanGame(value)`.
