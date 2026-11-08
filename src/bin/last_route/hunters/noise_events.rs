@@ -26,10 +26,12 @@ pub enum NoiseKind {
     SluiceOpen,
     /// A relay recovered by the runner or a bot, where the one who recovered it stands (`Game::claim_relay`).
     RelayRecover,
+    /// A hunter crawling through the ducts (hunters/vent_nav.rs, verrine.rs).
+    VentThump,
 }
 
 impl NoiseKind {
-    pub const ALL: [NoiseKind; 7] = [
+    pub const ALL: [NoiseKind; 8] = [
         NoiseKind::PlungeSplash,
         NoiseKind::HardLanding,
         NoiseKind::WadingSplash,
@@ -37,6 +39,7 @@ impl NoiseKind {
         NoiseKind::ValveTurn,
         NoiseKind::SluiceOpen,
         NoiseKind::RelayRecover,
+        NoiseKind::VentThump,
     ];
 
     /// The key in the data file.
@@ -49,6 +52,7 @@ impl NoiseKind {
             NoiseKind::ValveTurn => "valve_turn",
             NoiseKind::SluiceOpen => "sluice_open",
             NoiseKind::RelayRecover => "relay_recover",
+            NoiseKind::VentThump => "vent_thump",
         }
     }
 
@@ -116,7 +120,7 @@ pub struct Rules {
     pub bot_look_seconds: f32,
     pub hunter_wade_min_depth: f32,
     pub hunter_wade_splash_every: f32,
-    kinds: [KindRule; 7],
+    kinds: [KindRule; 8],
 }
 
 fn positive(v: &Value, key: &str) -> Result<f32, String> {
@@ -156,7 +160,7 @@ impl Rules {
             bot_look_seconds: positive(&v, "bot_look_seconds")?,
             hunter_wade_min_depth: positive(&v, "hunter_wade_min_depth")?,
             hunter_wade_splash_every: positive(&v, "hunter_wade_splash_every")?,
-            kinds: [kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5], kinds[6]],
+            kinds: [kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5], kinds[6], kinds[7]],
         })
     }
 

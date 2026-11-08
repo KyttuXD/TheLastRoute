@@ -21,7 +21,9 @@ const label = (args && args.label) || 'pass'
 const extra = (args && args.extraRules) || ''
 // args.skipNightWatch: leave src/bin/night_watch out of the build and test stages (KT: ignore Night Watch during the stairs pass)
 const NW = !(args && args.skipNightWatch)
-const TARGET = 'target/' + String(label).replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+// One build folder shared by every pass (not the main target/): it stays incremental from pass to pass. A fresh folder per
+// pass rebuilt everything from scratch (4-5 minutes per command) and left a full build behind each time.
+const TARGET = 'target/pass'
 
 const RULES = `Repo: ${REPO} (git repo; commit nothing, stage nothing, no git add/commit/checkout/stash/reset/push, no deploys, no SSH, no VPS changes).
 Other agents edit the tree at the same time. Edit only the files named in your task. For a shared file, make the smallest additive edit and re-read git diff for that file just before you edit it. Never revert changes you did not make.

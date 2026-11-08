@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>KYTTU The Last Route</string>
+    <string>KYTTU - The Last Route</string>
     <key>CFBundleDisplayName</key>
-    <string>KYTTU The Last Route</string>
+    <string>KYTTU - The Last Route</string>
     <key>CFBundleIdentifier</key>
     <string>lab.kyttu.lastroute.webapp</string>
     <key>CFBundleExecutable</key>

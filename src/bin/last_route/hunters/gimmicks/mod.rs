@@ -254,6 +254,7 @@ impl Gimmick {
             Gimmick::Solyth(g) => g.before(b, dt, c, t, ev),
             Gimmick::Thessine(g) => g.before(b, dt, ev),
             Gimmick::Umbriel(g) => g.before(b, dt),
+            Gimmick::Verrine(g) => g.before(b, dt, c, t),
             Gimmick::WolfSpider(g) => g.before(b, dt, c, t),
             Gimmick::Wynelle(g) => g.before(b, dt, c, t, ev),
             Gimmick::Xivvy(g) => g.before(b, dt, c, t),
@@ -410,7 +411,7 @@ impl Gimmick {
             Gimmick::Loxelle(g) => g.holds_position(),
             Gimmick::Mavrine(g) => g.holds_position(),
             Gimmick::Opalie(g) => g.on_station,
-            Gimmick::Verrine(g) => !g.active_in_vent,
+            Gimmick::Verrine(g) => g.holds_position(),
             Gimmick::Zellia(g) => g.holds_position(),
             Gimmick::VoidGray(g) => g.holds_position(),
             Gimmick::VoidGreen(g) => g.holds_position(),
@@ -439,7 +440,7 @@ impl Gimmick {
             // the temperature item's cold source holds Solyth off (specialty.rs)
             Gimmick::Solyth(g) => g.deterred(),
             Gimmick::Opalie(g) => g.on_station,
-            Gimmick::Verrine(g) => !g.active_in_vent,
+            Gimmick::Verrine(g) => g.immune_to_capture(),
             Gimmick::Zellia(g) => g.trading(),
             Gimmick::VoidGray(g) => g.immune_to_capture(),
             Gimmick::VoidGreen(g) => g.immune_to_capture(),
@@ -464,7 +465,7 @@ impl Gimmick {
             Gimmick::VoidBlue(g) => g.hidden_from_view(),
             Gimmick::VoidGray(g) => g.hidden_from_view(),
             Gimmick::VoidGreen(g) => g.hidden_from_view(),
-            Gimmick::Verrine(g) => !g.active_in_vent,
+            Gimmick::Verrine(g) => g.hidden_from_view(),
             _ => false,
         }
     }
@@ -515,7 +516,7 @@ pub fn describe(id: &str) -> &'static str {
         "wynelle" => "Cold calls her. Stay chilled too long and she appears beside you; switch the temperature item (7) to heat or reach the safe zone before you freeze.",
         "xivvy" => "Locks on at arm's length without needing to see you, and only gets faster the longer a chase runs.",
         "ysolde" => "Steals batteries off the floor and keeps her distance from you.",
-        "zellia" => "A merchant in the middle of the floor. Coins buy warmth, cold, light or pesticide, but every deal carries a price.",
+        "zellia" => "A merchant in the middle of the floor. Coins buy cool, warm, lamp repair or pesticide, but every deal carries a price.",
         "void_black" => "This stalker moves 50% faster while you are not watching her. Facing her within 11 cells and with a clear line of sight stops her completely. Check behind you regularly, then use the pause to create distance.",
         "void_blue" => "This anomaly is nearly invisible and hidden on radar. Hitting her with the flashlight beam fully reveals her for 3.5 seconds and pushes her about six cells away. Flash likely approach routes frequently.",
         "void_brown" => "Every 18 seconds, this entity jams up to two hiding spots within nine cells of you. A jam lasts 20 seconds and never targets the spot you currently occupy. Change rooms if nearby hiding spots are unavailable.",

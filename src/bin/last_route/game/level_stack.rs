@@ -28,8 +28,14 @@ pub struct Ground {
 
 /// Highest step a body climbs between surfaces (m): `ground_y` takes the highest surface at most this far above the feet.
 pub const STEP_UP: f32 = 0.55;
-/// Height of the body the head test uses (m).
-const BODY_HEIGHT: f32 = 1.8;
+/// Height of the body the head test uses (m): the real capsule, the same constant the body uses.
+const BODY_HEIGHT: f32 = crate::config::PLAYER_HEIGHT;
+
+/// The height the head test uses (m).
+#[cfg(test)]
+pub fn body_height() -> f32 {
+    BODY_HEIGHT
+}
 
 /// One neighbour level kept built beside the active one: it shares the window centre and is drawn at
 /// `dy = (level - active) * STOREY`.

@@ -359,6 +359,9 @@ pub struct PipeNetwork {
     runs: BTreeMap<String, Run>,
     /// Axe strikes so far on each pipe that has not burst yet (`BRK:x:y:z:n`).
     strikes: BTreeMap<String, u32>,
+    /// The outlet a chunk's redirect valve currently points at, keyed by flow prefix (`BRK:x:y:z:`); a chunk with no
+    /// entry uses outlet 0. New flows in the chunk start on it.
+    outlets: BTreeMap<String, usize>,
 }
 
 impl PipeNetwork {
@@ -368,7 +371,10 @@ impl PipeNetwork {
 
     /// A pipe's flow starts (burst by the Axe) at `id` from `now`; one already known is left as it is.
     pub fn start_flow(&mut self, id: &str, now: f32) {
-        self.runs.entry(id.to_string()).or_insert(Run { opened_at: now, shut_at: None, outlet: 0 });
+        let outlet = parse_burst_id(id)
+            .and_then(|(chunk, _)| self.outlets.get(&flow_prefix(chunk)).copied())
+            .unwrap_or(0);
+        self.runs.entry(id.to_string()).or_insert(Run { opened_at: now, shut_at: None, outlet });
     }
 
     /// One Axe strike on the unburst pipe `id`, which takes `need` strikes to burst. Returns true on the strike that
@@ -499,7 +505,8 @@ impl PipeNetwork {
                         }
                         Some(_) => {}
                         None => {
-                            self.runs.insert(id, Run { opened_at: now, shut_at: None, outlet: 0 });
+                            let outlet = self.outlets.get(&prefix).copied().unwrap_or(0);
+                            self.runs.insert(id, Run { opened_at: now, shut_at: None, outlet });
                         }
                     }
                 } else if let Some(run) = self.runs.get_mut(&id) {
@@ -510,6 +517,7 @@ impl PipeNetwork {
             }
             EffectKind::Redirect => {
                 let outlet = ev.turns as usize % r.flow.outlet_count;
+                self.outlets.insert(prefix.clone(), outlet);
                 for (id, run) in self.runs.iter_mut() {
                     if id.starts_with(&prefix) {
                         run.outlet = outlet;
@@ -768,6 +776,20 @@ mod tests {
         n.apply(&ev, t);
         assert_eq!(n.depth_at_step("BRK:2:-1:3:1", 0, 0, t, "standard"), 0.0);
         assert!(n.depth_at_step("BRK:2:-1:3:1", 0, 1, t, "standard") > 0.0);
+    }
+
+    #[test]
+    fn a_flow_started_after_a_redirect_uses_the_chunks_outlet() {
+        let mut n = PipeNetwork::new();
+        let ev = n.turn(q("redirect", true)).unwrap();
+        n.apply(&ev, 0.0);
+        let t = 30.0;
+        n.start_flow("BRK:2:-1:3:7", 0.0);
+        assert_eq!(n.depth_at_step("BRK:2:-1:3:7", 0, 0, t, "standard"), 0.0);
+        assert!(n.depth_at_step("BRK:2:-1:3:7", 0, 1, t, "standard") > 0.0);
+        // another chunk is not redirected
+        n.start_flow("BRK:9:9:9:1", 0.0);
+        assert!(n.depth_at_step("BRK:9:9:9:1", 0, 0, t, "standard") > 0.0);
     }
 
     #[test]

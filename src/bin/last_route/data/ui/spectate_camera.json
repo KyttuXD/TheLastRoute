@@ -1,0 +1,8 @@
+{
+  "schema": "lr.spectate_camera/1",
+  "distance": 3.2,
+  "height": 1.9,
+  "look_height": 1.2,
+  "follow_label": "FOLLOW CAMERA [F]",
+  "cycle_hint": "[Q] AND [E] SWITCH RUNNER"
+}

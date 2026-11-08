@@ -371,6 +371,16 @@ pub fn draw_watching(a: &Assets, target: Option<&str>) {
     label_r(a, F::Body, &labels.hint, v.x - 14.0, y + lh(F::Body, 7.0) + 2.0, 5.0, p.dim);
 }
 
+/// The follow-camera labels under the watching line (data/ui/spectate_camera.json), drawn while the follow camera is on.
+pub fn draw_follow_hint(a: &Assets) {
+    let p = pal();
+    let v = view();
+    let cfg = crate::game::spectate::camera_cfg();
+    let y = 14.0 + (lh(F::Body, 7.0) + 2.0) + (lh(F::Body, 5.0) + 4.0);
+    label_r(a, F::Body, &cfg.follow_label, v.x - 14.0, y, 5.0, p.amber);
+    label_r(a, F::Body, &cfg.cycle_hint, v.x - 14.0, y + lh(F::Body, 5.0) + 2.0, 5.0, p.dim);
+}
+
 /// The SPECTATE prompt of a downed runner, low on the screen. True when it is pressed this frame.
 pub fn draw_downed_prompt(a: &Assets) -> bool {
     let v = view();

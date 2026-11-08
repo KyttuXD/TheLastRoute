@@ -1,6 +1,6 @@
 # Credits
 
-Original game: **KYTTU: The Last Route** by Kyttu (KyttuXD, Kyttu's Lab), Godot 4 project at
+Original game: **KYTTU - The Last Route** by Kyttu (KyttuXD, Kyttu's Lab), Godot 4 project at
 `C:\Users\Kyttu\Documents\Projects\LR Game Stuff\LastRoute Godot\KyttusLabApp`. This Rust
 port is also by Kyttu and uses the files of that Godot project, for private use on this computer.
 

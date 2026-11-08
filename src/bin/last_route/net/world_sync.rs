@@ -1249,12 +1249,12 @@ impl NetSession {
     /// Guest: sends the room an owner command with the directory's owner ticket (Godot `_owner_command.rpc_id(1, ...)`).
     /// False on the host, or when the message could not be sent. The room checks the ticket with the directory.
     /// Host: sends the NPCs this host's game runs to every guest (see [`super::npc_sync`]). Nothing for a guest.
-    pub fn publish_npcs(&mut self, npcs: &[crate::game::npc::Npc], origin: (i32, i32)) {
+    pub fn publish_npcs(&mut self, npcs: &[crate::game::npc::Npc], origin: (i32, i32), downed: &std::collections::BTreeSet<u32>) {
         if !self.is_host() {
             return;
         }
         let states: Vec<(u32, serde_json::Map<String, serde_json::Value>)> =
-            npcs.iter().map(|n| (n.id, super::npc_sync::wire_state(n, origin))).collect();
+            npcs.iter().map(|n| (n.id, super::npc_sync::wire_state_with(n, origin, downed.contains(&n.id)))).collect();
         let messages = self.npcs.host_messages(&states, Instant::now());
         if messages.is_empty() {
             return;

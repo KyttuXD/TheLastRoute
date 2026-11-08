@@ -6,7 +6,9 @@
 //! runner revives a downed bot the same way by holding interact (`Controls::interact_held`). A downed body that nobody
 //! revives within `timeout_seconds` dies: the runner's run ends ([`Game::finish_run`]), a bot is taken off the floor.
 //!
-//! Bots never walk to a downed teammate yet (npc.rs); they revive only what is within reach of them.
+//! A hunter in a chase that reaches a joined bot on its floor puts it down the same way ([`Game::npc_catches`]): the
+//! hunter is stunned, a hidden bot is out of reach. A bot walks to a downed teammate in range (the "revive" intent,
+//! npc.rs) and holds the revive; a bot hidden in a locker cannot.
 
 use super::{pdist, Controls, Game};
 use serde_json::Value;
@@ -26,6 +28,8 @@ pub struct Rules {
     pub timeout_seconds: f32,
     /// Seconds a hunter that caught the runner stays stunned when the runner goes down.
     pub hunter_stun_seconds: f32,
+    /// Metres within which a chasing hunter puts a joined bot down.
+    pub npc_catch_radius: f32,
 }
 
 impl Rules {
@@ -43,6 +47,7 @@ impl Rules {
             hold_seconds: num("hold_seconds")?,
             timeout_seconds: num("timeout_seconds")?,
             hunter_stun_seconds: num("hunter_stun_seconds")?,
+            npc_catch_radius: num("npc_catch_radius")?,
         })
     }
 }
@@ -98,7 +103,6 @@ impl Game {
     }
 
     /// A bot goes down (a teammate can revive it). False when it is not on the floor or is down already.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn npc_go_down(&mut self, id: u32) -> bool {
         if self.downed_npcs.contains_key(&id) || !self.npcs.iter().any(|n| n.id == id) {
             return false;
@@ -107,17 +111,52 @@ impl Game {
         true
     }
 
+    /// A hunter that is chasing and reaches a joined bot on its floor puts the bot down (not a hidden bot, not one
+    /// already down, not a bot on a ladder or flight). The hunter is stunned as when it downs the runner. Only the
+    /// side that simulates the hunters runs this (a guest has no bots of its own).
+    pub(super) fn npc_catches(&mut self) {
+        if self.report.is_some() || self.npcs.is_empty() {
+            return;
+        }
+        let r = rules();
+        let mut caught: Vec<(u32, usize)> = vec![];
+        for n in &self.npcs {
+            if !n.joined || n.hidden.is_some() || n.walk.is_some() || self.downed_npcs.contains_key(&n.id) {
+                continue;
+            }
+            let hit = self.hunters.iter().position(|h| {
+                h.active
+                    && matches!(h.state, crate::hunters::brain::State::Chase)
+                    && h.stun <= 0.0
+                    && h.level == n.level
+                    && pdist(h.pos, n.at) <= r.npc_catch_radius
+            });
+            if let Some(i) = hit {
+                caught.push((n.id, i));
+            }
+        }
+        for (id, hunter) in caught {
+            let name = self.npcs.iter().find(|n| n.id == id).map(|n| n.name.clone()).unwrap_or_default();
+            if self.npc_go_down(id) {
+                if let Some(h) = self.hunters.get_mut(hunter) {
+                    h.apply_stun(r.hunter_stun_seconds, false);
+                }
+                self.say(&format!("{name} IS DOWN"));
+            }
+        }
+    }
+
     /// The revive of every downed body, one frame: the holds and the timeouts. Called every frame before the runner's
     /// own step, so a downed runner is revived or dies here too.
     pub(super) fn tick_revives(&mut self, dt: f32, c: &Controls) {
         let r = rules();
         let level = self.runner_level();
         let at = self.p.pos;
-        // the teammates who can hold a revive: joined bots that are not down
+        // the teammates who can hold a revive: joined bots that are not down and not hidden in a locker
         let helpers: Vec<(u32, i32, (f32, f32))> = self
             .npcs
             .iter()
-            .filter(|n| n.joined && !self.downed_npcs.contains_key(&n.id))
+            .filter(|n| n.joined && n.hidden.is_none() && !self.downed_npcs.contains_key(&n.id))
             .map(|n| (n.id, n.level, n.at))
             .collect();
 
@@ -287,6 +326,115 @@ mod tests {
         assert!(g.report.is_some());
         g.end_run(0, "caught");
         assert!(!g.runner_downed(), "a capture after the timeout does not down a finished run");
+    }
+
+    #[test]
+    fn a_hidden_bot_cannot_revive() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        let id = g.npcs[0].id;
+        beside_runner(&mut g, id);
+        g.npcs.iter_mut().find(|n| n.id == id).unwrap().hidden = Some(0);
+        for _ in 0..50 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(g.runner_downed(), "a bot inside a locker holds no revive");
+        // out of the locker the same bot does revive
+        g.npcs.iter_mut().find(|n| n.id == id).unwrap().hidden = None;
+        for _ in 0..31 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(!g.runner_downed());
+    }
+
+    #[test]
+    fn a_hidden_bot_does_not_revive_a_downed_bot() {
+        let (mut g, _) = game();
+        let (a, b) = (g.npcs[0].id, g.npcs[1].id);
+        assert!(g.npc_go_down(a));
+        beside_runner(&mut g, a);
+        beside_runner(&mut g, b);
+        g.npcs.iter_mut().find(|n| n.id == b).unwrap().hidden = Some(0);
+        for _ in 0..31 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(g.downed_npcs.contains_key(&a), "the hidden teammate cannot hold the revive");
+    }
+
+    /// Puts hunter 0 in a chase, active and unstunned, on `level` at `pos`. False when the fixture has no hunter.
+    fn chase_at(g: &mut Game, level: i32, pos: (f32, f32)) -> bool {
+        let Some(h) = g.hunters.get_mut(0) else { return false };
+        h.active = true;
+        h.state = crate::hunters::brain::State::Chase;
+        h.stun = 0.0;
+        h.level = level;
+        h.pos = pos;
+        true
+    }
+
+    #[test]
+    fn a_chasing_hunter_puts_a_joined_bot_down_and_is_stunned() {
+        let (mut g, _) = game();
+        let id = g.npcs[0].id;
+        let (at, lv) = {
+            let n = g.npcs.iter_mut().find(|n| n.id == id).unwrap();
+            n.joined = true;
+            n.hidden = None;
+            n.walk = None;
+            (n.at, n.level)
+        };
+        if !chase_at(&mut g, lv, at) {
+            return; // this seed has no hunter in the fixture
+        }
+        g.npc_catches();
+        assert!(g.downed_npcs.contains_key(&id), "the caught bot is down");
+        assert!(g.hunters[0].stun > 0.0, "the hunter is stunned, as when it downs the runner");
+        // a bot that is down is not caught again, and the stun does not renew
+        g.hunters[0].stun = 0.5;
+        g.npc_catches();
+        assert_eq!(g.hunters[0].stun, 0.5);
+        assert!(g.report.is_none(), "a bot going down is no run end");
+    }
+
+    #[test]
+    fn a_hidden_or_far_bot_is_not_caught() {
+        let (mut g, _) = game();
+        let (a, b) = (g.npcs[0].id, g.npcs[1].id);
+        for n in g.npcs.iter_mut() {
+            n.joined = true;
+            n.walk = None;
+        }
+        let (pa, la) = {
+            let n = g.npcs.iter_mut().find(|n| n.id == a).unwrap();
+            n.hidden = Some(0);
+            (n.at, n.level)
+        };
+        {
+            let n = g.npcs.iter_mut().find(|n| n.id == b).unwrap();
+            n.at = (pa.0 + 50.0, pa.1);
+            n.level = la;
+        }
+        if !chase_at(&mut g, la, pa) {
+            return;
+        }
+        g.npc_catches();
+        assert!(!g.downed_npcs.contains_key(&a), "a hidden bot is out of reach");
+        assert!(!g.downed_npcs.contains_key(&b), "a bot beyond the catch radius is safe");
+    }
+
+    #[test]
+    fn an_owner_summon_stops_at_the_room_cap() {
+        let (mut g, _) = game();
+        let cap = crate::game::npc::Tuning::get().summon_room_cap;
+        assert!(cap >= 1);
+        let (level, spot) = (g.runner_level(), g.p.pos);
+        for _ in 0..(cap + 8) {
+            if g.npc_room_space() == 0 {
+                break;
+            }
+            g.npc_spawn_at(1, 70, spot, level);
+        }
+        assert_eq!(g.npc_room_space(), 0, "a full room has no space left");
     }
 
     #[test]

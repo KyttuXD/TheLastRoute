@@ -623,7 +623,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
     let mut shots = Screenshots::default();
     let mut death: Option<Death> = None;
     let mut last_save: Option<checkpoint::Checkpoint> = None;
-    let mut save_poll = 0.0f32;
+    let mut seen_autosaves = 0u32;
     let mut mouse_last: Option<Vec2> = None;
     // the look filter: a short settle after a re-lock while the cursor moves to the capture point, then spike rejection
     let mut look_filter = LookFilter::default();
@@ -1057,7 +1057,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
 
         // a player who hosts the room sends the NPCs this game runs (their admin summons too) to the guests
         if let (Some(n), Some(g)) = (net.as_mut(), playing.as_ref()) {
-            n.publish_npcs(&g.npcs, g.window_origin());
+            n.publish_npcs(&g.npcs, g.window_origin(), &g.downed_npcs.keys().copied().collect());
         }
 
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
@@ -1671,9 +1671,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 );
             }
             // keep the last checkpoint: death clears it, RESPAWN AT CHECKPOINT reloads it
-            save_poll += dt;
-            if save_poll > 2.0 && g.report.is_none() {
-                save_poll = 0.0;
+            // refreshed on every save (Game::autosave bumps autosave_count), so a save just before death survives the clear
+            if save_needs_reload(seen_autosaves, g.autosave_count, g.report.is_some()) {
+                seen_autosaves = g.autosave_count;
                 if let Some(cp) = checkpoint::load() {
                     last_save = Some(cp);
                 }
@@ -1740,7 +1740,8 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             || is_key_pressed(KeyCode::Right)
                             || is_key_pressed(KeyCode::Tab)
                         {
-                            *focus = 1 - *focus;
+                            let back = is_key_pressed(KeyCode::Left);
+                            *focus = card_focus_step(*focus, card.spectate.is_some(), back);
                         }
                         let mut choice = report::draw_card(&w.assets, &card, *focus);
                         if is_key_pressed(KeyCode::Enter) {
@@ -1830,12 +1831,27 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         if is_key_pressed(KeyCode::Right) {
                             g.spectate_cycle(&spectate_peers, 1);
                         }
+                        // E and Q step through the living runners, F toggles the follow camera (no per-peer alive state
+                        // is on the roster yet, so every listed peer counts as living)
+                        let spectate_living: Vec<(u32, bool)> = spectate_peers.iter().map(|p| (*p, true)).collect();
+                        if is_key_pressed(KeyCode::E) {
+                            g.spectate_cycle_living(&spectate_living, 1);
+                        }
+                        if is_key_pressed(KeyCode::Q) {
+                            g.spectate_cycle_living(&spectate_living, -1);
+                        }
+                        if is_key_pressed(KeyCode::F) {
+                            g.spectate_toggle_follow();
+                        }
                         if g.report.is_some() && is_key_pressed(KeyCode::Escape) {
                             back_to_card = true;
                         }
                         let target = g.spectate_target();
                         let name = spectate_roster.iter().find(|(p, _)| Some(*p) == target).map(|(_, n)| n.as_str());
                         report::draw_watching(&w.assets, name);
+                        if g.spectate_following() {
+                            report::draw_follow_hint(&w.assets);
+                        }
                     } else if g.runner_downed() && !spectate_peers.is_empty() && report::draw_downed_prompt(&w.assets) {
                         g.spectate_enter(&spectate_peers);
                     }
@@ -1925,7 +1941,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                         ) {
                             pause::Out::Abandon => {
                                 // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves
-                                if local_host {
+                                if local_host && quit_may_save(g.runner_downed()) {
                                     g.autosave("quit");
                                 }
                                 leave = true;
@@ -2323,6 +2339,26 @@ fn title_return_focus(from: Screen, who: &str) -> usize {
     }
 }
 
+/// Next keyboard focus on the run card: cycles over its visible buttons (3 with SPECTATE, else 2).
+fn card_focus_step(focus: usize, has_spectate: bool, back: bool) -> usize {
+    let n = if has_spectate { 3 } else { 2 };
+    if back {
+        (focus + n - 1) % n
+    } else {
+        (focus + 1) % n
+    }
+}
+
+/// A downed runner never writes a standing save on quit: the old checkpoint stays.
+fn quit_may_save(downed: bool) -> bool {
+    !downed
+}
+
+/// True when a new autosave landed and the run is still live, so the in-memory copy must be re-read.
+fn save_needs_reload(seen: u32, count: u32, ended: bool) -> bool {
+    !ended && seen != count
+}
+
 #[cfg(test)]
 mod death_restart_tests {
     use super::*;
@@ -2621,4 +2657,31 @@ fn shot_at_stairs(g: &mut Game, shape: &str) {
     g.p.yaw = (-(mid.0 - g.p.pos.0)).atan2(-(mid.1 - g.p.pos.1));
     g.p.pitch = -0.5;
     eprintln!("LR_SHOT_STAIRS: {shape} flight at {:?}, player at {:?}", s.cell, g.p.pos);
+}
+
+#[cfg(test)]
+mod run_card_tests {
+    use super::*;
+
+    #[test]
+    fn card_focus_reaches_spectate() {
+        assert_eq!(card_focus_step(1, true, false), 2);
+        assert_eq!(card_focus_step(2, true, false), 0);
+        assert_eq!(card_focus_step(0, true, true), 2);
+        assert_eq!(card_focus_step(1, false, false), 0);
+        assert_eq!(card_focus_step(0, false, true), 1);
+    }
+
+    #[test]
+    fn downed_quit_does_not_save() {
+        assert!(!quit_may_save(true));
+        assert!(quit_may_save(false));
+    }
+
+    #[test]
+    fn new_autosave_reloads_only_while_live() {
+        assert!(save_needs_reload(0, 1, false));
+        assert!(!save_needs_reload(1, 1, false));
+        assert!(!save_needs_reload(0, 1, true));
+    }
 }

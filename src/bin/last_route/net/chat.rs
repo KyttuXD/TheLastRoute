@@ -65,7 +65,14 @@ pub fn sanitize_text(text: &str) -> String {
 
 /// `line_key`: case, spacing, punctuation and repeats ignored.
 pub fn line_key(text: &str) -> String {
-    collapse_repeats(&text.to_lowercase()).chars().filter(|c| c.is_alphanumeric() || *c == '_').collect()
+    let lower = collapse_repeats(&text.to_lowercase());
+    let key: String = lower.chars().filter(|c| c.is_alphanumeric() || *c == '_').collect();
+    if key.is_empty() {
+        // a punctuation-only line ("?!", "...") keeps its own marks, so two different ones are not duplicates
+        lower.chars().filter(|c| !c.is_whitespace()).collect()
+    } else {
+        key
+    }
 }
 
 fn vec_of<const N: usize>(value: Option<&Value>) -> Option<[f64; N]> {
@@ -210,21 +217,22 @@ impl ChatModeration {
         true
     }
 
-    pub fn is_duplicate(&mut self, peer: i64, text: &str, now: i64) -> bool {
+    /// Whether `text` repeats a recent line of this peer. Does not remember the line: [`ChatModeration::remember_line`]
+    /// does, once the line is really accepted.
+    pub fn is_duplicate(&self, peer: i64, text: &str, now: i64) -> bool {
         let key = line_key(text);
-        let recent: Vec<(String, i64)> =
-            self.recent_lines.get(&peer).cloned().unwrap_or_default().into_iter().filter(|(_, t)| now - t < DUPLICATE_WINDOW_MS).collect();
-        let (kl, dup) = (key.chars().count(), recent.iter().any(|(other, _)| {
+        let kl = key.chars().count();
+        self.recent_lines.get(&peer).into_iter().flatten().filter(|(_, t)| now - t < DUPLICATE_WINDOW_MS).any(|(other, _)| {
             let ol = other.chars().count();
-            *other == key || (key.chars().count() >= 6 && (other.starts_with(&key) || key.starts_with(other.as_str())) && ol.abs_diff(key.chars().count()) <= 3)
-        }));
-        let _ = kl;
-        let mut recent = recent;
-        if !dup {
-            recent.push((key, now));
-        }
-        self.recent_lines.insert(peer, recent);
-        dup
+            *other == key || (kl >= 6 && (other.starts_with(&key) || key.starts_with(other.as_str())) && ol.abs_diff(kl) <= 3)
+        })
+    }
+
+    /// Records an accepted line for the duplicate filter (and forgets this peer's expired ones).
+    pub fn remember_line(&mut self, peer: i64, text: &str, now: i64) {
+        let recent = self.recent_lines.entry(peer).or_default();
+        recent.retain(|(_, t)| now - t < DUPLICATE_WINDOW_MS);
+        recent.push((line_key(text), now));
     }
 
     /// `accept_line(peer, payload)`.
@@ -238,7 +246,12 @@ impl ChatModeration {
         if self.is_duplicate(peer, &line.text, now) {
             return false;
         }
-        self.rate_ok(peer, line.ping, now)
+        // a line the rate limit refuses never counts for the duplicate filter, so it can be sent again later
+        if !self.rate_ok(peer, line.ping, now) {
+            return false;
+        }
+        self.remember_line(peer, &line.text, now);
+        true
     }
 }
 
@@ -491,6 +504,35 @@ mod tests {
         let rules = ChatRules::parse(&json!({ "rate_lines": 7, "rate_window_seconds": 4.0, "cooldown_seconds": 1.0 }));
         assert_eq!(ChatLimits::from_rules(&rules), ChatLimits { lines: 7, window_ms: 4_000, cooldown_ms: 1_000 });
         assert_eq!(ChatLimits::from_rules(ChatRules::load()), ChatLimits::default(), "Standard values");
+    }
+
+    #[test]
+    fn punctuation_only_lines_are_not_duplicates_of_each_other() {
+        assert_ne!(line_key("?!"), line_key("..."));
+        assert_ne!(line_key("???"), line_key("!!!"));
+        assert_eq!(line_key("?!"), line_key("? !"), "spacing is still ignored");
+        assert_eq!(line_key("Hello, World!"), "helloworld");
+        let mut m = ChatModeration::with_limits(ChatLimits { lines: 10, window_ms: 10_000, cooldown_ms: 1_000 });
+        let say = |m: &mut ChatModeration, text: &str, now: i64| {
+            let Some(Message::SubmitChatPayload { payload }) = submit(text, "team", [0.0; 2], [0.0; 3], 0) else { panic!() };
+            relay_submission(m, 5, "G", &payload, now).is_some()
+        };
+        assert!(say(&mut m, "?!", 100));
+        assert!(say(&mut m, "...", 200), "a different punctuation line passes");
+        assert!(!say(&mut m, "?!", 300), "the same one twice is still a duplicate");
+    }
+
+    #[test]
+    fn a_rate_refused_line_does_not_count_for_the_duplicate_filter() {
+        let mut m = ChatModeration::with_limits(ChatLimits { lines: 1, window_ms: 1_000, cooldown_ms: 1_000 });
+        let say = |m: &mut ChatModeration, text: &str, now: i64| {
+            let Some(Message::SubmitChatPayload { payload }) = submit(text, "team", [0.0; 2], [0.0; 3], 0) else { panic!() };
+            relay_submission(m, 5, "G", &payload, now).is_some()
+        };
+        assert!(say(&mut m, "first thing said", 0));
+        assert!(!say(&mut m, "second thing said", 100), "over the rate");
+        assert!(say(&mut m, "second thing said", 5_000), "the refused line may be sent again once the limit allows it");
+        assert!(!say(&mut m, "second thing said", 5_100), "an accepted line is remembered");
     }
 
     #[test]

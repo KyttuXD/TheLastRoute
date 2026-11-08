@@ -1,4 +1,4 @@
-# Developing KYTTU: The Last Route
+# Developing KYTTU - The Last Route
 
 This is for people working on the code. For how to play, see [the README](../README.md).
 
@@ -88,7 +88,7 @@ the game.
 The package builds three executables from one library:
 
 - `src/lib.rs` (crate `last_route_core`) — only what executables share: `packs` and `shared::paths`
-- `src/bin/last_route/` — KYTTU: The Last Route: the front end (`app`, `ui`, `headless`, `net`, `updater`) and the
+- `src/bin/last_route/` — KYTTU - The Last Route: the front end (`app`, `ui`, `headless`, `net`, `updater`) and the
   game modules (`config`, `content`, `world`, `hunters`, `game`, `render`, `audio`, `shared`), plus its `data/` and `assets/`
 - `src/bin/night_watch/` — KYTTU: Night Watch (shell, framework and modes; see [NIGHT_WATCH_MODES.md](NIGHT_WATCH_MODES.md))
 - `src/bin/lr_server/` — the dedicated server (`lr_server`)

@@ -3,7 +3,21 @@
 //! the torch on her banishes her for 30 s. Sight x1.8; she never grabs (ilyra_gimmick.gd).
 
 use super::{open_near, Ctx, Event};
+use crate::config::Difficulty;
 use crate::hunters::brain::{Brain, Target};
+
+/// Seconds from losing sight to the pounce on `diff` (data/gimmicks/ilyra.json): `pounce_delay`, or the
+/// difficulty entry (Nightmare 0 = at once). A bad value keeps 15 s.
+pub fn pounce_delay(text: &str, diff: Difficulty) -> f32 {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return 15.0 };
+    let ok = |x: &serde_json::Value| x.as_f64().filter(|n| *n >= 0.0 && n.is_finite()).map(|n| n as f32);
+    let base = v.get("pounce_delay").and_then(ok).unwrap_or(15.0);
+    v.get("difficulty").and_then(|d| d.get(diff.id())).and_then(ok).unwrap_or(base)
+}
+
+fn delay_for(diff: Difficulty) -> f32 {
+    pounce_delay(include_str!("../../data/gimmicks/ilyra.json"), diff)
+}
 
 #[derive(Default)]
 pub struct Ilyra {
@@ -64,7 +78,7 @@ impl Ilyra {
             self.saw_player = true;
         } else if self.saw_player && !self.tagged {
             self.tagged = true;
-            self.pounce_remaining = 15.0;
+            self.pounce_remaining = delay_for(c.diff);
             self.saw_player = false;
         }
         if self.tagged {
@@ -77,5 +91,29 @@ impl Ilyra {
                 self.respawn_corner(b, c);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Standard keeps the 15 s grace; Nightmare pounces at once (ilyra_gimmick.gd line 52).
+    #[test]
+    fn shipped_data_pounces_at_once_on_nightmare_only() {
+        assert_eq!(delay_for(Difficulty::Nightmare), 0.0);
+        for d in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard] {
+            assert_eq!(delay_for(d), 15.0);
+        }
+    }
+
+    /// A data edit changes the delay; bad values keep the default.
+    #[test]
+    fn data_edits_change_the_delay() {
+        let t = r#"{"pounce_delay": 9, "difficulty": {"hard": 2}}"#;
+        assert_eq!(pounce_delay(t, Difficulty::Standard), 9.0);
+        assert_eq!(pounce_delay(t, Difficulty::Hard), 2.0);
+        assert_eq!(pounce_delay("nope", Difficulty::Hard), 15.0);
+        assert_eq!(pounce_delay(r#"{"pounce_delay": -3}"#, Difficulty::Hard), 15.0);
     }
 }

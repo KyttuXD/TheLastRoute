@@ -1,6 +1,7 @@
 //! Hunters: the shared brain, each hunter's gimmick, and the per-floor lineup.
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
 
+pub mod activities;
 pub mod brain;
 pub mod director;
 pub mod emotes;
@@ -16,6 +17,7 @@ pub mod residency;
 pub mod sabotage;
 pub mod secret_creatures;
 pub mod target_filter;
+pub mod vent_nav;
 pub mod water;
 
 #[cfg(test)]

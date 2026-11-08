@@ -1,4 +1,4 @@
-# KYTTU: The Last Route
+# KYTTU - The Last Route
 
 A first-person survival horror game set in an endless facility. Every run starts fresh, and the facility keeps going down: district by district, with stairwells to deeper levels and hunters that grow more dangerous the more relays you recover.
 
@@ -34,4 +34,4 @@ The code is MIT-licensed ([LICENSE](LICENSE)). The art and assets are CC BY-NC 4
 
 ## Credits
 
-KYTTU: The Last Route was made by Kyttu (KyttuXD, Kyttu's Lab). The full list of files and sources is in [CREDITS.md](CREDITS.md).
+KYTTU - The Last Route was made by Kyttu (KyttuXD, Kyttu's Lab). The full list of files and sources is in [CREDITS.md](CREDITS.md).

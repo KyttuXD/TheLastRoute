@@ -17,6 +17,21 @@ enum Phase {
     Charge,
 }
 
+/// Seconds the Approach phase may last before she gives up (data/gimmicks/loxelle.json `approach_timeout`);
+/// a missing or bad value keeps 8 s.
+pub fn approach_timeout(text: &str) -> f32 {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("approach_timeout").and_then(|x| x.as_f64()))
+        .filter(|n| *n > 0.0 && n.is_finite())
+        .map_or(8.0, |n| n as f32)
+}
+
+fn approach_cap() -> f32 {
+    static T: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *T.get_or_init(|| approach_timeout(include_str!("../../data/gimmicks/loxelle.json")))
+}
+
 pub struct Loxelle {
     /// Loxelle's own timing (data/hunters/charge.json, hunter "loxelle").
     spec: ChargeSpec,
@@ -25,6 +40,7 @@ pub struct Loxelle {
     phase: Phase,
     spot: usize,
     timer: f32,
+    approach_time: f32,
 }
 
 impl Default for Loxelle {
@@ -43,6 +59,7 @@ impl Loxelle {
             phase: Phase::None,
             spot: 0,
             timer: 0.0,
+            approach_time: 0.0,
         }
     }
 
@@ -107,10 +124,22 @@ impl Loxelle {
         let Some(spot) = cand else { return };
         self.spot = spot;
         self.phase = Phase::Approach;
+        self.approach_time = 0.0;
         b.investigate(c.fac.hiding[spot].cell.center());
     }
 
     fn update_charge(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target, ev: &mut Vec<Event>) {
+        if self.phase == Phase::Approach {
+            self.approach_time += dt;
+            if self.approach_time > approach_cap() {
+                // she cannot reach the locker: drop it and let the brain carry on (no forced Investigate)
+                self.phase = Phase::None;
+                self.passive_timer = 0.0;
+                b.last_known = None;
+                b.state = State::Wander;
+                return;
+            }
+        }
         let impact = c.fac.hiding[self.spot].cell.center();
         b.state = State::Investigate;
         b.last_known = Some(impact);
@@ -211,5 +240,16 @@ mod tests {
         let l = Loxelle::with_spec(spec);
         assert_eq!(l.spec.lunge.windup, 0.10);
         assert_eq!(l.spec.passive.stall, 3.0);
+    }
+
+    /// The Approach phase has a data cap that falls back; bad data keeps 8 s.
+    #[test]
+    fn approach_timeout_reads_data_and_falls_back() {
+        assert_eq!(approach_timeout(r#"{"approach_timeout": 3.5}"#), 3.5);
+        assert_eq!(approach_timeout("{}"), 8.0);
+        assert_eq!(approach_timeout(r#"{"approach_timeout": 0}"#), 8.0);
+        let shipped = approach_timeout(include_str!("../../data/gimmicks/loxelle.json"));
+        assert!(shipped > 0.0 && shipped < 60.0);
+        assert_eq!(Loxelle::default().approach_time, 0.0);
     }
 }

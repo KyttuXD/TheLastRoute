@@ -520,6 +520,8 @@ impl Game {
                     let m = self.specialty.temp_mode().map_or("", Mode::label);
                     self.say(&format!("TEMPERATURE ITEM // SLOT 7 // {m}"));
                 }
+                Change::Removed(Kind::MusicBox) => self.say("MUSIC BOX // LOST WITH ITS HUNTER"),
+                Change::Removed(Kind::Temperature) => self.say("TEMPERATURE ITEM // LOST WITH ITS HUNTER"),
                 _ => {}
             }
         }
@@ -721,6 +723,7 @@ mod tests {
         drop_hunter(&mut g, "glyra");
         g.sync_specialty();
         assert_eq!(g.specialty.items[0], None, "removed with the hunter");
+        assert!(g.message.contains("LOST"), "the player is told the box is gone: {}", g.message);
         assert_eq!(box_in_pack(&g), 0, "and not returned to the pack");
         // the temperature item too
         add(&mut g, &content, "wynelle");

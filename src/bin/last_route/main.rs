@@ -1,4 +1,4 @@
-//! Last Route, ported to Rust + macroquad from the Godot 4 project (KYTTU: The Last Route).
+//! Last Route, ported to Rust + macroquad from the Godot 4 project (KYTTU - The Last Route).
 //!
 //! Without arguments (or with `--screenshot` / `--self-test`) this opens the game window. The
 //! agent and test modes in `headless` (`--headless`, `--test-suite`, `--bot`, `--agent-window`)
@@ -36,7 +36,7 @@ fn window_conf(stress_vsync: Option<bool>) -> macroquad::conf::Conf {
     app::gfx::boot_guard_start();
     macroquad::conf::Conf {
         miniquad_conf: Conf {
-            window_title: "KYTTU: The Last Route".to_owned(),
+            window_title: "KYTTU - The Last Route".to_owned(),
             window_width: w,
             window_height: h,
             high_dpi: crate::shared::task::IN_BROWSER && app::gfx::web_rules().high_dpi,

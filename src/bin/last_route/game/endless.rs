@@ -563,16 +563,17 @@ fn floor_source(fac: &Facility) -> Vec<usize> {
 /// streamed_hunter_population: none before the activation relay, then the base lineup and one
 /// more every STREAMED_HUNTER_RELAY_STEP relays (relaxed 3, standard 2, hard 1).
 pub fn population(diff: Difficulty, relays: i32) -> i32 {
-    let activation = diff.profile().activation_relays;
-    if relays < activation {
-        return 0;
-    }
-    let step = match diff {
-        Difficulty::Relaxed => 3,
-        Difficulty::Standard => 2,
-        Difficulty::Hard | Difficulty::Nightmare => 1,
-    };
-    1 + (relays - activation) / step
+    // streamed_base / streamed_step per difficulty come from data/progression.json (B9)
+    crate::game::progression::Progression::load().streamed_hunters(diff, relays)
+}
+
+/// A wander target for a hunter of a resident floor, drawn on that floor's own facility `fac` (G20) rather than the
+/// active floor: a random spot within `reach` cells of `from`, settled onto the nearest cell a hunter may stand on.
+pub fn resident_wander_target(fac: &Facility, from: (f32, f32), reach: f32, rng: &mut Rng) -> Option<(f32, f32)> {
+    let a = rng.next_f32() * std::f32::consts::TAU;
+    let d = rng.next_f32() * reach.max(0.0);
+    let want = (from.0 + a.cos() * d, from.1 + a.sin() * d);
+    super::resident_hunters::settle_cell(fac, want, reach.ceil() as i32 + 2)
 }
 
 impl InfState {
@@ -3059,6 +3060,34 @@ mod tests {
     }
 
     #[test]
+    fn population_reads_the_progression_data() {
+        let p = crate::game::progression::Progression::load();
+        for d in [Difficulty::Relaxed, Difficulty::Standard, Difficulty::Hard, Difficulty::Nightmare] {
+            for r in 0..12 {
+                assert_eq!(population(d, r), p.streamed_hunters(d, r), "{d:?} {r}");
+            }
+            let before = p.activation_relays(d);
+            if before > 0 {
+                assert_eq!(population(d, before - 1), 0, "{d:?}: none before the activation relay");
+            }
+            assert_eq!(population(d, before), p.gate(d).streamed_base, "{d:?}: the base lineup at activation");
+        }
+    }
+
+    #[test]
+    fn a_resident_floor_wander_target_lies_on_its_own_floor() {
+        let (g, _, _) = populated();
+        let mut rng = Rng::new("G20");
+        let from = g.hunters.first().map(|b| b.pos).unwrap_or((10.0, 10.0));
+        for _ in 0..20 {
+            if let Some(q) = resident_wander_target(&g.fac, from, 6.0, &mut rng) {
+                let c = crate::world::facility::Cell { x: q.0.floor() as i32, y: q.1.floor() as i32 };
+                assert!(g.fac.hunter_may_spawn(c), "the target is standable on the floor given");
+            }
+        }
+    }
+
+    #[test]
     fn the_residency_loads_the_layout_spawns_of_the_window() {
         let (g, _, _) = populated();
         let inf = g.inf.as_ref().unwrap();
@@ -3816,6 +3845,8 @@ mod walked_stair_tests {
         assert!(g.inf.as_ref().unwrap().stack.has(-1), "the shaft's lower end is resident before the climb");
         let builds = g.inf.as_ref().unwrap().builds;
         assert!(g.start_ladder(i));
+        // the mount arms the climb keys only after a release
+        g.step(FRAME, &Controls::default(), &content, &catalog, &Sounds::default());
         let down = Controls { fwd: -1.0, ..Default::default() };
         let mut flipped = false;
         for _ in 0..1500 {

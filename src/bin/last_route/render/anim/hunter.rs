@@ -12,6 +12,7 @@
 //! * faces: `_desired_expression` / `_update_expression` (1859-1910) on player/blocky_face.gd's cells; stars (1914).
 
 use super::clip::{key_quat, Rig};
+use super::hunter_activity_pose::{self as act, Extras};
 use super::player::{AnimPlayer, Local};
 use super::profile::{self, Profile, StateDef, Weights};
 use crate::hunters::brain::State;
@@ -584,6 +585,21 @@ pub struct HunterView {
     /// Seconds since the mechanic state last came on (a state's `then` phase and `prop_until` read it), and whether it is on.
     mech_t: f32,
     mech_on: bool,
+    /// What the scene hands over next to the Input (the brain's activity, the playing emote index).
+    extras: Extras,
+    /// The activity pose last on (kept while it eases out), its weight 0..1, seconds since it began, and the name now wanted.
+    act: Option<&'static act::Def>,
+    act_w: f32,
+    act_t: f32,
+    act_name: Option<&'static str>,
+    /// The emote playing (index), its resolved body clip (None = face only), its face, and whether the clip may play on the move.
+    emote_seen: Option<usize>,
+    emote_clip: Option<String>,
+    emote_face: String,
+    emote_moving: bool,
+    /// Kathy's scythe: this hunter carries it, and the seconds the swing one-shot has left.
+    carries_scythe: bool,
+    swing_left: f32,
 }
 
 impl HunterView {
@@ -632,7 +648,119 @@ impl HunterView {
             mech_w: 0.0,
             mech_t: 0.0,
             mech_on: false,
+            extras: Extras::default(),
+            act: None,
+            act_w: 0.0,
+            act_t: 0.0,
+            act_name: None,
+            emote_seen: None,
+            emote_clip: None,
+            emote_face: String::new(),
+            emote_moving: false,
+            carries_scythe: act::table().carries_scythe(shown_id),
+            swing_left: 0.0,
         }
+    }
+
+    /// The activity and emote the brain is on this frame (call before `update`).
+    pub fn set_extras(&mut self, e: Extras) {
+        self.extras = e;
+    }
+
+    /// The scythe clip standing in for `clip` on a carrier whose rig has it, else `clip` itself.
+    fn scythe_clip(&self, clip: &str) -> String {
+        if self.carries_scythe {
+            if let Some(c) = act::table().scythe.clips.get(clip).filter(|c| self.rig.has_clip(c)) {
+                return c.clone();
+            }
+        }
+        clip.to_string()
+    }
+
+    /// The leg speed scale for `clip` at `speed` (HunterStride.choose's last step).
+    fn stride_for(&self, clip: &str, speed: f32) -> f32 {
+        let scale = (speed / self.ref_speed(clip)).clamp(HARD_MIN, HARD_MAX);
+        if self.rig.stride.get(clip).map(|s| s.1).unwrap_or(false) {
+            -scale
+        } else {
+            scale
+        }
+    }
+
+    /// The activity, scythe swing and emote state for this frame, before the clip choice reads them.
+    fn step_extras(&mut self, i: &Input, delta: f32) {
+        let table = act::table();
+        let live = i.active && i.stun <= 0.0 && !i.grabbing && !self.rig.is_creature();
+        let peek = i.peek_lean.map(|d| act::peek_activity(self.yaw, d));
+        let name = if live { self.extras.activity.or(peek) } else { None };
+        // a carrier's lunge swings the scythe once
+        self.swing_left = (self.swing_left - delta).max(0.0);
+        if self.carries_scythe
+            && name.is_some()
+            && name != self.act_name
+            && name == Some(table.scythe.swing_on.as_str())
+            && self.rig.has_clip(&table.scythe.swing_clip)
+        {
+            self.swing_left = self.rig.length(&table.scythe.swing_clip);
+        }
+        self.act_name = name;
+        // a new emote index resolves its clip and face once and queues its voice cue
+        let want = if live { self.extras.emote } else { None };
+        if want != self.emote_seen {
+            self.emote_seen = want;
+            self.emote_clip = None;
+            self.emote_face.clear();
+            if let Some(idx) = want {
+                let cat = crate::hunters::emotes::Catalogue::get();
+                if let Some(e) = cat.emote(idx) {
+                    let rig = self.rig.clone();
+                    self.emote_clip = cat.resolve_clip(&self.shown_id, idx, cat.clip_override(&self.shown_id, idx), |c| rig.has_clip(c));
+                    self.emote_face = e.face.clone();
+                    self.emote_moving = e.moving;
+                    act::push_cue(act::EmoteCue { hunter: self.shown_id.clone(), index: idx, id: e.id.clone(), noise: e.noise, pos: i.pos });
+                }
+            }
+        }
+    }
+
+    /// The body clip an emote or the scythe swing forces now, if any.
+    fn forced_clip(&self) -> Option<String> {
+        if self.swing_left > 0.0 {
+            return Some(act::table().scythe.swing_clip.clone());
+        }
+        self.emote_clip.clone().filter(|_| self.emote_moving || self.move_speed < GAIT_ENTER_SPEED)
+    }
+
+    /// The activity pose, eased in and out, over the finished clip / head / chase layers.
+    fn apply_activity(&mut self, rig: &Rig, pose: &mut [Local], delta: f32) {
+        let want = self.act_name.and_then(|n| act::table().find(n));
+        if let Some(d) = want {
+            if !self.act.is_some_and(|p| std::ptr::eq(p, d)) {
+                self.act_t = 0.0;
+            }
+            self.act = Some(d);
+            self.act_t += delta;
+        }
+        let goal = if want.is_some() { 1.0 } else { 0.0 };
+        let secs = self.act.map(|d| if goal > 0.0 { d.blend_in } else { d.blend_out }).unwrap_or(0.0);
+        self.act_w = if secs <= 0.0 { goal } else { move_toward(self.act_w, goal, delta / secs) };
+        if let Some(d) = self.act {
+            if self.act_w <= 0.0 && want.is_none() {
+                self.act = None;
+            } else {
+                act::apply(pose, rig, d, self.act_t, smoothstep01(self.act_w));
+            }
+        }
+    }
+
+    /// Kathy's scythe: its model path and the matrix to draw it with, on the hand bone, for a carrier.
+    pub fn scythe_prop(&self, out: &Output) -> Option<(&'static str, Mat4)> {
+        if !self.carries_scythe {
+            return None;
+        }
+        let s = &act::table().scythe;
+        let hand = self.rig.bone(&s.bone).or_else(|| self.rig.bone(&s.fallback_bone))?;
+        Some((s.model.as_str(), act::scythe_transform(s, out.root, *out.bones.get(hand)?, self.rig.draw_scale())))
     }
 
     pub fn rig(&self) -> &Rig {
@@ -744,14 +872,15 @@ impl HunterView {
             } else {
                 "idle"
             };
-            self.play_if_available(hold);
+            let hold = self.scythe_clip(hold);
+            self.play_if_available(&hold);
             self.player.speed_scale = DORMANT_SPEED;
             return;
         }
         if self.was_dormant {
             self.was_dormant = false;
             if self.rig.has_clip("stun_recover") {
-                self.recover_left = self.rig.length("stun_recover") - 0.03;
+                self.recover_left = self.rig.length(&self.scythe_clip("stun_recover")) - 0.03;
             }
         }
         if i.stun > 0.0 {
@@ -761,7 +890,7 @@ impl HunterView {
         } else if self.was_stunned {
             self.was_stunned = false;
             if self.rig.has_clip("stun_recover") {
-                self.recover_left = self.rig.length("stun_recover") - 0.03;
+                self.recover_left = self.rig.length(&self.scythe_clip("stun_recover")) - 0.03;
             }
         }
         if clip != "stun" && self.recover_left > 0.0 {
@@ -774,6 +903,8 @@ impl HunterView {
             clip = "flight".into();
         } else if i.charging {
             clip = "charge".into();
+        } else if let Some(f) = self.forced_clip() {
+            clip = f;
         } else {
             match i.state {
                 State::Chase => {
@@ -784,7 +915,12 @@ impl HunterView {
                     }
                     .into()
                 }
-                State::Wander | State::Investigate | State::Search | State::Peek => clip = "walk".into(),
+                State::Wander | State::Investigate | State::Search => clip = "walk".into(),
+                // a corner peek crouches in place with the lean pose (hunter_activity_poses.json), it does not walk
+                State::Peek => {
+                    let p = &act::table().peek_clip;
+                    clip = if self.rig.has_clip(p) { p.clone() } else { "idle".into() };
+                }
                 State::Idle => {}
             }
         }
@@ -807,17 +943,23 @@ impl HunterView {
         }
         let travelling = mech_clip.is_none() && TRAVEL_CLIPS.contains(&clip.as_str());
         if travelling {
-            let (pick, scale) = self.choose(&clip, self.move_speed);
+            let (pick, mut scale) = self.choose(&clip, self.move_speed);
             if self.rig.has_clip(&pick) {
                 clip = pick;
+            }
+            // Kathy's scythe walk has its own stride speed
+            let carried = self.scythe_clip(&clip);
+            if carried != clip {
+                scale = self.stride_for(&carried, self.move_speed);
             }
             self.stride_scale += (scale - self.stride_scale) * (1.0 - (-10.0 * delta).exp());
             // the profile's gait speed: 1.0 keeps the legs matched to the ground
             let gait = if clip == "walk" { self.profile.walk_speed } else { self.profile.chase_speed };
             speed = self.stride_scale * gait;
         }
+        let play = self.scythe_clip(&clip);
         if travelling {
-            self.play_travel(&clip);
+            self.play_travel(&play);
         } else if let Some(m) = mech.filter(|_| mech_clip.is_some()) {
             if self.player.current_animation() != clip || !self.player.playing {
                 let rig = self.rig.clone();
@@ -825,7 +967,7 @@ impl HunterView {
             }
             speed = m.speed;
         } else {
-            self.play_if_available(&clip);
+            self.play_if_available(&play);
         }
         self.player.speed_scale = speed;
     }
@@ -926,6 +1068,9 @@ impl HunterView {
         if self.recover_left > 0.0 {
             return "blank".into();
         }
+        if self.emote_seen.is_some() && !self.emote_face.is_empty() && act::table().emote_face_override {
+            return self.emote_face.clone();
+        }
         match i.state {
             State::Chase => {
                 let gap = i
@@ -1000,6 +1145,7 @@ impl HunterView {
             self.facing.track(i.pos, delta);
             self.update_body_yaw(i, delta);
         }
+        self.step_extras(i, delta);
         if self.rig.is_creature() {
             self.update_creature_animation(i, delta);
         } else {
@@ -1113,6 +1259,10 @@ impl HunterView {
             -aim,
             clock,
         );
+        // the activity pose (lean, sniff, sweep, push, knock, listen, peek, crawl, lunge) over the clips and the chase layer
+        if !self.rig.is_creature() {
+            self.apply_activity(&rig, &mut pose, delta);
+        }
         // a mechanic state's bone pose over everything the clips and the chase layer did, eased in and out
         let want = self.mechanic_def(i);
         if let Some(m) = want {

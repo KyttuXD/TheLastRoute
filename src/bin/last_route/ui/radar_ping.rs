@@ -10,7 +10,6 @@ pub const INTERVAL: f32 = 8.0;
 pub const JITTER: f32 = 2.0;
 /// How long one ping lasts, and how far its ring grows (in mark radii).
 pub const DURATION: f32 = 0.7;
-#[allow(dead_code)] // Godot parity; ring draw uses this when the ping ring is ported.
 pub const RING_GROWTH: f32 = 3.0;
 /// Brightest the dot and ring get (0..1 alpha).
 pub const PEAK_ALPHA: f32 = 0.9;
@@ -83,6 +82,38 @@ pub fn sample(time: f32, reduced: bool) -> Sample {
     }
 }
 
+/// Reduced motion: the ring stays put at the mark's size, and is this fraction as bright as the dot.
+pub const REDUCED_RING_SHARE: f32 = 0.5;
+
+/// The ping's ring around the dot: its radius, opacity and line width (Godot `facility_map.gd` `_draw_ghost_ping`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    pub radius: f32,
+    pub alpha: f32,
+    pub thickness: f32,
+}
+
+/// The ring for a sample, or None when nothing shows. `radius` is the dot's radius and `cell` one map cell, both in
+/// the units the ring is drawn in. A ping grows the ring from the dot's size to [`RING_GROWTH`] times it while it
+/// fades out; with reduced motion it does not grow and is dimmer.
+pub fn ring(s: &Sample, radius: f32, cell: f32, reduced: bool) -> Option<Ring> {
+    if s.strength <= 0.001 {
+        return None;
+    }
+    let thickness = (cell * 0.10).max(1.0);
+    if reduced {
+        return Some(Ring { radius, alpha: s.strength * REDUCED_RING_SHARE, thickness });
+    }
+    let p = s.progress.clamp(0.0, 1.0);
+    Some(Ring { radius: radius * (1.0 + (RING_GROWTH - 1.0) * p), alpha: s.strength * (1.0 - p), thickness })
+}
+
+/// Draws the ring at `at` in `color` (its own alpha is replaced by the ring's).
+pub fn draw_ring(at: (f32, f32), ring: &Ring, mut color: macroquad::color::Color) {
+    color.a = ring.alpha.clamp(0.0, 1.0);
+    macroquad::shapes::draw_circle_lines(at.0, at.1, ring.radius, ring.thickness, color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +132,30 @@ mod tests {
         assert!(mid.strength > 0.8);
         let after = sample(DURATION + 0.05, false);
         assert!(after.strength < 0.001);
+    }
+
+    #[test]
+    fn the_ring_grows_and_fades_during_a_ping() {
+        let early = ring(&sample(DURATION * 0.25, false), 2.0, 10.0, false).unwrap();
+        let late = ring(&sample(DURATION * 0.75, false), 2.0, 10.0, false).unwrap();
+        assert!(early.radius >= 2.0 && late.radius > early.radius);
+        assert!(late.radius <= 2.0 * RING_GROWTH);
+        assert!(late.alpha < early.alpha, "it fades as it grows");
+        assert!(early.thickness >= 1.0);
+    }
+
+    #[test]
+    fn no_ring_between_pings() {
+        let gap = sample(DURATION + 0.5, false);
+        assert!(ring(&gap, 2.0, 10.0, false).is_none());
+    }
+
+    #[test]
+    fn reduced_motion_ring_is_dim_and_does_not_grow() {
+        let a = ring(&sample(0.0, true), 2.0, 10.0, true).unwrap();
+        let b = ring(&sample(3.0, true), 2.0, 10.0, true).unwrap();
+        assert_eq!((a.radius, b.radius), (2.0, 2.0));
+        let normal_peak = ring(&sample(DURATION * 0.2, false), 2.0, 10.0, false).unwrap();
+        assert!(a.alpha < normal_peak.alpha && a.alpha < REDUCED_ALPHA);
     }
 }

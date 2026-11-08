@@ -398,6 +398,10 @@ fn loxelle_coils_for_the_windup_and_drives_for_the_charge_then_both_clear() {
     x.place(home);
     let mut seen = vec![];
     for _ in 0..(900.0 / DT) as usize {
+        // her wander now walks to points of interest and leaves the room: bring her back until the roll hits
+        if seen.is_empty() && x.mech().is_none() {
+            x.place(home);
+        }
         x.frame();
         if let Some(m) = x.mech() {
             if seen.last() != Some(&m) {

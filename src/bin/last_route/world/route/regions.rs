@@ -103,6 +103,7 @@ pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
     if level == SEWER_LEVEL || level == LOWER_SEWER_LEVEL {
         return "sewer";
     }
+    // the early return keeps level -3 whole; the `level <= -3` extension below runs for every level under it
     if level == INFERNO_LEVEL {
         return "inferno";
     }
@@ -264,6 +265,28 @@ mod tests {
         assert_eq!(region_for("ROOM-X-00000001", 7, -9, -1), "sewer");
         assert_eq!(region_for("ROOM-X-00000001", -4, 3, -2), "sewer");
         assert_eq!(region_for("ROOM-X-00000001", 0, 0, -3), "inferno");
+    }
+
+    #[test]
+    fn levels_below_the_inferno_run_the_inferno_extension() {
+        // level -3 itself is the whole-level early return; -4 and -6 reach the appended pool
+        for seed in 1..40 {
+            let world = format!("ROOM-X-{seed:08}");
+            assert_eq!(region_for(&world, seed, -seed, INFERNO_LEVEL), "inferno");
+        }
+        let mut inferno = 0;
+        let mut prison = 0;
+        for seed in 1..60 {
+            let world = format!("ROOM-X-{seed:08}");
+            for (cx, cz) in [(0, 0), (9, 9), (-9, 9), (20, -20)] {
+                match region_for(&world, cx, cz, INFERNO_LEVEL - 3) {
+                    "inferno" => inferno += 1,
+                    "prison" => prison += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(inferno > 0 && prison > 0, "inferno {inferno}, prison {prison}");
     }
 
     #[test]

@@ -1,0 +1,32 @@
+{
+  "schema": "lr.vents/1",
+  "_note": "Hunter vent routing and Verrine's duct crawl (hunters/vent_nav.rs; Godot vent_nav.gd, vent_crawl.gd, verrine_gimmick.gd). The ducts link the floor's grates (fix.vents): ring joins grate i to i+1, links adds more by grate index. A duct run is an L (along x, then y). route: a chasing or investigating hunter on one of the difficulties takes the ducts only when the whole vent trip (walk to the entry grate, enter_seconds in, crawl, exit_seconds out, walk on) is at most shorter_ratio of the floor route. Verrine never uses this: she lives in the ducts. grate_search: cells around the hunter and the goal where a grate counts. entries_tried: nearest grates tried at each end. crawl_speed: cells per second. climb_reach: how far a climb may carry from a grate. thump: one sheet-metal thump per `every` cells crawled, heard as a noise event of that loudness (noise_events.json vent_thump has the radius). verrine: initial_scale rising per_second to max_scale while the runner is in the vents; lurk_radius: a runner on the floor within this many cells of a grate draws her out through it; return_seconds: out on the floor with no chase for this long she climbs back in; patrol_reach: patrol picks grates within this many cells; exit_step: how far past the grate she lands toward the runner; exit_radius: clearance of that landing spot.",
+  "route": {
+    "difficulties": ["hard", "nightmare"],
+    "shorter_ratio": 0.5,
+    "grate_search": 10.0,
+    "entries_tried": 2,
+    "enter_seconds": 1.4,
+    "exit_seconds": 1.4,
+    "crawl_speed": 1.4,
+    "climb_reach": 1.6
+  },
+  "ducts": {
+    "ring": true,
+    "links": []
+  },
+  "thump": {
+    "every": 0.9,
+    "loudness": 1.0
+  },
+  "verrine": {
+    "initial_scale": 0.4,
+    "per_second": 0.025,
+    "max_scale": 2.4,
+    "lurk_radius": 12.0,
+    "return_seconds": 8.0,
+    "patrol_reach": 14.0,
+    "exit_step": 1.0,
+    "exit_radius": 0.27
+  }
+}

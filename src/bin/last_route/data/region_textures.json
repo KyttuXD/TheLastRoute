@@ -1,0 +1,26 @@
+{
+  "schema": "lr.region_textures/1",
+  "default": "maze",
+  "map": {
+    "arcade": "carnival",
+    "circus": "carnival",
+    "carnival": "carnival",
+    "maintenance": "prison",
+    "prison": "prison",
+    "sewer": "prison",
+    "office": "lab",
+    "lab": "lab",
+    "mansion": "mansion",
+    "nether": "inferno",
+    "inferno": "inferno",
+    "beach": "beach",
+    "garden": "greenhouse",
+    "greenhouse": "greenhouse",
+    "hotel": "hotel",
+    "apartment": "apartment",
+    "gothic": "gothic",
+    "hospital": "hospital",
+    "mall": "mall",
+    "maze": "maze"
+  }
+}

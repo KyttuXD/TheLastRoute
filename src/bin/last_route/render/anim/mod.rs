@@ -21,6 +21,7 @@ pub mod grab;
 pub mod held;
 pub mod hide;
 pub mod hunter;
+pub mod hunter_activity_pose;
 pub mod player;
 pub mod profile;
 pub mod runner;

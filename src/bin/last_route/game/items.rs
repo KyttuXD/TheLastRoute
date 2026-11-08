@@ -55,7 +55,15 @@ impl Game {
         if item == Item::MusicBox && self.specialty.box_slot_visible() {
             return self.specialty.box_slot_free();
         }
-        (item.stack_max() > 1 && self.slots.iter().flatten().any(|s| s.item == item && s.n < item.stack_max()))
+        self.can_grant_n(item, 1)
+    }
+
+    /// True when `grant(item, n)` would take all `n`: a stack with room for them, or an empty slot.
+    pub(super) fn can_grant_n(&self, item: Item, n: i32) -> bool {
+        if item == Item::MusicBox && self.specialty.box_slot_visible() {
+            return self.specialty.box_slot_free();
+        }
+        (item.stack_max() > 1 && self.slots.iter().flatten().any(|s| s.item == item && s.n + n <= item.stack_max()))
             || self.slots.iter().any(|s| s.is_none())
     }
 
@@ -65,8 +73,8 @@ impl Game {
         }
         if item.stack_max() > 1 {
             for s in self.slots.iter_mut().flatten() {
-                if s.item == item && s.n < item.stack_max() {
-                    s.n += 1;
+                if s.item == item && s.n + n <= item.stack_max() {
+                    s.n += n;
                     return true;
                 }
             }
@@ -422,6 +430,29 @@ mod tests {
     use super::*;
     use crate::content::Content;
     use crate::world::catalog::Catalog;
+
+    #[test]
+    fn a_stacked_pickup_merges_its_whole_count_or_not_at_all() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-ITEMS-7", 0, &content, &catalog);
+        let max = Item::Battery.stack_max();
+        assert!(max >= 4, "a battery stack holds several");
+        for s in g.slots.iter_mut() {
+            *s = Some(Slot { item: Item::Crowbar, n: 1 }); // every slot full of something else
+        }
+        g.slots[1] = Some(Slot { item: Item::Battery, n: 1 });
+        assert!(g.grant(Item::Battery, 2));
+        assert_eq!(g.slots[1].unwrap().n, 3, "both batteries land in the stack");
+        // a stack that cannot take them all, with no free slot, refuses and loses nothing
+        g.slots[1] = Some(Slot { item: Item::Battery, n: max - 1 });
+        assert!(!g.can_grant_n(Item::Battery, 2));
+        assert!(!g.grant(Item::Battery, 2));
+        assert_eq!(g.slots[1].unwrap().n, max - 1);
+        // with a free slot the whole count goes there
+        g.slots[2] = None;
+        assert!(g.grant(Item::Battery, 2));
+        assert_eq!(g.slots[2].unwrap().n, 2);
+    }
 
     /// A standard game with a hunter 0.8 m in front of the runner (None when no spot has a clear line).
     fn face_a_hunter() -> Option<(Game, usize)> {

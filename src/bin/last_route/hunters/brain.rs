@@ -3,6 +3,7 @@
 //! search state machine, with each hunter's gimmick hooked in at the original's points.
 //! Positions are grid cells (1 cell = 1 m).
 
+use super::activities::{self, Activity, ActivityRun, Poi};
 use super::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
 use super::gimmicks::{Ctx, Event, Gimmick};
 use super::path_scheduler::{self, PlanRequest, Route};
@@ -275,6 +276,9 @@ fn plan_route(fac: &Facility, from: (f32, f32), to: Cell, avoid: &[(Cell, f32)],
     plan_route_wet(fac, from, to, avoid, gates, None)
 }
 
+/// How far (cells) a hunter standing in closed water looks for the shore.
+const ESCAPE_RINGS: i32 = 8;
+
 /// `plan_route` with water: each step costs its cell's path cost multiplier (`WaterPlan`), and a cell the hunter will
 /// not enter (deep water for a hunter that cannot or will not swim) is closed like a wall.
 pub(super) fn plan_route_wet(
@@ -300,7 +304,19 @@ pub(super) fn plan_route_wet(
         near.sort_by(|a, b| dist(a.center(), from).total_cmp(&dist(b.center(), from)));
         match near.first() {
             Some(c) => *c,
-            None => return vec![],
+            None => {
+                // standing in closed water wider than one cell (a pool): head for the nearest cell it may enter, by rings,
+                // so the hunter wades out instead of being stuck with no route
+                let mut ring: Vec<Cell> = (-ESCAPE_RINGS..=ESCAPE_RINGS)
+                    .flat_map(|dy| (-ESCAPE_RINGS..=ESCAPE_RINGS).map(move |dx| Cell::new(here.x + dx, here.y + dy)))
+                    .filter(|c| open(*c))
+                    .collect();
+                ring.sort_by(|a, b| dist(a.center(), from).total_cmp(&dist(b.center(), from)));
+                match ring.first() {
+                    Some(c) => *c,
+                    None => return vec![],
+                }
+            }
         }
     };
     if to == start {
@@ -484,6 +500,34 @@ pub struct Brain {
     no_hop_memo: Option<(u64, Cell, i32, i32, f32)>,
     /// Seconds spent on the current edge.
     edge_clock: f32,
+    /// The point of interest the current wander goal was picked from (hunters/activities.rs); None for a goal set
+    /// by anything else (camp guard, gimmick, fallback).
+    poi: Option<Poi>,
+    /// The goals picked lately (cell ids, newest last), so a wander never repeats one.
+    recent_pois: Vec<(i32, i32)>,
+    /// The activity being done at the goal; exposed through `activity_view` for the renderer and the wire.
+    activity: Option<ActivityRun>,
+    /// A guest's copy of the host's activity (kind, progress); shown, never run.
+    net_activity: Option<(Activity, f32)>,
+    /// A chaser's shortcut through the ducts (hunters/vent_nav.rs). Read the crawl height with `vent_trip.crawl.height()`.
+    pub vent_trip: super::vent_nav::Trip,
+    /// The entry grate a planned trip walks to instead of the ordinary goal, this frame.
+    vent_walk: Option<(f32, f32)>,
+    /// Seconds until the next trip plan is tried.
+    vent_timer: f32,
+    /// Sheet-metal thumps made crawling since the last `take_vent_thumps`.
+    vent_thumps: u32,
+    /// The hatch that opened since the last `take_vent_hatch`.
+    vent_hatch: Option<super::vent_nav::Hatch>,
+    /// Own random stream for goals and activities, so the main stream (and what its tests pin) is untouched.
+    act_rng: Rng,
+    /// The locker (index into `Facility::hiding`) the hunter leaned into this frame. The simulating side's
+    /// game/hunting.rs reads it with `take_locker_check` to resolve whoever hides there.
+    locker_check: Option<usize>,
+    /// The locker that held this hunter's own target when it leaned in (the target is found and chased).
+    locker_found: Option<usize>,
+    /// A shut door the hunter knocked on or pushed this frame, for `take_door_action`.
+    door_action: Option<(Cell, Activity)>,
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
@@ -541,6 +585,9 @@ impl Brain {
     pub fn new(def: HunterDef, spawn: (f32, f32), seed: &str, diff: Difficulty) -> Brain {
         let gimmick = Gimmick::for_id(&def.id, diff);
         let def_id = def.id.clone();
+        // a real Idle pause on spawn (data/hunters/activities.json spawn_pause), not a wander on the first frame
+        let mut act_rng = Rng::new(&format!("{seed}:activity"));
+        let spawn_pause = activities::Rules::get().pause_for(true, act_rng.next_float());
         Brain {
             hearing_scale: def.hearing,
             def,
@@ -554,7 +601,7 @@ impl Brain {
             stun_heavy: false,
             slow_timer: 0.0,
             slow_factor: 1.0,
-            idle_timer: 0.0,
+            idle_timer: spawn_pause,
             search_timer: 0.0,
             search_visits: 0,
             lost_sight: 0.0,
@@ -625,6 +672,19 @@ impl Brain {
             hop: None,
             no_hop_memo: None,
             edge_clock: 0.0,
+            poi: None,
+            recent_pois: Vec::new(),
+            activity: None,
+            net_activity: None,
+            vent_trip: Default::default(),
+            vent_walk: None,
+            vent_timer: 0.0,
+            vent_thumps: 0,
+            vent_hatch: None,
+            act_rng,
+            locker_check: None,
+            locker_found: None,
+            door_action: None,
         }
     }
 
@@ -887,6 +947,8 @@ impl Brain {
         prof: &Profile,
     ) -> (bool, Vec<Event>) {
         let mut events = vec![];
+        self.locker_check = None;
+        self.door_action = None;
         self.tick_slow(dt);
         self.tick_cue(dt);
         let state_before = self.state;
@@ -917,16 +979,19 @@ impl Brain {
         g.after_perception(self, dt, ctx, target, &mut events);
         self.update_stamina(dt, prof);
         let holds = g.holds_position(self);
+        // a chaser may take the ducts when they beat the floor; inside them it is not walked and cannot be grabbed
+        let holds = self.vent_frame(dt, ctx, holds) || holds;
         self.peek_cooldown = (self.peek_cooldown - dt).max(0.0);
         if self.walk.is_none() {
             self.consider_peek(ctx.fac, &g, holds);
         }
         let speed_scale = g.speed_scale(self);
         self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
+        self.resolve_locker_check(target);
         self.follow_terrain(ctx.fac);
         self.tick_emotes(dt, state_before, dist(self.pos, target.pos));
         let breaches = g.breaches_hiding();
-        let immune = g.immune_to_capture(self);
+        let immune = g.immune_to_capture(self) || self.vent_trip.inside();
         self.gimmick = g;
         let may_grab_hidden = target.hidden
             && breaches
@@ -940,6 +1005,65 @@ impl Brain {
             && dist(self.pos, target.pos) < self.capture_reach(prof)
             && (self.y - target.y).abs() <= flight_edges::rules().capture_height;
         (caught, events)
+    }
+
+    /// One frame of a chaser's vent shortcut (hunters/vent_nav.rs). Plans a trip when the ducts are much shorter than the
+    /// floor, walks to the entry grate (`vent_walk`), crawls and climbs out. Returns true while the body is in the ducts
+    /// (the brain must not walk it). Never for Verrine (she lives there), never across floors.
+    fn vent_frame(&mut self, dt: f32, ctx: &Ctx, holds: bool) -> bool {
+        self.vent_walk = None;
+        let inside = self.vent_trip.inside();
+        let chasing = matches!(self.state, State::Chase | State::Investigate)
+            && self.def.id != "verrine"
+            && ctx.vents.len() >= 2
+            && !holds
+            && self.walk.is_none()
+            && self.level == self.goal_level();
+        if !chasing && !inside {
+            self.vent_trip.cancel();
+            return false;
+        }
+        // a stunned or held hunter inside the ducts stays where it is: no crawl step and no thumps until it is free
+        if holds && inside {
+            self.pos = self.vent_trip.crawl.pos;
+            return true;
+        }
+        let goal = self.last_known.unwrap_or(self.pos);
+        if !self.vent_trip.planned() && !inside {
+            self.vent_timer -= dt;
+            if self.vent_timer > 0.0 {
+                return false;
+            }
+            self.vent_timer = 1.0;
+            let floor_len = if self.path.is_empty() { dist(self.pos, goal) } else { self.path.len() as f32 };
+            self.vent_trip.plan(ctx.vents, self.pos, goal, floor_len, &self.def.id, ctx.diff.id());
+            if !self.vent_trip.planned() {
+                return false;
+            }
+        }
+        let fac = ctx.fac;
+        let s = self.vent_trip.step(dt, self.pos, goal, &|g, _goal| fac.nearest_open_or(g.0, g.1, 2.0));
+        self.vent_walk = s.walk_to;
+        self.vent_thumps += s.thumps;
+        if let Some(h) = s.hatch {
+            self.vent_hatch = Some(h);
+        }
+        if self.vent_trip.inside() || s.done {
+            self.pos = self.vent_trip.crawl.pos;
+            self.clear_path();
+            self.path_timer = 0.0;
+        }
+        self.vent_trip.inside()
+    }
+
+    /// The thumps made crawling in the ducts since the last call (the host raises a noise for each).
+    pub fn take_vent_thumps(&mut self) -> u32 {
+        std::mem::take(&mut self.vent_thumps)
+    }
+
+    /// The hatch that opened since the last call (a sound cue).
+    pub fn take_vent_hatch(&mut self) -> Option<super::vent_nav::Hatch> {
+        self.vent_hatch.take()
     }
 
     /// On the Inferno's noisy floor (`world/inferno_terrain.rs`) a hunter on foot stands on the ground under it, so its
@@ -1263,6 +1387,11 @@ impl Brain {
         holds: bool,
         gscale: f32,
     ) {
+        // a goal's activity belongs to the wander it was picked in: chase, investigate, search or a peek ends it
+        if self.state != State::Wander && (self.activity.is_some() || self.poi.is_some()) {
+            self.end_activity();
+            self.poi = None;
+        }
         if self.walk.is_some() {
             let speed = self.current_speed(depth, relays, prof, gscale);
             self.walk_edge(dt, fac, speed, prof);
@@ -1296,19 +1425,35 @@ impl Brain {
             }
             _ => {}
         }
+        if self.state == State::Wander && self.activity.is_some() {
+            if !holds {
+                let speed = self.current_speed(depth, relays, prof, gscale);
+                self.tick_activity(dt, fac, speed, prof);
+            }
+            return;
+        }
         if holds {
+            return;
+        }
+        if self.state == State::Wander && self.wander_target.is_none() {
+            // back from a peek (or set to Wander with no goal): pick one rather than stand
+            let t = self.pick_wander_target(fac);
+            if self.state == State::Wander {
+                self.wander_target = Some(t);
+                self.clear_path();
+            }
             return;
         }
         let goal = match self.state {
             State::Wander => self.wander_target,
-            State::Chase | State::Investigate => self.last_known,
+            State::Chase | State::Investigate => self.vent_walk.or(self.last_known),
             State::Search => self.search_target,
             State::Idle | State::Peek => None,
         };
         let Some(goal) = goal else { return };
         let speed = self.current_speed(depth, relays, prof, gscale);
         self.pursue(goal, speed, dt, fac, prof);
-        if self.walk.is_none() && self.level == self.goal_level() && dist(self.pos, goal) <= ARRIVAL_DISTANCE {
+        if self.vent_walk.is_none() && self.walk.is_none() && self.level == self.goal_level() && dist(self.pos, goal) <= ARRIVAL_DISTANCE {
             self.handle_arrival(fac, prof);
         }
     }
@@ -1414,7 +1559,16 @@ impl Brain {
     fn handle_arrival(&mut self, fac: &Facility, prof: &Profile) {
         match self.state {
             State::Wander => {
-                // chain another wander immediately so hunters patrol instead of pausing between legs
+                // a goal picked from a point of interest ends in an activity, then an Idle pause
+                let at_poi = match (&self.poi, self.wander_target) {
+                    (Some(p), Some(g)) => dist(p.stand, g) < 0.01,
+                    _ => false,
+                };
+                if at_poi {
+                    self.begin_activity(fac);
+                    return;
+                }
+                // any other goal: chain another wander immediately
                 self.wander_target = Some(self.pick_wander_target(fac));
                 self.clear_path();
             }
@@ -1490,6 +1644,7 @@ impl Brain {
             }
             State::Search => self.search_target = Some(self.pick_search_target(fac)),
             State::Wander => {
+                self.end_activity();
                 self.wander_target = Some(self.pick_wander_target(fac));
             }
             _ => {}
@@ -1864,23 +2019,56 @@ impl Brain {
         }
     }
 
+    /// The next wander goal, from the facility's points of interest (hunters/activities.rs): weighted by personality, region
+    /// and room type, never one of the last few. With none to go to (B11) it falls back to a reachable open cell nearby,
+    /// then the exit when that is far, and otherwise stands in a real Idle pause (the state is set to Idle and the
+    /// caller's goal is the hunter's own spot), so it never re-picks a zero-distance goal every frame.
     fn pick_wander_target(&mut self, fac: &Facility) -> (f32, f32) {
-        let mut cands = vec![];
-        for room in fac.rooms.iter().filter(|r| !r.lobby()) {
-            let (cx, cy) = room.center.center();
-            if let Some(p) = fac.nearest_open(cx, cy, HUNTER_RADIUS) {
-                if dist(self.pos, p) > 5.0 {
-                    cands.push(p);
+        self.pick_wander_target_with(fac, activities::Rules::get())
+    }
+
+    fn pick_wander_target_with(&mut self, fac: &Facility, rules: &activities::Rules) -> (f32, f32) {
+        self.poi = None;
+        let mut pois = activities::points_of_interest(fac, rules);
+        if let Some(p) = self.patrol {
+            let stands: Vec<(f32, f32)> = pois.iter().map(|q| q.stand).collect();
+            let kept = crate::app::public_route::filter_candidates(p, self.patrol_anchor, &stands);
+            pois.retain(|q| kept.contains(&q.stand));
+        }
+        let personality = rules.personality_of(&self.def.id, self.def.tier).to_string();
+        let roll = self.act_rng.next_float();
+        if let Some(i) = rules.choose(&pois, self.pos, &self.recent_pois, &personality, roll) {
+            let poi = pois.swap_remove(i);
+            self.recent_pois.push(poi.id());
+            let excess = self.recent_pois.len().saturating_sub(rules.memory);
+            self.recent_pois.drain(..excess);
+            let stand = poi.stand;
+            self.poi = Some(poi);
+            return stand;
+        }
+        if let Some(p) = self.local_wander_target(fac) {
+            return p;
+        }
+        self.state = State::Idle;
+        self.idle_timer = rules.pause_for(false, self.act_rng.next_float());
+        self.pos
+    }
+
+    /// A short wander when there is no point of interest: a reachable open cell 3 to 8 m away, else the exit when it
+    /// is more than 5 m off. None when neither exists.
+    fn local_wander_target(&mut self, fac: &Facility) -> Option<(f32, f32)> {
+        for _ in 0..12 {
+            let a = self.act_rng.next_float() as f32 * std::f32::consts::TAU;
+            let d = 3.0 + self.act_rng.next_float() as f32 * 5.0;
+            let (x, y) = (self.pos.0 + a.cos() * d, self.pos.1 + a.sin() * d);
+            if let Some(c) = fac.nearest_open(x, y, HUNTER_RADIUS) {
+                if dist(c, self.pos) >= 1.5 && self.can_reach(fac, c) {
+                    return Some(c);
                 }
             }
         }
-        if let Some(p) = self.patrol {
-            cands = crate::app::public_route::filter_candidates(p, self.patrol_anchor, &cands);
-        }
-        if cands.is_empty() {
-            return fac.exit.center();
-        }
-        cands[self.next_index(cands.len())]
+        let exit = fac.exit.center();
+        (dist(self.pos, exit) > 5.0).then_some(exit)
     }
 
     /// _pick_search_target: the next point to search. Hiding spots near the last sighting and the offsets around it
@@ -1895,8 +2083,37 @@ impl Brain {
                 self.searched.drain(..excess);
                 p
             }
-            None => self.pos,
+            None => match self.nearest_reachable_search_point(fac) {
+                Some(p) => {
+                    self.searched.push(p);
+                    p
+                }
+                None => {
+                    // nothing reachable at all: end the search so the hunter walks on instead of standing in place
+                    self.search_timer = 0.0;
+                    self.pos
+                }
+            },
         }
+    }
+
+    /// B12: the last-known point (or the hunter's own spot) cannot be reached, so search from the nearest reachable
+    /// cell: rings around it, near to far, the first open cell a route leads to.
+    fn nearest_reachable_search_point(&mut self, fac: &Facility) -> Option<(f32, f32)> {
+        let lk = self.last_known.unwrap_or(self.pos);
+        for ring in 1..=6 {
+            let r = ring as f32 * 1.5;
+            let start = self.next_float() * std::f32::consts::TAU;
+            for k in 0..8 {
+                let a = start + k as f32 * std::f32::consts::TAU / 8.0;
+                if let Some(c) = fac.nearest_open(lk.0 + a.cos() * r, lk.1 + a.sin() * r, HUNTER_RADIUS) {
+                    if dist(c, self.pos) > 0.5 && self.can_reach(fac, c) {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn pick_search_point(&mut self, fac: &Facility, rules: &SearchRules, scale: SearchScale) -> Option<(f32, f32)> {
@@ -1955,6 +2172,176 @@ impl Brain {
             return None;
         }
         Some(c)
+    }
+}
+
+impl Brain {
+    /// The activity being done and its progress 0..1 (a guest shows the host's copy), for the renderer and the wire.
+    pub fn activity_view(&self) -> Option<(Activity, f32)> {
+        self.activity.as_ref().map(|a| (a.kind, a.progress())).or(self.net_activity)
+    }
+
+    /// A guest's copy of the host's activity (wire keys `act` and `actp`, both optional); None clears it.
+    pub fn set_net_activity(&mut self, a: Option<(u8, f32)>) {
+        self.net_activity = a.and_then(|(i, p)| Some((Activity::from_index(i)?, p.clamp(0.0, 1.0))));
+    }
+
+    /// The locker the hunter leaned into this frame (index into `Facility::hiding`); read once per frame on the side
+    /// that simulates hunters.
+    pub fn take_locker_check(&mut self) -> Option<usize> {
+        self.locker_check.take()
+    }
+
+    /// The locker whose occupant this hunter found (its own target); read once.
+    pub fn take_locker_found(&mut self) -> Option<usize> {
+        self.locker_found.take()
+    }
+
+    /// A shut door the hunter knocked on or pushed this frame, with which of the two; read once.
+    pub fn take_door_action(&mut self) -> Option<(Cell, Activity)> {
+        self.door_action.take()
+    }
+
+    /// Whether an activity is running now.
+    pub fn doing_activity(&self) -> bool {
+        self.activity.is_some()
+    }
+
+    fn begin_activity(&mut self, fac: &Facility) {
+        let Some(poi) = self.poi.take() else { return };
+        let rules = activities::Rules::get();
+        let door_shut = poi.door.is_some_and(|c| !fac.door_is_open(c));
+        let kind = rules.pick_activity(&poi, door_shut, self.act_rng.next_float());
+        self.start_activity(kind, &poi, fac);
+    }
+
+    /// Start `kind` at `poi` now (the hunter stands at the goal).
+    pub(crate) fn start_activity(&mut self, kind: Activity, poi: &Poi, fac: &Facility) {
+        let rules = activities::Rules::get();
+        self.end_activity();
+        let base = activities::dir_to(self.pos, poi.focus, self.facing);
+        let mut run = ActivityRun {
+            kind,
+            duration: rules.duration(kind, self.act_rng.next_float()),
+            elapsed: 0.0,
+            base,
+            focus: poi.focus,
+            locker: poi.locker,
+            door: poi.door,
+            fired: false,
+            leg: 0,
+            loop_points: vec![],
+            hearing_applied: 1.0,
+        };
+        match kind {
+            Activity::CheckRoom => {
+                if let Some(r) = poi.room.or_else(|| fac.room_at(self.pos.0 as f64, self.pos.1 as f64)) {
+                    let start = (self.act_rng.next_float() * 4.0) as usize;
+                    run.loop_points = activities::room_loop(fac, r, rules.check_room_inset, start);
+                }
+            }
+            Activity::Listen => {
+                self.hearing_scale *= rules.listen_hearing_scale;
+                run.hearing_applied = rules.listen_hearing_scale;
+            }
+            _ => {}
+        }
+        self.facing = base;
+        self.wander_target = None;
+        self.clear_path();
+        self.path_goal = None;
+        self.activity = Some(run);
+    }
+
+    /// Drop the running activity (a chase, a give-up or a peek takes over) and undo what it changed.
+    fn end_activity(&mut self) {
+        if let Some(run) = self.activity.take() {
+            self.undo_activity(&run);
+        }
+    }
+
+    fn undo_activity(&mut self, run: &ActivityRun) {
+        if run.hearing_applied != 1.0 {
+            self.hearing_scale /= run.hearing_applied;
+        }
+    }
+
+    /// One frame of the activity; at its duration the hunter pauses in Idle for a short random time.
+    fn tick_activity(&mut self, dt: f32, fac: &Facility, speed: f32, prof: &Profile) {
+        let rules = activities::Rules::get();
+        let Some(mut run) = self.activity.take() else { return };
+        run.elapsed += dt;
+        let p = run.progress();
+        match run.kind {
+            Activity::InspectLocker => {
+                self.facing = activities::dir_to(self.pos, run.focus, run.base);
+                if !run.fired && p >= rules.lean_at {
+                    run.fired = true;
+                    self.locker_check = run.locker;
+                }
+            }
+            Activity::LookAround => {
+                self.facing = activities::sweep_facing(run.base, p, rules.sweep_degrees, rules.sweeps);
+            }
+            Activity::Sniff => {
+                let ahead = (self.pos.0 + run.base.0, self.pos.1 + run.base.1);
+                self.step_toward(ahead, rules.sniff_creep_speed * dt, fac, dt);
+                self.facing = run.base;
+            }
+            Activity::Listen => {
+                self.facing = run.base;
+            }
+            Activity::CheckRoom => {
+                if let Some(&goal) = run.loop_points.get(run.leg) {
+                    if dist(self.pos, goal) <= ARRIVAL_DISTANCE {
+                        run.leg += 1;
+                    } else {
+                        self.pursue(goal, speed * rules.check_room_speed_scale, dt, fac, prof);
+                        if self.wander_target.is_some() || self.state != State::Wander {
+                            // the walk gave up and picked a new goal: this activity is over
+                            self.undo_activity(&run);
+                            return;
+                        }
+                    }
+                } else {
+                    self.facing = activities::sweep_facing(run.base, p, rules.sweep_degrees, rules.sweeps);
+                }
+            }
+            Activity::Knock | Activity::Push => {
+                self.facing = activities::dir_to(self.pos, run.focus, run.base);
+                let beat = if run.kind == Activity::Push { rules.push_at } else { rules.lean_at };
+                if !run.fired && p >= beat {
+                    run.fired = true;
+                    if let Some(c) = run.door {
+                        self.door_action = Some((c, run.kind));
+                    }
+                }
+            }
+        }
+        if run.elapsed >= run.duration {
+            self.undo_activity(&run);
+            self.state = State::Idle;
+            self.idle_timer = rules.pause_for(false, self.act_rng.next_float());
+            self.wander_target = None;
+            self.poi = None;
+            self.clear_path();
+            self.path_goal = None;
+            return;
+        }
+        self.activity = Some(run);
+    }
+
+    /// The hunter leaned into a locker this frame: when its own target hides there it is found and chased (Godot
+    /// hunter_brain.gd 1366-1380). Anyone else in that locker is resolved by the host through `take_locker_check`.
+    fn resolve_locker_check(&mut self, target: &Target) {
+        let Some(i) = self.locker_check else { return };
+        if target.hidden && target.hiding_spot == Some(i) && !target.in_safe_zone {
+            self.locker_found = Some(i);
+            self.end_activity();
+            self.poi = None;
+            self.chase(target.pos);
+            self.clear_path();
+        }
     }
 }
 
@@ -2952,11 +3339,11 @@ mod wiring_tests {
     }
 
     #[test]
-    fn giving_up_leaves_a_chase_a_search_and_a_wander_idle() {
+    fn giving_up_leaves_a_chase_a_search_and_a_wander_picks_a_new_goal() {
         let fac = facility();
         let prof = Difficulty::Standard.profile();
         let (_, floor) = wall_beside_floor(&fac);
-        for (from, to) in [(State::Chase, State::Search), (State::Investigate, State::Search), (State::Wander, State::Idle)] {
+        for (from, to) in [(State::Chase, State::Search), (State::Investigate, State::Search), (State::Wander, State::Wander)] {
             let mut b = Brain::new(aki(), floor.center(), "GU", Difficulty::Standard);
             b.state = from;
             b.blocked_time = UNREACHABLE_GIVE_UP;
@@ -3909,5 +4296,275 @@ mod chase_speed_tests {
         assert_eq!(junk.chase_speed_scale, Progression::default().chase_speed_scale, "a non-number keeps the default");
         assert_eq!(junk.chase_scale_for(Difficulty::Standard, "az"), 1.0);
         assert_eq!(junk.chase_scale_for(Difficulty::Standard, "void"), junk.chase_speed_scale[1]);
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    use crate::config::Difficulty;
+    use crate::hunters::activities::{points_of_interest, PoiKind, Rules};
+    use crate::world::catalog::Catalog;
+    use crate::world::facility::Options;
+
+    fn aki() -> HunterDef {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        crate::content::hunters::parse(&v, None, "").unwrap()
+    }
+
+    fn fac() -> Facility {
+        Facility::generate("ACT-BRAIN-1", &Options::default(), &Catalog::load())
+    }
+
+    fn ctx(fac: &Facility) -> Ctx<'_> {
+        Ctx {
+            fac,
+            relays_taken: &[],
+            batteries_taken: &[],
+            hiding_disabled: &[],
+            vents: &[],
+            heater_on: false,
+            heater_thawed: true,
+            diff: Difficulty::Standard,
+            music_box_left: 0.0,
+            music_boxes: &[],
+            exposure: 0.0,
+            flashlight_dead: false,
+        }
+    }
+
+    /// A runner so far away that nothing senses it.
+    fn far() -> Target {
+        Target { pos: (-900.0, -900.0), facing: (1.0, 0.0), ..Default::default() }
+    }
+
+    fn run(b: &mut Brain, fac: &Facility, t: &Target, seconds: f32) {
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(fac);
+        for _ in 0..(seconds * 60.0).round() as i32 {
+            b.update(1.0 / 60.0, &c, t, 1, 0, &prof);
+        }
+    }
+
+    fn wanderer(fac: &Facility, at: (f32, f32)) -> Brain {
+        let mut b = Brain::new(aki(), at, "ACT", Difficulty::Standard);
+        b.active = true;
+        b.state = State::Wander;
+        b.idle_timer = 0.0;
+        b.set_level(fac.level);
+        b
+    }
+
+    /// An open cell with its whole 3x3 open, walled in on its four sides: a sealed one-cell pocket. The pocket is
+    /// at least 4 cells from `away`.
+    fn seal_a_pocket(fac: &mut Facility, away: Cell) -> (f32, f32) {
+        for y in 2..fac.rows - 2 {
+            for x in 2..fac.cols - 2 {
+                let c = Cell::new(x, y);
+                let open3 = (-1..=1).all(|dy| (-1..=1).all(|dx| fac.hunter_open(Cell::new(x + dx, y + dy))));
+                let far_enough = (c.x - away.x).abs() > 3 || (c.y - away.y).abs() > 3;
+                if open3 && far_enough {
+                    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                        fac.wall[(y + dy) as usize][(x + dx) as usize] = true;
+                    }
+                    fac.rebuild_grids();
+                    return c.center();
+                }
+            }
+        }
+        panic!("the generated floor has a 3x3 open patch");
+    }
+
+    #[test]
+    fn a_new_hunter_pauses_in_a_real_idle_before_it_wanders() {
+        let f = fac();
+        let mut b = Brain::new(aki(), f.start.center(), "ACT", Difficulty::Standard);
+        let sp = Rules::get().spawn_pause;
+        assert!(b.idle_timer >= sp.0 && b.idle_timer <= sp.1);
+        b.active = true;
+        b.set_level(f.level);
+        run(&mut b, &f, &far(), 0.1);
+        assert_eq!(b.state, State::Idle, "not skipped on the first frame");
+        run(&mut b, &f, &far(), sp.1 + 0.3);
+        assert_eq!(b.state, State::Wander);
+        assert!(b.wander_target.is_some());
+    }
+
+    #[test]
+    fn wander_goals_are_points_of_interest_and_never_repeat_in_a_row() {
+        let f = fac();
+        let stands: Vec<(f32, f32)> = points_of_interest(&f, Rules::get()).iter().map(|p| p.stand).collect();
+        let mut b = wanderer(&f, f.start.center());
+        let mut last = None;
+        let mut kinds = HashSet::new();
+        for _ in 0..80 {
+            b.state = State::Wander;
+            let g = b.pick_wander_target(&f);
+            assert!(stands.contains(&g), "goal {g:?} is not a point of interest");
+            assert_ne!(Some(g), last);
+            last = Some(g);
+            kinds.insert(b.poi.as_ref().unwrap().kind.id());
+            b.pos = g;
+        }
+        assert!(kinds.len() >= 2, "only {kinds:?}");
+        assert!(b.recent_pois.len() <= Rules::get().memory);
+    }
+
+    #[test]
+    fn an_activity_runs_for_its_duration_then_the_hunter_idles_for_a_short_pause() {
+        let f = fac();
+        let rules = Rules::get();
+        let poi = points_of_interest(&f, rules).into_iter().find(|p| p.kind == PoiKind::RoomCentre).unwrap();
+        let mut b = wanderer(&f, poi.stand);
+        b.start_activity(Activity::LookAround, &poi, &f);
+        let (lo, hi) = rules.durations[&Activity::LookAround];
+        let t = far();
+        let first = b.facing;
+        run(&mut b, &f, &t, lo * 0.5);
+        let (kind, p) = b.activity_view().expect("still looking round");
+        assert_eq!(kind, Activity::LookAround);
+        assert!(p > 0.0 && p < 1.0);
+        assert_eq!(b.state, State::Wander);
+        assert!(dist(b.facing, first) > 0.01, "the head and body sweep");
+        run(&mut b, &f, &t, hi + 0.2 - lo * 0.5);
+        assert!(b.activity_view().is_none());
+        assert_eq!(b.state, State::Idle);
+        assert!(b.idle_timer > 0.0 && b.idle_timer <= rules.pause.1);
+        run(&mut b, &f, &t, rules.pause.1 + 0.3);
+        assert_eq!(b.state, State::Wander, "after the pause it picks the next goal");
+    }
+
+    #[test]
+    fn listening_raises_hearing_and_the_end_restores_it() {
+        let f = fac();
+        let rules = Rules::get();
+        let poi = points_of_interest(&f, rules).into_iter().find(|p| p.kind == PoiKind::RoomCentre).unwrap();
+        let mut b = wanderer(&f, poi.stand);
+        let base = b.hearing_scale;
+        b.start_activity(Activity::Listen, &poi, &f);
+        assert!((b.hearing_scale - base * rules.listen_hearing_scale).abs() < 1e-4);
+        run(&mut b, &f, &far(), rules.durations[&Activity::Listen].1 + 0.3);
+        assert!((b.hearing_scale - base).abs() < 1e-4);
+        // a chase that interrupts it restores the hearing too
+        b.state = State::Wander;
+        b.start_activity(Activity::Listen, &poi, &f);
+        b.state = State::Chase;
+        b.last_known = Some(poi.stand);
+        run(&mut b, &f, &far(), 0.1);
+        assert!((b.hearing_scale - base).abs() < 1e-4);
+        assert!(b.activity_view().is_none());
+    }
+
+    #[test]
+    fn inspecting_the_locker_a_runner_hides_in_finds_them() {
+        let f = fac();
+        assert!(!f.hiding.is_empty(), "the generated floor has lockers");
+        let poi = points_of_interest(&f, Rules::get()).into_iter().find(|p| p.kind == PoiKind::Locker).unwrap();
+        let i = poi.locker.unwrap();
+        let hider = Target {
+            pos: f.hiding[i].cell.center(),
+            facing: (1.0, 0.0),
+            hidden: true,
+            hiding_spot: Some(i),
+            ..Default::default()
+        };
+        let mut b = wanderer(&f, poi.stand);
+        b.start_activity(Activity::InspectLocker, &poi, &f);
+        let mut found = None;
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&f);
+        for _ in 0..(4.5 * 60.0) as i32 {
+            b.update(1.0 / 60.0, &c, &hider, 1, 0, &prof);
+            if let Some(l) = b.take_locker_found() {
+                found = Some(l);
+                break;
+            }
+        }
+        assert_eq!(found, Some(i));
+        assert_eq!(b.state, State::Chase);
+        assert!(b.activity_view().is_none());
+    }
+
+    #[test]
+    fn inspecting_an_empty_locker_reports_the_check_and_finds_nobody() {
+        let f = fac();
+        let poi = points_of_interest(&f, Rules::get()).into_iter().find(|p| p.kind == PoiKind::Locker).unwrap();
+        let mut b = wanderer(&f, poi.stand);
+        b.start_activity(Activity::InspectLocker, &poi, &f);
+        let prof = Difficulty::Standard.profile();
+        let c = ctx(&f);
+        let mut checked = None;
+        for _ in 0..(4.5 * 60.0) as i32 {
+            b.update(1.0 / 60.0, &c, &far(), 1, 0, &prof);
+            checked = checked.or(b.take_locker_check());
+            assert_eq!(b.take_locker_found(), None);
+        }
+        assert_eq!(checked, poi.locker, "the host gets the locker to resolve other hiders");
+        assert_ne!(b.state, State::Chase);
+    }
+
+    /// B11: no point of interest: a short local wander to a reachable cell, not a goal on the hunter's own spot.
+    #[test]
+    fn b11_a_wander_with_no_points_of_interest_goes_somewhere_reachable() {
+        let f = fac();
+        let mut none = Rules::default();
+        none.kinds.clear();
+        let mut b = wanderer(&f, f.exit.center());
+        let g = b.pick_wander_target_with(&f, &none);
+        assert_eq!(b.state, State::Wander);
+        assert!(dist(g, b.pos) >= 1.5, "the goal is away from the hunter");
+        assert!(b.can_reach(&f, g));
+        assert!(b.poi.is_none());
+    }
+
+    /// B11: boxed in with nothing to go to, the hunter idles instead of re-picking its own spot every frame.
+    #[test]
+    fn b11_a_boxed_in_wanderer_idles_instead_of_looping_on_its_own_spot() {
+        let mut f = fac();
+        let pocket = seal_a_pocket(&mut f, Cell::new(-100, -100));
+        let mut none = Rules::default();
+        none.kinds.clear();
+        let mut b = wanderer(&f, pocket);
+        let g = b.pick_wander_target_with(&f, &none);
+        if dist(g, b.pos) < 1.5 {
+            assert_eq!(b.state, State::Idle);
+            assert!(b.idle_timer > 0.0);
+        } else {
+            // the exit is farther than 5 m and was the answer, as before
+            assert_eq!(g, f.exit.center());
+        }
+    }
+
+    /// B12: the last-known point is walled off, so the search goes to the nearest cell that can be reached.
+    #[test]
+    fn b12_a_search_on_an_unreachable_point_goes_to_the_nearest_reachable_cell() {
+        let mut f = fac();
+        let start = f.start;
+        let pocket = seal_a_pocket(&mut f, start);
+        let mut b = Brain::new(aki(), f.start.center(), "ACT", Difficulty::Standard);
+        b.active = true;
+        b.set_level(f.level);
+        b.last_known = Some(pocket);
+        let t = b.nearest_reachable_search_point(&f).expect("a reachable cell lies near the pocket");
+        assert!(dist(t, b.pos) > 0.5);
+        assert!(b.can_reach(&f, t));
+        assert!(dist(t, pocket) <= 10.0);
+        b.search_timer = 9.0;
+        let _ = b.pick_search_target(&f);
+        assert_eq!(b.search_timer, 9.0, "a search with somewhere to go keeps its time");
+    }
+
+    /// B12: nothing reachable at all (the hunter itself is sealed in): the search ends rather than standing in place.
+    #[test]
+    fn b12_a_search_with_nowhere_to_go_ends_instead_of_standing_still() {
+        let mut f = fac();
+        let pocket = seal_a_pocket(&mut f, Cell::new(-100, -100));
+        let mut b = Brain::new(aki(), pocket, "ACT", Difficulty::Standard);
+        b.active = true;
+        b.set_level(f.level);
+        b.last_known = Some(pocket);
+        b.search_timer = 9.0;
+        let _ = b.pick_search_target(&f);
+        assert_eq!(b.search_timer, 0.0);
     }
 }

@@ -201,6 +201,87 @@ pub fn shortcut_pressed() -> Option<Shortcut> {
     )
 }
 
+/// Held-key repeat for Backspace and Delete (data/ui/key_repeat.json; the Standard values if it is missing or broken).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyRepeat {
+    /// Seconds a key is held before it starts to repeat.
+    pub delay: f32,
+    /// Repeats per second after that; 0 turns repeating off.
+    pub rate: f32,
+}
+
+impl Default for KeyRepeat {
+    fn default() -> Self {
+        KeyRepeat { delay: 0.4, rate: 25.0 }
+    }
+}
+
+impl KeyRepeat {
+    pub fn parse(v: &serde_json::Value) -> KeyRepeat {
+        let d = KeyRepeat::default();
+        let num = |key: &str, fallback: f32| {
+            v.get(key).and_then(serde_json::Value::as_f64).filter(|s| *s >= 0.0 && s.is_finite()).map(|s| s as f32).unwrap_or(fallback)
+        };
+        KeyRepeat { delay: num("delay_seconds", d.delay), rate: num("repeats_per_second", d.rate) }
+    }
+
+    pub fn load() -> KeyRepeat {
+        static CFG: std::sync::OnceLock<KeyRepeat> = std::sync::OnceLock::new();
+        *CFG.get_or_init(|| {
+            crate::content::embedded::data_under("ui/key_repeat.json")
+                .next()
+                .and_then(|(_, text)| serde_json::from_str::<serde_json::Value>(text).ok())
+                .map(|v| KeyRepeat::parse(&v))
+                .unwrap_or_default()
+        })
+    }
+
+    /// Repeats owed once a key has been held `held` seconds: 0 before the delay, then one at the delay and `rate` per second.
+    fn count_at(&self, held: f32) -> u32 {
+        if self.rate <= 0.0 || held < self.delay {
+            0
+        } else {
+            ((held - self.delay) * self.rate).floor() as u32 + 1
+        }
+    }
+}
+
+/// How long one key has been held, to turn a held key into repeated presses.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct HoldTimer {
+    held: f32,
+}
+
+impl HoldTimer {
+    /// One frame: `pressed` is the key going down this frame, `down` that it is held. Returns how many presses to
+    /// apply: 1 on the press itself, then the repeats that fell due in `dt` while it stays held.
+    pub fn step(&mut self, pressed: bool, down: bool, dt: f32, cfg: &KeyRepeat) -> u32 {
+        if !down && !pressed {
+            self.held = 0.0;
+            return 0;
+        }
+        if pressed {
+            self.held = 0.0;
+            return 1;
+        }
+        let before = self.held;
+        self.held += dt.max(0.0);
+        cfg.count_at(self.held) - cfg.count_at(before)
+    }
+}
+
+thread_local! {
+    static BACKSPACE_HOLD: std::cell::Cell<HoldTimer> = const { std::cell::Cell::new(HoldTimer { held: 0.0 }) };
+    static DELETE_HOLD: std::cell::Cell<HoldTimer> = const { std::cell::Cell::new(HoldTimer { held: 0.0 }) };
+}
+
+fn hold_step(slot: &'static std::thread::LocalKey<std::cell::Cell<HoldTimer>>, key: KeyCode) -> u32 {
+    let mut timer = slot.with(std::cell::Cell::get);
+    let n = timer.step(is_key_pressed(key), is_key_down(key), macroquad::time::get_frame_time(), &KeyRepeat::load());
+    slot.with(|c| c.set(timer));
+    n
+}
+
 /// One frame of keyboard for a field.
 #[derive(Default, Debug)]
 pub struct Input {
@@ -290,15 +371,22 @@ pub fn edit(kind: Kind, field: &mut String, selected: &mut bool) -> bool {
         chars.push(ch);
     }
     let shortcut = shortcut_pressed();
+    let backspaces = hold_step(&BACKSPACE_HOLD, KeyCode::Backspace);
+    let deletes = hold_step(&DELETE_HOLD, KeyCode::Delete);
     let input = Input {
         chars,
         command,
         shortcut,
-        backspace: is_key_pressed(KeyCode::Backspace),
-        delete: is_key_pressed(KeyCode::Delete),
+        backspace: backspaces > 0,
+        delete: deletes > 0,
         paste: clipboard::poll_paste(shortcut == Some(Shortcut::Paste)),
     };
-    let out = apply(kind, field, selected, &input);
+    let mut out = apply(kind, field, selected, &input);
+    // a held key may owe several repeats this frame (a slow frame): each one is another press
+    for _ in 1..backspaces.max(deletes) {
+        let again = Input { backspace: backspaces > 1, delete: deletes > 1, ..Input::default() };
+        out.changed |= apply(kind, field, selected, &again).changed;
+    }
     if let Some(text) = &out.copy {
         clipboard::copy(text);
     }
@@ -319,6 +407,50 @@ mod tests {
     }
     fn paste(s: &str) -> Input {
         Input { paste: Some(s.to_string()), ..Input::default() }
+    }
+
+    #[test]
+    fn a_held_key_repeats_after_the_delay_at_the_rate() {
+        let cfg = KeyRepeat { delay: 0.5, rate: 10.0 };
+        let mut hold = HoldTimer::default();
+        assert_eq!(hold.step(true, true, 0.016, &cfg), 1, "the press itself");
+        let mut total = 0;
+        for _ in 0..25 {
+            total += hold.step(false, true, 0.016, &cfg);
+        }
+        assert_eq!(total, 0, "nothing before the delay (0.4 s held)");
+        let mut total = 0;
+        for _ in 0..62 {
+            total += hold.step(false, true, 0.016, &cfg);
+        }
+        // held for about 1.39 s: the first repeat at 0.5 s, then ten a second
+        assert!((8..=10).contains(&total), "repeats after the delay: {total}");
+        assert_eq!(hold.step(false, false, 0.016, &cfg), 0);
+        assert_eq!(hold.step(true, true, 0.016, &cfg), 1, "releasing resets the delay");
+        assert_eq!(hold.step(false, true, 0.1, &cfg), 0);
+    }
+
+    #[test]
+    fn a_slow_frame_owes_several_repeats_and_rate_zero_turns_repeating_off() {
+        let cfg = KeyRepeat { delay: 0.2, rate: 20.0 };
+        let mut hold = HoldTimer::default();
+        hold.step(true, true, 0.0, &cfg);
+        assert_eq!(hold.step(false, true, 0.2, &cfg), 1, "the first repeat at the delay");
+        assert_eq!(hold.step(false, true, 0.525, &cfg), 10, "about 0.5 s at 20 per second");
+        let off = KeyRepeat { delay: 0.0, rate: 0.0 };
+        let mut hold = HoldTimer::default();
+        hold.step(true, true, 0.0, &off);
+        assert_eq!(hold.step(false, true, 5.0, &off), 0);
+    }
+
+    #[test]
+    fn key_repeat_reads_data_and_falls_back() {
+        let embedded: serde_json::Value = serde_json::from_str(include_str!("../data/ui/key_repeat.json")).unwrap();
+        assert_eq!(KeyRepeat::parse(&embedded), KeyRepeat::default(), "Standard values");
+        assert_eq!(KeyRepeat::load(), KeyRepeat::default());
+        let r = KeyRepeat::parse(&serde_json::json!({ "delay_seconds": 1.0, "repeats_per_second": 5.0 }));
+        assert_eq!((r.delay, r.rate), (1.0, 5.0));
+        assert_eq!(KeyRepeat::parse(&serde_json::json!({ "delay_seconds": -1, "repeats_per_second": "x" })), KeyRepeat::default());
     }
 
     #[test]

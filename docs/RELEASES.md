@@ -4,7 +4,7 @@ Every build goes to a rolling pre-release in GitHub Releases, not to Actions art
 
 | Release tag | What | Workflow | When it runs |
 |---|---|---|---|
-| `nightly` | KYTTU: The Last Route, Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/build.yml` | Every push to `main` (and by hand) |
+| `nightly` | KYTTU - The Last Route, Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/build.yml` | Every push to `main` (and by hand) |
 | `nightly-server` | `lr_server`, Linux x86_64, with its SHA-256 | `.github/workflows/build.yml` (Linux job) | Every push to `main` |
 | `nightly-nw` | Night Watch (`src/bin/night_watch`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-nw.yml` | By hand only |
 | `nightly-lrs` | LR Story (`src/bin/lr_story`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-lrs.yml` | By hand only |

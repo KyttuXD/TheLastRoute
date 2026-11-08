@@ -295,7 +295,7 @@ fn kicker() -> Color {
 /// The title's wordmark, in two lines as the web title wraps it at its size.
 const TITLE_LINES: [&str; 2] = ["THE LAST", "ROUTE"];
 /// The small kicker above the account screen's modal title, drawn and measured in every account dialog.
-const ACCOUNT_KICKER: &str = "KYTTU: THE LAST ROUTE";
+const ACCOUNT_KICKER: &str = "KYTTU - THE LAST ROUTE";
 
 /// The ACCOUNT button's caption: ACCOUNT once signed in (the web's account button), otherwise
 /// REGISTER / SIGN IN.

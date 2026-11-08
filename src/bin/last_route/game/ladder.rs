@@ -129,6 +129,10 @@ pub struct Climb {
     /// The eased share of the mount's or dismount's turn already applied (the turn is added in steps, so the mouse's
     /// own yaw is never overwritten).
     turn_done: f32,
+    /// Forward and jump count only after a release on the shaft: a hold that carried over from the mount (a walk-in) or
+    /// from the last press needs a fresh press.
+    fwd_armed: bool,
+    jump_armed: bool,
 }
 
 impl Climb {
@@ -158,6 +162,8 @@ impl Climb {
             from_y: if dir < 0 { y_top } else { y_bottom },
             to_y: if dir < 0 { y_top } else { y_bottom },
             turn_done: 0.0,
+            fwd_armed: false,
+            jump_armed: false,
             exit_top: (step_center(cell, run), facing(run)),
             exit_bottom: (step_center(cell, run), facing(run)),
             exit: (step_center(cell, run), facing(run)),
@@ -319,6 +325,12 @@ impl Game {
         let mut moving = false;
         match k.phase {
             Phase::Mount => {
+                if c.fwd.abs() <= 0.2 {
+                    k.fwd_armed = true;
+                }
+                if !c.jump {
+                    k.jump_armed = true;
+                }
                 k.t = (k.t + dt / LADDER_MOUNT_SECONDS).min(1.0);
                 let e = smooth(k.t);
                 self.p.pos = lerp2(k.from, stand(k.cell, k.side), e);
@@ -333,8 +345,16 @@ impl Game {
                 // forward climbs up, back climbs down; jump at or below the let-go height is a smooth dismount to the
                 // bottom exit (Godot: `_ladder_dismount("bottom")`), never a free fall
                 let stopped = self.p.stun > 0.0;
-                let axis = if stopped { 0.0 } else { c.fwd };
-                if c.jump && k.height() <= LADDER_LET_GO_HEIGHT {
+                let mut axis = if stopped { 0.0 } else { c.fwd };
+                if axis.abs() <= 0.2 {
+                    k.fwd_armed = true;
+                } else if !k.fwd_armed {
+                    // still the hold that walked in: no climb or dismount until released and pressed again
+                    axis = 0.0;
+                }
+                let jump_press = c.jump && k.jump_armed;
+                k.jump_armed = !c.jump;
+                if jump_press && k.height() <= LADDER_LET_GO_HEIGHT {
                     self.dismount(&mut k, End::Bottom);
                 } else if axis > 0.2 && k.y >= k.y_top {
                     self.dismount(&mut k, End::Top);
@@ -636,6 +656,7 @@ mod tests {
         assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a jump high up does not let go");
         let bottom = g.ladder.unwrap().y_bottom;
         g.ladder.as_mut().unwrap().y = bottom + LET_GO * 0.5;
+        run(&mut g, &quiet(), DT, &content, &catalog);
         run(&mut g, &jump(), DT, &content, &catalog);
         let k = g.ladder.expect("a low jump is a dismount, not the end of the climb");
         assert_eq!((k.phase, k.end), (Phase::Dismount, End::Bottom), "a low jump lets go: a dismount to the bottom exit");
@@ -778,6 +799,8 @@ mod tests {
         let step = LADDER_CLIMB_SPEED * DT;
         let mut last = g.p.eye_y();
         g.start_ladder(i);
+        run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
+        last = g.p.eye_y();
         let mut frames = 0;
         let c = back();
         while g.ladder.is_some() {
@@ -898,6 +921,53 @@ mod tests {
         assert!(max_step < 0.5, "no frame of the dismount snaps the view: {max_step}");
         let run_yaw = facing(k0.run);
         assert!(turn(run_yaw, g.p.yaw).abs() < 1e-3, "ends facing away from the hatch");
+    }
+
+    #[test]
+    fn a_forward_hold_after_a_walk_in_stays_on_until_pressed_again() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        let s = g.fac.stairs[i];
+        g.p.pos = step_center_of(s);
+        g.p.yaw = facing((-run_of(&s).0, -run_of(&s).1));
+        let mut frames = 0;
+        while g.ladder.is_none() {
+            frame(&mut g, &forward(), &content, &catalog);
+            frames += 1;
+            assert!(frames < 60, "never mounted");
+        }
+        // the same hold continues through the mount and the top of the shaft: no dismount, no climb
+        run(&mut g, &forward(), MOUNT + 1.0, &content, &catalog);
+        let k = g.ladder.expect("the held walk-in forward does not dismount");
+        assert_eq!(k.phase, Phase::Climb);
+        assert_eq!(k.y, k.y_top, "the held forward does not climb either");
+        // release, then a fresh press dismounts at the top
+        run(&mut g, &quiet(), DT, &content, &catalog);
+        run(&mut g, &forward(), DT, &content, &catalog);
+        assert_eq!((g.ladder.unwrap().phase, g.ladder.unwrap().end), (Phase::Dismount, End::Top));
+    }
+
+    #[test]
+    fn a_held_jump_does_not_let_go_but_a_fresh_press_does() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let (mut g, i) = ladder_game(&content, &catalog);
+        g.start_ladder(i);
+        // jump held from before the mount through it
+        run(&mut g, &jump(), MOUNT + DT, &content, &catalog);
+        g.ladder.as_mut().unwrap().y = g.ladder.unwrap().y_bottom + 1.0;
+        run(&mut g, &jump(), 0.3, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Climb, "a held jump holds on");
+        run(&mut g, &quiet(), DT, &content, &catalog);
+        run(&mut g, &jump(), DT, &content, &catalog);
+        assert_eq!(g.ladder.unwrap().phase, Phase::Dismount, "a fresh press lets go");
+    }
+
+    #[test]
+    fn the_head_check_uses_the_real_capsule_height() {
+        assert!((crate::game::level_stack::body_height() - crate::config::PLAYER_HEIGHT).abs() < 1e-6);
+        assert!((crate::config::PLAYER_HEIGHT - 1.90).abs() < 1e-6);
     }
 
     #[test]

@@ -20,7 +20,7 @@ items rather than left in an ambiguous in-progress state.
 - [ ] Add a test that every sewer prop and ceiling fixture fits under the 4.0 m sewer wall height, then look at it in the running game. Why: the height readers are untested at 4.0 m and nothing has been seen on screen.
 - [ ] Check the Mansion doors in a run on KT-MBA (the luxuryRoomDoor models and data are fine). Why: the doors are invisible in game, so the draw path is the suspect.
 - [ ] Fix bed placement in furnished.rs so beds stop sticking out into the hallway. Why: a bed in the hallway blocks the way and breaks the room layout.
-- [ ] Change the account screen kicker from "KYTTU'S LAB // ACCOUNT" to "KYTTU: THE LAST ROUTE". Why: the title still shows the old lab name.
+- [x] Account screen kicker reads "KYTTU - THE LAST ROUTE" (game retitled "KYTTU - The Last Route" on 2026-11-08; the macOS bundle keeps the folder name "KYTTU The Last Route.app" so the updater and installed copies still find it).
 - [ ] Deploy the public route process on vps2 (unit in docs/SERVERS.md), then set `client_host_fallback` to false. Why: the public route has no real host until then; the server change needs KT's approval.
 - [ ] Ship the CREATE ROOM build fix (docs/patches/node-hosted-build.patch and the region agent's Rust host). Why: CREATE ROOM is refused with BUILD MISMATCH on the live site.
 - [ ] Admin STATUS should show the real server state in a hosted room, not always "SERVER OFFLINE (SOLO, NO SERVER)". Why: the status line misleads the admin.
@@ -94,7 +94,7 @@ From a read-only audit of every open and partial item against the Rust code (539
 - [~] Port Carnival booths (playable stalls and carousel missing)
 - [~] Port Chunk seams (centre-cross openings, wide hall openings)
 - [x] Port Stairwells (spiral and switchback flights, placement, access halls) (done 2026-11-04: flights are switchback, straight and spiral, see docs/STAIRS_CONTINUOUS_DESIGN.md)
-- [~] Port Vent network (ducts and crawl movement missing, grates only)
+- [~] Port Vent network (hunter vent routing and Verrine's duct crawl done on the grate ring; real duct geometry and the runner's own crawl still open)
 - [ ] Public route featured hunters and lineup
 - [~] Room climate offsets: per-room profiles instead of per-region estimates
 - [~] Text-to-speech chat for nearby players (update 2026-11-04: audio/tts.rs exists, no caller yet)
@@ -381,7 +381,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] Release build fails while last_route.exe is running (file lock). Close the game first, or build to a copy
 - [ ] Windows CI: the server test step compiles slowly on the runner and was cancelled once; confirm it finishes on a normal run
 - [ ] Windows CI: the self-test runs locally only (hosted runners have no OpenGL pixel format)
-- [ ] Account screen kicker still reads "KYTTU'S LAB // ACCOUNT"; change it to "KYTTU: THE LAST ROUTE"
+- [x] Account screen kicker reads "KYTTU - THE LAST ROUTE"
 - [ ] Chairs face their tables: the code matches Godot, but no restaurant render has been checked (OPEN_QUESTIONS 21)
 - [ ] Ambient is 0.35 here against Godot's 0.035, a deliberate change; decide whether to keep it or match Godot
 - [ ] Mouse look speed is unchecked against Godot with the same swipe (OPEN_QUESTIONS 20); macOS now 1/3 (data/player/look.json), unmeasured

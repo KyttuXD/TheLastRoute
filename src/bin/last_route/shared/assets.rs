@@ -136,6 +136,7 @@ fn load_models(content: &Content) -> HashMap<String, PropModel> {
     let mut models = HashMap::new();
     let mut cache = AtlasCache::default();
     let embedded_models = embedded::assets_under("interactables/")
+        .chain(embedded::assets_under("props/hunter_items/"))
         .map(|(p, _)| p)
         .filter(|p| p.ends_with(".bbmodel"))
         .chain(

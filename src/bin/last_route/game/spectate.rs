@@ -67,10 +67,72 @@ pub fn labels() -> &'static Labels {
     })
 }
 
+/// The follow camera numbers, from data/ui/spectate_camera.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraCfg {
+    /// How far behind the watched runner the eye sits.
+    pub distance: f32,
+    /// Eye height above the runner's feet.
+    pub height: f32,
+    /// Height of the point the camera looks at.
+    pub look_height: f32,
+    pub follow_label: String,
+    pub cycle_hint: String,
+}
+
+impl CameraCfg {
+    pub fn parse(text: &str) -> Result<CameraCfg, String> {
+        let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let n = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_f64)
+                .filter(|x| x.is_finite() && *x >= 0.0)
+                .map(|x| x as f32)
+                .ok_or_else(|| format!("{k} must be a number of 0 or more"))
+        };
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|x| !x.trim().is_empty())
+                .ok_or_else(|| format!("{k} must be a non-empty string"))
+        };
+        Ok(CameraCfg { distance: n("distance")?, height: n("height")?, look_height: n("look_height")?, follow_label: s("follow_label")?, cycle_hint: s("cycle_hint")? })
+    }
+}
+
+/// The embedded follow camera numbers (data/ui/spectate_camera.json), parsed once.
+pub fn camera_cfg() -> &'static CameraCfg {
+    static CFG: OnceLock<CameraCfg> = OnceLock::new();
+    CFG.get_or_init(|| {
+        let text = crate::content::embedded::data_under("")
+            .find(|(p, _)| *p == "ui/spectate_camera.json")
+            .map(|(_, t)| t)
+            .expect("data/ui/spectate_camera.json is embedded by build.rs");
+        CameraCfg::parse(text).expect("data/ui/spectate_camera.json is valid")
+    })
+}
+
+/// The follow camera: the eye `distance` behind a runner at `pos` (x, y feet, z) facing `facing` (x, z), raised to
+/// `height`, and the point it looks at. A zero facing puts the eye straight above.
+pub fn follow_pose(pos: [f32; 3], facing: [f32; 2], cfg: &CameraCfg) -> ([f32; 3], [f32; 3]) {
+    let len = (facing[0] * facing[0] + facing[1] * facing[1]).sqrt();
+    let (fx, fz) = if len > 1e-4 { (facing[0] / len, facing[1] / len) } else { (0.0, 0.0) };
+    let eye = [pos[0] - fx * cfg.distance, pos[1] + cfg.height, pos[2] - fz * cfg.distance];
+    (eye, [pos[0], pos[1] + cfg.look_height, pos[2]])
+}
+
+/// The peers still alive, in roster order. `roster` pairs a peer with whether it is alive.
+pub fn living_peers(roster: &[(u32, bool)]) -> Vec<u32> {
+    roster.iter().filter(|(_, alive)| *alive).map(|(p, _)| *p).collect()
+}
+
 /// The spectator state: the room peer being watched, None when no other runner is left to watch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Spectate {
     pub target: Option<u32>,
+    /// True while the camera sits behind the watched runner ([F] toggles it).
+    pub follow: bool,
 }
 
 /// Whether the player may choose SPECTATE: it is downed or dead, and another runner is in the room to watch.
@@ -81,7 +143,7 @@ pub fn may_spectate(downed: bool, over: bool, peers: &[u32]) -> bool {
 impl Spectate {
     /// The transition into spectator mode: watching the first other runner. None when the player may not spectate.
     pub fn enter(downed: bool, over: bool, peers: &[u32]) -> Option<Spectate> {
-        may_spectate(downed, over, peers).then(|| Spectate { target: peers.first().copied() })
+        may_spectate(downed, over, peers).then(|| Spectate { target: peers.first().copied(), follow: false })
     }
 
     /// Moves the watched runner `step` places along `peers` (wrapping at both ends). A target no longer in the room, or
@@ -114,6 +176,23 @@ impl Game {
         } else {
             c.clone()
         }
+    }
+
+    /// [F]: toggles the camera behind the watched runner. No effect when not spectating.
+    pub fn spectate_toggle_follow(&mut self) {
+        if let Some(s) = self.spectate.as_mut() {
+            s.follow = !s.follow;
+        }
+    }
+
+    /// True when the camera should sit behind the watched runner this frame.
+    pub fn spectate_following(&self) -> bool {
+        self.spectate.is_some_and(|s| s.follow && s.target.is_some())
+    }
+
+    /// [E] (+1) and [Q] (-1): like [`Game::spectate_cycle`] but over the living runners only (`roster`: peer, alive).
+    pub fn spectate_cycle_living(&mut self, roster: &[(u32, bool)], step: i32) {
+        self.spectate_cycle(&living_peers(roster), step);
     }
 
     /// The peer the spectator watches, if any.
@@ -172,15 +251,15 @@ mod tests {
 
     #[test]
     fn a_downed_or_dead_runner_with_someone_to_watch_goes_to_spectate() {
-        assert_eq!(Spectate::enter(true, false, &[2, 3]), Some(Spectate { target: Some(2) }), "downed: watches the first runner");
-        assert_eq!(Spectate::enter(false, true, &[5]), Some(Spectate { target: Some(5) }), "dead: watches the first runner");
+        assert_eq!(Spectate::enter(true, false, &[2, 3]), Some(Spectate { target: Some(2), follow: false }), "downed: watches the first runner");
+        assert_eq!(Spectate::enter(false, true, &[5]), Some(Spectate { target: Some(5), follow: false }), "dead: watches the first runner");
         assert!(Spectate::enter(true, false, &[]).is_none(), "alone in the room: nobody to watch");
     }
 
     #[test]
     fn spectate_cycles_through_the_runners_both_ways_and_wraps() {
         let peers = [2, 3, 7];
-        let mut s = Spectate { target: Some(2) };
+        let mut s = Spectate { target: Some(2), ..Default::default() };
         s.cycle(&peers, 1);
         assert_eq!(s.target, Some(3));
         s.cycle(&peers, 1);
@@ -193,12 +272,57 @@ mod tests {
 
     #[test]
     fn a_watched_runner_who_leaves_moves_the_view_to_the_first_one_left() {
-        let mut s = Spectate { target: Some(3) };
+        let mut s = Spectate { target: Some(3), ..Default::default() };
         s.cycle(&[2, 7], 1);
         assert_eq!(s.target, Some(2), "the target left the room: the first runner is watched");
-        let mut none = Spectate { target: Some(3) };
+        let mut none = Spectate { target: Some(3), ..Default::default() };
         none.cycle(&[], 1);
         assert_eq!(none.target, None, "nobody left: no target");
+    }
+
+    #[test]
+    fn follow_targets_only_living_teammates_and_cycling_wraps() {
+        let roster = [(2, true), (3, false), (7, true)];
+        assert_eq!(living_peers(&roster), vec![2, 7], "the dead runner is skipped");
+        let mut g = game();
+        g.end_run(0, "caught");
+        assert!(g.spectate_enter(&living_peers(&roster)));
+        assert_eq!(g.spectate_target(), Some(2));
+        g.spectate_cycle_living(&roster, 1);
+        assert_eq!(g.spectate_target(), Some(7), "3 is dead: E goes 2 to 7");
+        g.spectate_cycle_living(&roster, 1);
+        assert_eq!(g.spectate_target(), Some(2), "E wraps");
+        g.spectate_cycle_living(&roster, -1);
+        assert_eq!(g.spectate_target(), Some(7), "Q wraps back");
+        // the watched runner dies: the view moves to a living one
+        g.spectate_cycle_living(&[(2, true), (7, false)], 1);
+        assert_eq!(g.spectate_target(), Some(2));
+    }
+
+    #[test]
+    fn follow_toggles_only_while_spectating_and_needs_a_target() {
+        let mut g = game();
+        g.spectate_toggle_follow();
+        assert!(!g.spectate_following(), "a runner who is not spectating cannot follow");
+        g.end_run(0, "caught");
+        assert!(g.spectate_enter(&[2]));
+        g.spectate_toggle_follow();
+        assert!(g.spectate_following());
+        g.spectate_cycle(&[], 1);
+        assert!(!g.spectate_following(), "nobody left to follow");
+    }
+
+    #[test]
+    fn the_follow_camera_sits_behind_and_above_by_the_data_numbers() {
+        let cfg = camera_cfg();
+        assert!(cfg.distance > 0.0 && cfg.height > 0.0);
+        let (eye, look) = follow_pose([10.0, 0.0, 5.0], [0.0, 2.0], cfg);
+        assert!((eye[2] - (5.0 - cfg.distance)).abs() < 1e-4 && (eye[0] - 10.0).abs() < 1e-4, "behind a runner facing +z");
+        assert!((eye[1] - cfg.height).abs() < 1e-4);
+        assert!((look[1] - cfg.look_height).abs() < 1e-4 && look[2] == 5.0);
+        let (above, _) = follow_pose([0.0, 0.0, 0.0], [0.0, 0.0], cfg);
+        assert!(above[0] == 0.0 && above[2] == 0.0, "no facing: straight above");
+        assert!(CameraCfg::parse("{\"distance\":-1}").is_err());
     }
 
     #[test]

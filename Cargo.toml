@@ -73,6 +73,9 @@ winresource = "0.1"
 
 [profile.dev]
 opt-level = 2
+# Line tables only: backtraces keep file and line, but the compiler skips full debug info for the ~190k-line game crate,
+# which was a large share of every dev and test build (and of the disk under target/).
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3

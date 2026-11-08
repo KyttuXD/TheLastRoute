@@ -225,6 +225,7 @@ fn draw_floor(g: &Game, a: &Assets, xf: Xf, cells: (i32, i32, i32, i32), full: b
     let radius = (cell * 0.55).max(if full { 3.0 } else { 1.8 });
     let placed = hunter_marks(g, |h| inside(h.pos).then(|| xf.at(h.pos)), radius);
     hunter_mark::draw(a, &placed, full);
+    porcelle_rings(g, |h| inside(h.pos).then(|| xf.at(h.pos)), radius, cell);
     draw_runner_pins(xf, cells, (0, 0), marks, g.fac.level, full);
     let q = xf.at(g.p.pos);
     runner_wedge(g, vec2(q.0, q.1), cell, full);
@@ -259,6 +260,18 @@ fn hunter_marks(g: &Game, place: impl Fn(&Brain) -> Option<(f32, f32)>, radius: 
             Some(hunter_mark::Placed { mark: hunter_mark::mark_of(&h.def), at: place(h)?, radius, alpha })
         })
         .collect()
+}
+
+/// Porcelle's radar ping ring around her dot (Godot `_draw_ghost_ping`), placed like `hunter_marks` places the dot.
+fn porcelle_rings(g: &Game, place: impl Fn(&Brain) -> Option<(f32, f32)>, radius: f32, cell: f32) {
+    let reduced = super::style::reduced_motion();
+    let s = super::radar_ping::sample(macroquad::time::get_time() as f32, reduced);
+    let Some(ring) = super::radar_ping::ring(&s, radius, cell, reduced) else { return };
+    for h in g.map_hunters().filter(|h| h.def.id == "porcelle" && hunter_alpha(h) > 0.001) {
+        if let Some(at) = place(h) {
+            super::radar_ping::draw_ring(at, &ring, pal().amber);
+        }
+    }
 }
 
 /// Godot PlayerColors' palette (Okabe-Ito plus Tol extensions), the colour of a teammate's pin. Godot ranks the peers of the
@@ -820,6 +833,15 @@ fn draw_level0(g: &Game, a: &Assets, feed: &FullMapFeed, plan: Rect, geo: &FullP
         (cell * 0.55).max(3.0),
     );
     hunter_mark::draw(a, &placed, true);
+    porcelle_rings(
+        g,
+        |h| {
+            let c = (h.pos.0 + o.0, h.pos.1 + o.1);
+            shown(c).then(|| xf.at(c))
+        },
+        (cell * 0.55).max(3.0),
+        cell,
+    );
     draw_runner_pins(xf, (fit.x0, fit.y0, fit.w, fit.h), feed.origin, marks, g.fac.level, true);
     let q = xf.at(geo.runner);
     runner_wedge(g, vec2(q.0, q.1), cell, true);

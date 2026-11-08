@@ -1096,7 +1096,7 @@ API_AVAILABLE(macos(11.3))
     [gStore setup];
     LRLog(@"store: current %@, previous %@, bundled %@ (%.0f ms)", [gStore currentId] ?: @"-", [gStore previousId] ?: @"-", gStore.bundleId ?: @"-", -[t0 timeIntervalSinceNow] * 1000);
     if (![gStore currentDir]) {
-        [self fatal:@"This copy of KYTTU The Last Route has no game files and could not install any. Reinstall the app."];
+        [self fatal:@"This copy of KYTTU - The Last Route has no game files and could not install any. Reinstall the app."];
         return;
     }
     // a page that was still starting when the app last died counts as a failed start of that build
@@ -1134,7 +1134,7 @@ API_AVAILABLE(macos(11.3))
         return;
     }
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @"KYTTU The Last Route cannot start";
+    alert.messageText = @"KYTTU - The Last Route cannot start";
     alert.informativeText = text;
     [alert runModal];
     [NSApp terminate:nil];
@@ -1196,7 +1196,7 @@ API_AVAILABLE(macos(11.3))
     NSRect frame = NSMakeRect(0, 0, 1280, 720);
     NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
     _window = [[NSWindow alloc] initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:NO];
-    _window.title = @"KYTTU The Last Route";
+    _window.title = @"KYTTU - The Last Route";
     _window.delegate = self;
     _window.backgroundColor = [NSColor blackColor];
     _window.releasedWhenClosed = NO;
@@ -1351,7 +1351,7 @@ API_AVAILABLE(macos(11.3))
         return;
     }
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @"KYTTU The Last Route did not start";
+    alert.messageText = @"KYTTU - The Last Route did not start";
     alert.informativeText = [NSString stringWithFormat:@"The game page failed to start (%@), and there is no older copy to go back to.\n\nYou can play in your web browser instead, try again, or reset the app to the build bundled inside it.", reason];
     [alert addButtonWithTitle:@"Open in Browser"];
     [alert addButtonWithTitle:@"Try Again"];
@@ -1430,7 +1430,7 @@ API_AVAILABLE(macos(11.3))
 
 - (void)buildMenu {
     NSMenu *bar = [NSMenu new];
-    NSString *name = @"KYTTU The Last Route";
+    NSString *name = @"KYTTU - The Last Route";
 
     NSMenuItem *appItem = [NSMenuItem new];
     [bar addItem:appItem];

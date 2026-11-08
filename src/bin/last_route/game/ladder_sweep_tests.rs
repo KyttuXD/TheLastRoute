@@ -233,6 +233,8 @@ fn climb(text: &str, centre: (i32, i32), n: usize, dt: f32, rig: &Rig, render: b
             break;
         }
     }
+    // a hold that walked in needs a fresh press (ladder.rs fwd_armed): release for a frame first
+    tick(&mut g, &Controls::default(), dt, rig, render);
     let back = Controls { fwd: -1.0, ..Controls::default() };
     let (mut flips, mut guard, mut flipped) = (0, 0, false);
     let mut prev_y = g.p.y();

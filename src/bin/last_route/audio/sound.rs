@@ -239,3 +239,39 @@ pub fn xivvy_wing(pan: f32, intensity: f32) {
 pub fn nw(name: &str, pan: f32, intensity: f32) {
     play(rules::nw(name, pan as f64, intensity as f64));
 }
+
+/// The voice of each placed-tune id (one voice per tune: a pair shares its tune, so it is one voice).
+const PLACED_TUNE_VOICES: [&str; 8] = [
+    "music_box_placed_0",
+    "music_box_placed_1",
+    "music_box_placed_2",
+    "music_box_placed_3",
+    "music_box_placed_4",
+    "music_box_placed_5",
+    "music_box_placed_6",
+    "music_box_placed_7",
+];
+
+/// The tune loop played `rate` times as fast (nearest-frame reads; the pitch moves with the speed).
+fn tune_at_rate(rate: f32) -> Vec<[f32; 2]> {
+    let base = super::cues::music_box::tune();
+    if (rate - 1.0).abs() < 1e-4 || base.is_empty() {
+        return base;
+    }
+    let n = (base.len() as f32 / rate) as usize;
+    (0..n).map(|i| base[(((i as f32) * rate) as usize).min(base.len() - 1)]).collect()
+}
+
+/// Call every frame with `crate::game::music_box::tune_requests(..)` for the wound placed boxes: starts the loops
+/// the requests name at their gains, retargets running ones, and stops every other placed-tune voice.
+pub fn placed_music_boxes(requests: &[crate::game::music_box::TuneRequest]) {
+    with(|e| {
+        for (i, voice) in PLACED_TUNE_VOICES.iter().enumerate() {
+            let req = requests.iter().find(|r| r.tune as usize % PLACED_TUNE_VOICES.len() == i);
+            let tune = i as u32;
+            e.set_loop(*voice, rules::Bus::Master, req.map(|r| r.gains), || {
+                tune_at_rate(crate::game::music_box::tune_rate(tune))
+            });
+        }
+    });
+}

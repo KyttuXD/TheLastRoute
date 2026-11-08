@@ -817,6 +817,11 @@ pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
     if let Some(m) = h.mechanic() {
         entry["mech"] = json!(m);
     }
+    // the activity at a point of interest (hunters/activities.rs): optional keys, only while one runs
+    if let Some((act, progress)) = h.activity_view() {
+        entry["act"] = json!(act.index());
+        entry["actp"] = json!(progress);
+    }
     entry
 }
 

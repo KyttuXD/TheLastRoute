@@ -45,11 +45,21 @@ pub(crate) fn hiding_slots() -> &'static HidingSlots {
 thread_local! {
     /// Spot index of every OTHER runner hidden in this window (fed by the net layer each frame).
     static OTHERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// (spot index, slot) of every other hidden body, when the net layer knows the slots.
+    static OTHER_SLOTS: RefCell<Vec<(usize, u8)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Tell the hiding code which spots other runners are hidden in (one entry per body).
+/// Tell the hiding code which spots other runners are hidden in (one entry per body). Clears the slot list, so call
+/// [`set_other_body_slots`] after it.
 pub(crate) fn set_other_bodies(spots: Vec<usize>) {
     OTHERS.with(|o| *o.borrow_mut() = spots);
+    OTHER_SLOTS.with(|o| o.borrow_mut().clear());
+}
+
+/// Optional companion to [`set_other_bodies`]: the (spot index, slot) of every other hidden body, so a new body takes a
+/// slot nobody holds. Without it the slot falls back to the body count.
+pub(crate) fn set_other_body_slots(slots: Vec<(usize, u8)>) {
+    OTHER_SLOTS.with(|o| *o.borrow_mut() = slots);
 }
 
 /// Where slot `slot` sits: 0 is the front (the spot's centre), later slots sit beside it, across the facing.
@@ -98,6 +108,7 @@ impl Game {
         }
         self.save_checkpoint();
         self.last_autosave = reason;
+        self.autosave_count = self.autosave_count.wrapping_add(1);
         true
     }
 
@@ -268,8 +279,8 @@ impl Game {
             Focus::Safe => "[E] REST AT SAFE ZONE".into(),
             // Godot `route_interactable_3d.gd` prompt: "USE SERVICE LIFT", with the relay target until the floor is cleared
             Focus::Lift => {
-                let target = self.fac.relays.len() as i32;
-                if self.relays_collected < target {
+                let target = self.lift_target();
+                if !self.lift_is_open() {
                     format!("[E] USE SERVICE LIFT \u{2014} NEED {target} RELAY")
                 } else {
                     "[E] USE SERVICE LIFT".into()
@@ -370,7 +381,7 @@ impl Game {
                 }
             }
             Focus::Lift => {
-                if self.relays_collected < self.fac.relays.len() as i32 {
+                if !self.lift_is_open() {
                     crate::audio::sound::interaction_fail();
                     self.say("The service lift has no route signal.");
                     return;
@@ -616,6 +627,22 @@ impl Game {
         }
     }
 
+    /// Relays the service lift needs on this floor (data/progression.json `relays`): every relay of the floor when
+    /// `lift_needs_all`, else the file's count, never more than the floor holds.
+    pub(crate) fn lift_target(&self) -> i32 {
+        let floor = self.fac.relays.len() as i32;
+        let p = crate::game::progression::Progression::load();
+        if p.lift_needs_all { floor } else { p.relay_count.min(floor) }
+    }
+
+    /// True when the runner has what the lift needs (`Progression::lift_open`); a floor with fewer relays than the
+    /// file's count never locks the lift.
+    pub(crate) fn lift_is_open(&self) -> bool {
+        let floor = self.fac.relays.len() as i32;
+        crate::game::progression::Progression::load().lift_open(self.relays_collected, floor)
+            || self.relays_collected >= floor
+    }
+
     /// Bodies in spot `i`: this runner plus the other runners reported through [`set_other_bodies`].
     pub(crate) fn hiding_occupants(&self, i: usize) -> usize {
         let others = OTHERS.with(|o| o.borrow().iter().filter(|&&s| s == i).count());
@@ -633,7 +660,13 @@ impl Game {
 
     /// The slot the next body takes: 0 is the front, 1 the beside slot.
     fn hiding_next_slot(&self, i: usize) -> usize {
-        OTHERS.with(|o| o.borrow().iter().filter(|&&s| s == i).count())
+        let count = OTHERS.with(|o| o.borrow().iter().filter(|&&s| s == i).count());
+        let held: Vec<usize> =
+            OTHER_SLOTS.with(|o| o.borrow().iter().filter(|(s, _)| *s == i).map(|(_, k)| *k as usize).collect());
+        if held.is_empty() {
+            return count;
+        }
+        (0..self.hiding_capacity(i)).find(|k| !held.contains(k)).unwrap_or(count)
     }
 
     pub(super) fn leave_locker(&mut self, forced_to: Option<(f32, f32)>) {
@@ -659,13 +692,16 @@ impl Game {
             crate::audio::sound::door(true); // the hatch (player_controller_3d.gd 3823)
             let far = self.fix.vents[(i + 2) % n].center();
             for h in self.hunters.iter_mut() {
-                if matches!(h.gimmick, Gimmick::Verrine(_)) && h.active {
+                if matches!(&h.gimmick, Gimmick::Verrine(v) if !v.physical()) && h.active {
                     h.pos = far;
                 }
             }
         }
         let next = (i + 1) % n;
         if next == self.p.vent_entry {
+            // out through the entry grate, not the one the last press was at
+            let (cx, cy) = self.fix.vents[self.p.vent_entry].center();
+            self.p.pos = self.fac.nearest_open_or(cx, cy, 0.27);
             self.p.in_vent = false;
             crate::audio::sound::door(false); // the hatch (player_controller_3d.gd 3811)
             self.say("VENT NETWORK EXITED");
@@ -903,6 +939,59 @@ mod tests {
     }
 
     #[test]
+    fn a_new_hider_takes_a_free_slot_not_one_a_body_holds() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let li = 0;
+        let front = g.fac.locker_center(&g.fac.hiding[li]);
+        // one other body, in the beside slot: the front is free
+        set_other_bodies(vec![li]);
+        set_other_body_slots(vec![(li, 1)]);
+        g.enter_locker(li, &Sounds::default());
+        assert_eq!(g.p.pos, front, "the free front slot is taken, not slot 1");
+        g.leave_locker(None);
+        // the body in the front: the new one goes beside
+        set_other_body_slots(vec![(li, 0)]);
+        g.enter_locker(li, &Sounds::default());
+        assert!(pdist(g.p.pos, front) > 1e-3, "the front is held, so the new body sits beside it");
+        g.leave_locker(None);
+        set_other_bodies(vec![]);
+    }
+
+    #[test]
+    fn the_vent_exit_leaves_at_the_entry_grate() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
+        let (px, py) = (g.p.pos.0 as i32, g.p.pos.1 as i32);
+        g.fix.vents = (0..3).map(|k| crate::world::Cell::new(px + k * 4, py)).collect();
+        let (cx, cy) = g.fix.vents[0].center();
+        let entry = g.fac.nearest_open_or(cx, cy, 0.27);
+        g.use_vent(0);
+        g.use_vent(1);
+        assert!(g.p.in_vent);
+        g.use_vent(2);
+        assert!(!g.p.in_vent, "the third press completes the ring");
+        assert_eq!(g.p.pos, entry, "the runner comes out at the entry grate");
+    }
+
+    #[test]
+    fn the_lift_gate_reads_the_progression_data() {
+        let content = Content::load();
+        let catalog = Catalog::load();
+        let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+        let floor = g.fac.relays.len() as i32;
+        let p = crate::game::progression::Progression::load();
+        let want = if p.lift_needs_all { floor } else { p.relay_count.min(floor) };
+        assert_eq!(g.lift_target(), want);
+        g.relays_collected = want - 1;
+        assert!(!g.lift_is_open());
+        g.relays_collected = want;
+        assert!(g.lift_is_open());
+    }
+
+    #[test]
     fn hiding_slots_are_front_then_beside() {
         let content = Content::load();
         let catalog = Catalog::load();
@@ -934,6 +1023,8 @@ mod tests {
         let dir = g.fac.stairs[i].dir;
         // a ladder is climbed by hand (game/ladder.rs): hold back to go down the shaft until the storey changes
         g.interact(Focus::Ladder(i), &content, &catalog, &Sounds::default());
+        // the climb keys arm only after a release
+        g.step(0.05, &crate::game::Controls::default(), &content, &catalog, &Sounds::default());
         let back = crate::game::Controls { fwd: -1.0, ..Default::default() };
         for _ in 0..400 {
             if g.last_autosave == "level" {

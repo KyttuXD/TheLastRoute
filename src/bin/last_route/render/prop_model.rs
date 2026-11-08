@@ -5,7 +5,7 @@
 //! can swing; the door frame's pieces (`DoorFrameTop`, `DoorFrameL`, `DoorFrameR`) are groups too, so door.rs can
 //! measure them. Mod packs may still bring a `.glb` prop; `PropModel::parse_glb` is the one place that reads one.
 
-use super::bbmodel::{self, Model};
+use super::bbmodel::{self, Face, Model};
 use super::builder::Builder;
 use super::door::{self, DoorMeasure};
 use macroquad::prelude::*;
@@ -178,6 +178,107 @@ mod glb_guard_tests {
     }
 }
 
+/// One hinge's leaf as `split_faces` found it: in the hinge's own frame (the authored, open pose).
+struct SplitHinge {
+    name: String,
+    pivot: Vec3,
+    geo: Geometry,
+    closed_x: (f32, f32),
+}
+
+/// A model's faces sorted into the body, each door hinge's leaf and the locker door, with the model's bounds (the door
+/// leaves taken closed) and its door measures. Reads no texture, so the door build can be tested without a graphics
+/// context.
+struct Split {
+    body: Geometry,
+    hinges: Vec<SplitHinge>,
+    locker: Option<(Vec3, Geometry)>,
+    min: Vec3,
+    max: Vec3,
+    door: Option<door::DoorDims>,
+}
+
+/// Sorts `faces` (each with the name and origin, in model units, of the outliner group it hangs under) by group, `s`
+/// metres per model unit. `None` when no face lands in the body.
+fn split_faces<'a>(faces: impl Iterator<Item = (Option<(&'a str, Vec3)>, &'a Face)>, s: f32) -> Option<Split> {
+    let mut body = Geometry::default();
+    let mut leaf = Geometry::default();
+    let mut hinges: Vec<SplitHinge> = vec![];
+    let mut locker_pivot = None;
+    let mut min = Vec3::splat(f32::MAX);
+    let mut max = Vec3::splat(f32::MIN);
+    let mut measure = DoorMeasure::default();
+    for (group, face) in faces {
+        let name = group.map(|g| g.0).unwrap_or("");
+        let pivot = group.map(|g| g.1 * s).unwrap_or(Vec3::ZERO);
+        let hinge = door::closed_hinge_deg(name).and_then(|deg| {
+            if !hinges.iter().any(|h| h.name == name) {
+                measure.hinge(name);
+                hinges.push(SplitHinge {
+                    name: name.to_string(),
+                    pivot,
+                    geo: Geometry::default(),
+                    closed_x: (f32::MAX, f32::MIN),
+                });
+            }
+            hinges.iter().position(|h| h.name == name).map(|i| (i, deg))
+        });
+        let is_locker = name == LOCKER_DOOR_GROUP;
+        if is_locker {
+            locker_pivot = Some(pivot);
+        }
+        let geo = match hinge {
+            Some((i, _)) => &mut hinges[i].geo,
+            None if is_locker => &mut leaf,
+            None => &mut body,
+        };
+        let mut x_hits: Vec<(usize, f32)> = Vec::new();
+        let base = geo.verts.len() as u32;
+        for (c, uv) in face.corners.iter().zip(&face.uv) {
+            // the model as authored (a door's leaves open); the hinge's closed pose is what is measured and bounded
+            let w = *c * s;
+            let (p, store) = match hinge {
+                Some((i, deg)) => {
+                    let store = w - pivot;
+                    let p = door::closed_hinge_local(Mat4::from_translation(pivot), deg).transform_point3(store);
+                    measure.leaf_vertex(p.y);
+                    x_hits.push((i, p.x));
+                    (p, store)
+                }
+                None if is_locker => (w, w - pivot),
+                None => (w, w),
+            };
+            min = min.min(p);
+            max = max.max(p);
+            match name {
+                "DoorFrameTop" => measure.header_vertex(p.y),
+                "DoorFrameL" | "DoorFrameR" => measure.jamb_vertex(p.x),
+                _ => {}
+            }
+            geo.verts.push(white_vertex(store, *uv, face.normal));
+        }
+        for k in 1..(face.corners.len() as u32).saturating_sub(1) {
+            geo.idx.extend_from_slice(&[base, base + k, base + k + 1]);
+        }
+        for (i, px) in x_hits {
+            let x = &mut hinges[i].closed_x;
+            *x = (x.0.min(px), x.1.max(px));
+        }
+    }
+    if body.verts.is_empty() {
+        return None;
+    }
+    let door = measure.finish(max.y);
+    Some(Split {
+        body,
+        hinges,
+        locker: locker_pivot.map(|pivot| (pivot, leaf)),
+        min,
+        max,
+        door,
+    })
+}
+
 impl PropModel {
     /// A model from its bbmodel text. `find` reads a file the model names next to itself (a shared atlas), `scope` is the
     /// folder the model sits in (the key `cache` shares a found atlas under), and `soft` rounds the normals the way the
@@ -204,92 +305,34 @@ impl PropModel {
             }
         };
         let m = Model::from_json(&j, Some(tex.clone()), find, None)?;
-        let s = m.scale;
-        let mut body = Geometry::default();
-        let mut leaf = Geometry::default();
-        // (hinge name, pivot, its leaf in the hinge's frame)
-        let mut hinge_geo: Vec<(String, Vec3, Geometry)> = vec![];
-        let mut leaf_x: Vec<(f32, f32)> = vec![];
-        let mut locker_pivot = None;
-        let mut min = Vec3::splat(f32::MAX);
-        let mut max = Vec3::splat(f32::MIN);
-        let mut measure = DoorMeasure::default();
-        for (gi, face) in m.faces() {
-            let group = gi.map(|i| &m.groups[i]);
-            let name = group.map(|g| g.name.as_str()).unwrap_or("");
-            let pivot = group.map(|g| g.origin * s).unwrap_or(Vec3::ZERO);
-            let hinge = door::closed_hinge_deg(name).and_then(|deg| {
-                if !hinge_geo.iter().any(|h| h.0 == name) {
-                    measure.hinge(name);
-                    hinge_geo.push((name.to_string(), pivot, Geometry::default()));
-                    leaf_x.push((f32::MAX, f32::MIN));
-                }
-                hinge_geo.iter().position(|h| h.0 == name).map(|i| (i, deg))
-            });
-            let is_locker = name == LOCKER_DOOR_GROUP;
-            if is_locker {
-                locker_pivot = Some(pivot);
-            }
-            let geo = match hinge {
-                Some((i, _)) => &mut hinge_geo[i].2,
-                None if is_locker => &mut leaf,
-                None => &mut body,
-            };
-            let base = geo.verts.len() as u32;
-            for (c, uv) in face.corners.iter().zip(&face.uv) {
-                // the model as authored (a door's leaves open); the hinge's closed pose is what is measured and bounded
-                let w = *c * s;
-                let (p, store) = match hinge {
-                    Some((i, deg)) => {
-                        let store = w - pivot;
-                        let p = door::closed_hinge_local(Mat4::from_translation(pivot), deg).transform_point3(store);
-                        measure.leaf_vertex(p.y);
-                        leaf_x[i] = (leaf_x[i].0.min(p.x), leaf_x[i].1.max(p.x));
-                        (p, store)
-                    }
-                    None if is_locker => (w, w - pivot),
-                    None => (w, w),
-                };
-                min = min.min(p);
-                max = max.max(p);
-                match name {
-                    "DoorFrameTop" => measure.header_vertex(p.y),
-                    "DoorFrameL" | "DoorFrameR" => measure.jamb_vertex(p.x),
-                    _ => {}
-                }
-                geo.verts.push(white_vertex(store, *uv, face.normal));
-            }
-            for k in 1..(face.corners.len() as u32).saturating_sub(1) {
-                geo.idx.extend_from_slice(&[base, base + k, base + k + 1]);
-            }
-        }
-        if body.verts.is_empty() {
-            return None;
-        }
+        let split = split_faces(
+            m.faces().map(|(gi, face)| (gi.map(|i| (m.groups[i].name.as_str(), m.groups[i].origin)), face)),
+            m.scale,
+        )?;
+        let hinges = split
+            .hinges
+            .into_iter()
+            .map(|h| Hinge {
+                name: h.name,
+                base: Mat4::IDENTITY,
+                local: Mat4::from_translation(h.pivot),
+                closed_x: h.closed_x,
+                parts: h.geo.into_part(&tex, key),
+            })
+            .collect();
+        let locker_door = split.locker.map(|(pivot, geo)| LockerDoor {
+            pivot,
+            parts: geo.into_part(&tex, key),
+        });
+        let mut body = split.body;
         if soft {
             soften(&mut body.verts);
         }
-        let hinges = hinge_geo
-            .into_iter()
-            .zip(leaf_x)
-            .map(|((name, pivot, geo), closed_x)| Hinge {
-                name,
-                base: Mat4::IDENTITY,
-                local: Mat4::from_translation(pivot),
-                closed_x,
-                parts: geo.into_part(&tex, key),
-            })
-            .collect();
-        let locker_door = locker_pivot.map(|pivot| LockerDoor {
-            pivot,
-            parts: leaf.into_part(&tex, key),
-        });
-        let door = measure.finish(max.y);
         Some(PropModel {
             parts: body.into_part(&tex, key),
-            min,
-            max,
-            door,
+            min: split.min,
+            max: split.max,
+            door: split.door,
             hinges,
             locker_door,
         })
@@ -809,5 +852,137 @@ mod tests {
         let boxed = build(Mat4::IDENTITY, WHITE);
         assert_eq!(boxed.iter().map(|m| m.indices.len()).sum::<usize>(), 36);
         assert!(boxed.iter().all(|m| m.indices.iter().all(|&i| (i as usize) < m.vertices.len())));
+    }
+
+    const LUXURY_SINGLE: &str = include_str!("../assets/props/mansion/luxury_room_door.bbmodel");
+    const LUXURY_DOUBLE: &str = include_str!("../assets/props/mansion/luxury_double_room_door.bbmodel");
+
+    fn json_vec(v: &serde_json::Value) -> Vec3 {
+        let n = |i: usize| v[i].as_f64().unwrap_or(0.0) as f32;
+        vec3(n(0), n(1), n(2))
+    }
+
+    /// A door model's faces as `Model::faces` hands them to the loader (bbmodel units), read from the bbmodel text
+    /// without a texture: each face with the outliner group it hangs under.
+    fn model_faces(text: &str) -> (Vec<(String, Vec3)>, Vec<(Option<usize>, Face)>) {
+        let j: serde_json::Value = serde_json::from_str(text).expect("a bbmodel");
+        let mut groups: Vec<(String, Vec3)> = vec![];
+        let mut owner: HashMap<String, usize> = HashMap::new();
+        for n in j["outliner"].as_array().expect("an outliner") {
+            if n.is_object() {
+                groups.push((n["name"].as_str().unwrap_or("").to_string(), json_vec(&n["origin"])));
+                for c in n["children"].as_array().into_iter().flatten().filter_map(|c| c.as_str()) {
+                    owner.insert(c.to_string(), groups.len() - 1);
+                }
+            }
+        }
+        let mut faces = vec![];
+        for e in j["elements"].as_array().expect("elements") {
+            let group = e["uuid"].as_str().and_then(|u| owner.get(u).copied());
+            if e["type"].as_str() == Some("mesh") {
+                for fj in e["faces"].as_object().expect("mesh faces").values() {
+                    let keys: Vec<&str> = fj["vertices"].as_array().expect("face vertices").iter().filter_map(|k| k.as_str()).collect();
+                    let corners: Vec<Vec3> = keys.iter().map(|k| json_vec(&e["vertices"][*k]) + json_vec(&e["origin"])).collect();
+                    let uv = keys
+                        .iter()
+                        .map(|k| vec2(fj["uv"][*k][0].as_f64().unwrap_or(0.0) as f32 / 128.0, fj["uv"][*k][1].as_f64().unwrap_or(0.0) as f32 / 16.0))
+                        .collect();
+                    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
+                    faces.push((group, Face { corners, uv, normal }));
+                }
+            } else {
+                let (f, t) = (json_vec(&e["from"]), json_vec(&e["to"]));
+                let corner = |i: usize| vec3(if i & 1 == 0 { f.x } else { t.x }, if i & 2 == 0 { f.y } else { t.y }, if i & 4 == 0 { f.z } else { t.z });
+                for q in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
+                    let corners: Vec<Vec3> = q.iter().map(|&i| corner(i)).collect();
+                    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]).normalize_or_zero();
+                    faces.push((group, Face { corners, uv: vec![vec2(0.0, 0.0), vec2(0.1, 0.0), vec2(0.1, 0.1), vec2(0.0, 0.1)], normal }));
+                }
+            }
+        }
+        (groups, faces)
+    }
+
+    /// The triangles (world positions) a geometry adds to a builder under `xf`, `pre` applied first, as the door build
+    /// does (`add_door_body`, `add_hinges`).
+    fn placed(geo: &Geometry, xf: Mat4, pre: impl Fn(Vec3) -> Vec3) -> Vec<[Vec3; 3]> {
+        let mut b = Builder::new(None);
+        let nm = Mat3::from_mat4(xf).inverse().transpose();
+        add_verts(&mut b, &geo.verts, &geo.idx, xf, nm, WHITE, &pre);
+        let mut out = vec![];
+        for m in b.finish() {
+            for t in m.indices.chunks_exact(3) {
+                out.push([m.vertices[t[0] as usize].position, m.vertices[t[1] as usize].position, m.vertices[t[2] as usize].position]);
+            }
+        }
+        out
+    }
+
+    fn area(tris: &[[Vec3; 3]]) -> f32 {
+        tris.iter().map(|t| 0.5 * (t[1] - t[0]).cross(t[2] - t[0]).length()).sum()
+    }
+
+    fn bounds(tris: &[[Vec3; 3]]) -> (Vec3, Vec3) {
+        let mut lo = Vec3::splat(f32::MAX);
+        let mut hi = Vec3::splat(f32::MIN);
+        for p in tris.iter().flatten() {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+        (lo, hi)
+    }
+
+    /// The mansion's room doors (TODO: "Mansion doors are invisible"), loaded the way the game loads them and built the
+    /// way a mansion room builds them: the real `luxuryRoomDoor` and `luxuryDoubleRoomDoor` models are sorted into body
+    /// and hinge leaves by `split_faces` (the loader's own step), fitted to their doorway by `DoorFit` and `leaf_fit`, and
+    /// placed. The frame and every leaf must come out as finite triangles with area, the leaves standing on the floor
+    /// and flat in the wall when shut, the crown above the bar, all in the doorway.
+    #[test]
+    fn a_mansion_door_builds_visible_triangles_in_its_doorway() {
+        for (ptype, text, double, spans) in [
+            ("luxuryRoomDoor", LUXURY_SINGLE, false, vec![1]),
+            ("luxuryDoubleRoomDoor", LUXURY_DOUBLE, true, vec![2, 3]),
+        ] {
+            let (groups, faces) = model_faces(text);
+            let split = split_faces(faces.iter().map(|(g, f)| (g.map(|i| (groups[i].0.as_str(), groups[i].1)), f)), 1.0 / 16.0)
+                .unwrap_or_else(|| panic!("{ptype}: no body"));
+            let dims = split.door.unwrap_or_else(|| panic!("{ptype}: not read as a door"));
+            assert_eq!(dims.double, double, "{ptype}");
+            assert_eq!(split.hinges.len(), if double { 2 } else { 1 }, "{ptype}: hinges");
+            assert!(!split.body.idx.is_empty(), "{ptype}: empty body");
+            for span in spans {
+                let ctx = format!("{ptype} span {span}");
+                let fit = door::DoorFit::new(dims, ptype, span);
+                assert!(fit.sx.is_finite() && fit.sy.is_finite() && fit.sx > 0.0 && fit.sy >= 1.0, "{ctx}: fit {fit:?}");
+                let xf = door::door_transform(Vec3::ZERO, 0.0, fit.sx, fit.sy, 1.0);
+                let half = span as f32 / 2.0;
+                // the frame: posts, bar, sill and crown
+                let body = placed(&split.body, xf, |p| vec3(fit.body_x(p.x), p.y, p.z));
+                assert!(body.len() >= 24 && area(&body) > 1.0, "{ctx}: frame {} triangles, area {}", body.len(), area(&body));
+                let (lo, hi) = bounds(&body);
+                assert!(lo.is_finite() && hi.is_finite(), "{ctx}: frame bounds");
+                assert!(lo.x <= -half && hi.x >= half, "{ctx}: frame spans the doorway ({}..{})", lo.x, hi.x);
+                assert!(hi.y > dims.bar_top * fit.sy + 0.05, "{ctx}: no crown over the bar ({})", hi.y);
+                // the leaves, shut and open
+                for open in [0.0, 1.0] {
+                    for h in &split.hinges {
+                        assert!(h.closed_x.1 - h.closed_x.0 > 0.3, "{ctx}: {} closes to a zero-width leaf {:?}", h.name, h.closed_x);
+                        assert!(!h.geo.idx.is_empty(), "{ctx}: {} has no triangles", h.name);
+                        let leaf = door::leaf_fit(dims, &fit, &h.name, h.closed_x);
+                        assert!(leaf.widen.is_finite() && leaf.widen > 0.0 && leaf.ky.is_finite() && leaf.ky > 0.0, "{ctx}: {leaf:?}");
+                        let m = xf * door::leaf_xf(Mat4::IDENTITY, Mat4::from_translation(h.pivot), &h.name, open, &leaf);
+                        let tris = placed(&h.geo, m, |p| p);
+                        assert!(tris.len() >= 12 && area(&tris) > 1.0, "{ctx}: {} open {open}: {} triangles, area {}", h.name, tris.len(), area(&tris));
+                        let (lo, hi) = bounds(&tris);
+                        assert!(lo.is_finite() && hi.is_finite(), "{ctx}: {} bounds", h.name);
+                        assert!(hi.y - lo.y > 1.5 && lo.y >= -1e-3 && lo.y < 0.05, "{ctx}: {} stands on the floor ({}..{})", h.name, lo.y, hi.y);
+                        assert!(lo.x >= -half - 0.2 && hi.x <= half + 0.2, "{ctx}: {} is in the doorway ({lo:?}..{hi:?})", h.name);
+                        if open == 0.0 {
+                            assert!(hi.z - lo.z < 0.3, "{ctx}: {} shut is flat in the wall ({})", h.name, hi.z - lo.z);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

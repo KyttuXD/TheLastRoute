@@ -316,6 +316,18 @@ impl PublicRoster {
         self.roster(seed, &day_key(unix_seconds), players, pool, tier_of)
     }
 
+    /// The PUBLIC route's spawn lineup for a UTC moment and player count, drawn from the streamed hunter pool:
+    /// featured hunters first. The route passes it to `hunter_spawns::chunk_hunter_spawns_with` in a public room.
+    pub fn spawn_lineup(
+        &self,
+        seed: &str,
+        unix_seconds: i64,
+        players: usize,
+        tier_of: &dyn Fn(&str) -> &'static str,
+    ) -> Vec<&'static str> {
+        self.roster_at(seed, unix_seconds, players, &crate::world::route::hunter_spawns::STREAMED_HUNTER_IDS, tier_of)
+    }
+
     /// Today's (system clock, UTC) featured hunters.
     pub fn featured_today<'a>(&self, pool: &[&'a str], tier_of: &dyn Fn(&str) -> &'static str) -> Vec<&'a str> {
         self.featured(&today(), pool, tier_of)
@@ -588,6 +600,16 @@ mod tests {
         let per_hard = hard as f64 / hard_n as f64;
         assert!(per_easy > per_hard * 2.0, "easy {per_easy} vs difficult {per_hard}");
         assert!(hard > 0, "difficult hunters still get featured sometimes");
+    }
+
+    #[test]
+    fn spawn_lineup_is_the_roster_of_the_streamed_pool_featured_first() {
+        let r = PublicRoster::default();
+        let now = 1_793_664_000 + 5;
+        let l = r.spawn_lineup("s", now, 5, &tier_of);
+        assert_eq!(l.len(), r.target_count(5));
+        assert!(l.iter().all(|id| POOL.contains(id)));
+        assert_eq!(&l[..2], r.featured(&day_key(now), POOL, &tier_of).as_slice());
     }
 
     #[test]

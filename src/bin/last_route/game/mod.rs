@@ -261,6 +261,8 @@ pub struct Game {
     pub inferno_secrets: inferno_secrets::InfernoSecrets,
     /// Why the run last autosaved ("relay", "checkpoint", "quit"), "" before any (Godot `_last_autosave_reason`).
     pub last_autosave: &'static str,
+    /// How many automatic saves this run has written (the app reloads its checkpoint copy when it changes).
+    pub autosave_count: u32,
     /// The manual climb of a sewer ladder (game/ladder.rs): the one climber, while it runs input is the climb.
     pub ladder: Option<ladder::Climb>,
     /// The sewer valves and the flows they open or shut (game/pipes.rs).
@@ -400,6 +402,7 @@ impl Game {
             sighted: Default::default(),
             inferno_secrets: Default::default(),
             last_autosave: "",
+            autosave_count: 0,
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
             noise_events: Vec::new(),
@@ -546,6 +549,7 @@ impl Game {
             sighted: Default::default(),
             inferno_secrets: Default::default(),
             last_autosave: "",
+            autosave_count: 0,
             ladder: None,
             pipes: pipes::PipeNetwork::new(),
             noise_events: Vec::new(),

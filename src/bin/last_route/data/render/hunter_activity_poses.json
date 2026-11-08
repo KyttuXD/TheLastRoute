@@ -1,0 +1,104 @@
+{
+  "schema": "lr.hunter_activity_poses/1",
+  "_about": "Procedural activity poses laid over the humanoid hunter rigs (render/anim/hunter_activity_pose.rs), blended in and out like the player emote poses (data/player/emotes.json). The brain names the activity it is doing (locker_inspect, sniff, look_around, door_push, door_knock, listen, vent_crawl, attack_lunge; corner_peek_left / corner_peek_right come from the corner peek itself); a name with no row here does nothing. A row: blend_in / blend_out (seconds), loop (repeat the keys every `period` seconds; otherwise the last key is held), and keys, each {t, bones: {bone: [x, y, z] degrees}} multiplied onto the clip's pose (a bone a key leaves out is at rest in it). Rotation conventions in this rig (it faces -Z, right is +X): arm X positive raises the arm forward, arm Z positive swings the RIGHT arm out (negative for the left), forearm X positive bends the elbow, chest/belly/pelvis X negative bows forward, head X negative looks down, head Y positive turns to her left, thigh X positive lifts the knee, calf X negative folds the shin back. `peek_clip` is the body clip a peeking hunter plays instead of the walk clip. `scythe` is Kathy's scythe: the hunters that carry it, the clips it swaps in (the replacement must exist in the rig, else the plain clip plays), the one-shot swing clip started when the `swing_on` activity begins, and where the prop model rides (bone, then offset in metres, rotation in degrees, scale). The model must be in the loaded assets (see docs/HUNTER_ANIMATIONS.md). First pass, to tune by eye.",
+  "peek_clip": "idle",
+  "emote": { "face_override": true },
+  "scythe": {
+    "hunters": ["kathy"],
+    "bone": "R-HandProp",
+    "fallback_bone": "R-Hand",
+    "model": "props/hunter_items/kathy_scythe.bbmodel",
+    "clips": { "idle": "scythe_idle", "walk": "scythe_walk", "stun": "scythe_stun", "stun_recover": "scythe_stun_recover" },
+    "swing_clip": "scythe_swing",
+    "swing_on": "attack_lunge",
+    "offset_m": [0.0, 0.0, 0.0],
+    "rot_deg": [0.0, 0.0, 0.0],
+    "scale": 1.0
+  },
+  "activities": {
+    "locker_inspect": {
+      "blend_in": 0.3, "blend_out": 0.35, "loop": true, "period": 2.0,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [-16, 0, 0], "Belly": [-8, 0, 0], "Head": [-8, 14, 0], "R-Arm": [48, 0, 6], "R-Forearm": [36, 0, 0] } },
+        { "t": 1.0, "bones": { "Chest": [-20, 0, 0], "Belly": [-10, 0, 0], "Head": [-12, -14, 0], "R-Arm": [56, 0, 6], "R-Forearm": [44, 0, 0] } },
+        { "t": 2.0, "bones": { "Chest": [-16, 0, 0], "Belly": [-8, 0, 0], "Head": [-8, 14, 0], "R-Arm": [48, 0, 6], "R-Forearm": [36, 0, 0] } }
+      ]
+    },
+    "sniff": {
+      "blend_in": 0.2, "blend_out": 0.3, "loop": true, "period": 0.9,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [-8, 0, 0], "Head": [-4, 0, 0] } },
+        { "t": 0.3, "bones": { "Chest": [-12, 0, 0], "Head": [-20, 0, 0] } },
+        { "t": 0.45, "bones": { "Chest": [-10, 0, 0], "Head": [-8, 0, 0] } },
+        { "t": 0.65, "bones": { "Chest": [-12, 0, 0], "Head": [-20, 0, 0] } },
+        { "t": 0.9, "bones": { "Chest": [-8, 0, 0], "Head": [-4, 0, 0] } }
+      ]
+    },
+    "look_around": {
+      "blend_in": 0.25, "blend_out": 0.3, "loop": true, "period": 3.2,
+      "keys": [
+        { "t": 0.0, "bones": { "Head": [0, 0, 0], "Chest": [0, 0, 0] } },
+        { "t": 0.8, "bones": { "Head": [-2, 50, 0], "Chest": [0, 12, 0] } },
+        { "t": 1.6, "bones": { "Head": [0, 0, 0], "Chest": [0, 0, 0] } },
+        { "t": 2.4, "bones": { "Head": [-2, -50, 0], "Chest": [0, -12, 0] } },
+        { "t": 3.2, "bones": { "Head": [0, 0, 0], "Chest": [0, 0, 0] } }
+      ]
+    },
+    "door_push": {
+      "blend_in": 0.15, "blend_out": 0.25, "loop": true, "period": 1.2,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [-10, 0, 0], "R-Arm": [74, 0, 4], "L-Arm": [74, 0, -4], "R-Forearm": [12, 0, 0], "L-Forearm": [12, 0, 0] } },
+        { "t": 0.6, "bones": { "Chest": [-18, 0, 0], "R-Arm": [82, 0, 4], "L-Arm": [82, 0, -4], "R-Forearm": [4, 0, 0], "L-Forearm": [4, 0, 0] } },
+        { "t": 1.2, "bones": { "Chest": [-10, 0, 0], "R-Arm": [74, 0, 4], "L-Arm": [74, 0, -4], "R-Forearm": [12, 0, 0], "L-Forearm": [12, 0, 0] } }
+      ]
+    },
+    "door_knock": {
+      "blend_in": 0.15, "blend_out": 0.25, "loop": true, "period": 0.6,
+      "keys": [
+        { "t": 0.0, "bones": { "R-Arm": [86, 0, 6], "R-Forearm": [100, 0, 0], "Chest": [-4, 0, 0] } },
+        { "t": 0.15, "bones": { "R-Arm": [86, 0, 6], "R-Forearm": [58, 0, 0], "Chest": [-6, 0, 0] } },
+        { "t": 0.3, "bones": { "R-Arm": [86, 0, 6], "R-Forearm": [100, 0, 0], "Chest": [-4, 0, 0] } },
+        { "t": 0.45, "bones": { "R-Arm": [86, 0, 6], "R-Forearm": [58, 0, 0], "Chest": [-6, 0, 0] } },
+        { "t": 0.6, "bones": { "R-Arm": [86, 0, 6], "R-Forearm": [100, 0, 0], "Chest": [-4, 0, 0] } }
+      ]
+    },
+    "listen": {
+      "blend_in": 0.3, "blend_out": 0.3, "loop": true, "period": 2.4,
+      "keys": [
+        { "t": 0.0, "bones": { "Head": [0, 12, 14], "Chest": [2, 4, 0], "R-Arm": [100, 0, 24], "R-Forearm": [118, 0, 0] } },
+        { "t": 1.2, "bones": { "Head": [-2, 16, 18], "Chest": [2, 6, 0], "R-Arm": [102, 0, 26], "R-Forearm": [120, 0, 0] } },
+        { "t": 2.4, "bones": { "Head": [0, 12, 14], "Chest": [2, 4, 0], "R-Arm": [100, 0, 24], "R-Forearm": [118, 0, 0] } }
+      ]
+    },
+    "corner_peek_left": {
+      "blend_in": 0.2, "blend_out": 0.25, "loop": false, "period": 1.0,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [-10, 0, 12], "Belly": [-6, 0, 6], "Head": [0, 10, -8], "R-Thigh": [26, 0, 0], "L-Thigh": [26, 0, 0], "R-Calf": [-42, 0, 0], "L-Calf": [-42, 0, 0], "L-Arm": [20, 0, -14] } },
+        { "t": 0.4, "bones": { "Chest": [-12, 0, 16], "Belly": [-6, 0, 8], "Head": [0, 12, -10], "R-Thigh": [28, 0, 0], "L-Thigh": [28, 0, 0], "R-Calf": [-44, 0, 0], "L-Calf": [-44, 0, 0], "L-Arm": [26, 0, -18] } }
+      ]
+    },
+    "corner_peek_right": {
+      "blend_in": 0.2, "blend_out": 0.25, "loop": false, "period": 1.0,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [-10, 0, -12], "Belly": [-6, 0, -6], "Head": [0, -10, 8], "R-Thigh": [26, 0, 0], "L-Thigh": [26, 0, 0], "R-Calf": [-42, 0, 0], "L-Calf": [-42, 0, 0], "R-Arm": [20, 0, 14] } },
+        { "t": 0.4, "bones": { "Chest": [-12, 0, -16], "Belly": [-6, 0, -8], "Head": [0, -12, 10], "R-Thigh": [28, 0, 0], "L-Thigh": [28, 0, 0], "R-Calf": [-44, 0, 0], "L-Calf": [-44, 0, 0], "R-Arm": [26, 0, 18] } }
+      ]
+    },
+    "vent_crawl": {
+      "blend_in": 0.3, "blend_out": 0.3, "loop": true, "period": 0.9,
+      "keys": [
+        { "t": 0.0, "bones": { "Pelvis": [-72, 0, 0], "R-Arm": [70, 0, 4], "L-Arm": [52, 0, -4], "R-Thigh": [10, 0, 0], "L-Thigh": [-14, 0, 0], "R-Calf": [-40, 0, 0], "L-Calf": [-24, 0, 0], "Head": [40, 0, 0] } },
+        { "t": 0.45, "bones": { "Pelvis": [-72, 0, 0], "R-Arm": [52, 0, 4], "L-Arm": [70, 0, -4], "R-Thigh": [-14, 0, 0], "L-Thigh": [10, 0, 0], "R-Calf": [-24, 0, 0], "L-Calf": [-40, 0, 0], "Head": [40, 0, 0] } },
+        { "t": 0.9, "bones": { "Pelvis": [-72, 0, 0], "R-Arm": [70, 0, 4], "L-Arm": [52, 0, -4], "R-Thigh": [10, 0, 0], "L-Thigh": [-14, 0, 0], "R-Calf": [-40, 0, 0], "L-Calf": [-24, 0, 0], "Head": [40, 0, 0] } }
+      ]
+    },
+    "attack_lunge": {
+      "blend_in": 0.08, "blend_out": 0.3, "loop": false, "period": 1.0,
+      "keys": [
+        { "t": 0.0, "bones": { "Chest": [8, 0, 0], "R-Arm": [-30, 0, 8], "L-Arm": [-20, 0, -8], "R-Thigh": [-8, 0, 0], "L-Thigh": [8, 0, 0] } },
+        { "t": 0.18, "bones": { "Chest": [-24, 0, 0], "Belly": [-10, 0, 0], "Head": [-8, 0, 0], "R-Arm": [128, 0, 10], "L-Arm": [118, 0, -10], "R-Forearm": [8, 0, 0], "L-Forearm": [8, 0, 0], "R-Thigh": [32, 0, 0], "L-Thigh": [-16, 0, 0] } },
+        { "t": 0.6, "bones": { "Chest": [-20, 0, 0], "Belly": [-8, 0, 0], "Head": [-6, 0, 0], "R-Arm": [118, 0, 10], "L-Arm": [108, 0, -10], "R-Forearm": [12, 0, 0], "L-Forearm": [12, 0, 0], "R-Thigh": [30, 0, 0], "L-Thigh": [-14, 0, 0] } }
+      ]
+    }
+  }
+}

@@ -31,6 +31,10 @@ pub struct RemoteNpc {
     pub yaw: f32,
     pub walking: bool,
     pub stride: f32,
+    /// Inside a locker (a guest draws no figure), running from a hunter, lying down (all optional on the wire).
+    pub hidden: bool,
+    pub fleeing: bool,
+    pub downed: bool,
     seen: Instant,
 }
 
@@ -43,6 +47,8 @@ pub struct RemoteNpcView {
     pub facing: f32,
     pub stride: f32,
     pub walking: bool,
+    pub fleeing: bool,
+    pub downed: bool,
 }
 
 #[derive(Default)]
@@ -56,6 +62,12 @@ pub struct NpcSync {
 
 /// The state map one NPC is sent as: its name, absolute place, height, level, facing and walk.
 pub fn wire_state(npc: &Npc, origin: (i32, i32)) -> Map<String, Value> {
+    wire_state_with(npc, origin, false)
+}
+
+/// [`wire_state`] plus the states: `hidden` (inside a locker), `fleeing` (running from a hunter) and `downed` (the host's
+/// `Game::downed_npcs` holds the bot). Each key is optional on the wire; a guest reads a missing one as false.
+pub fn wire_state_with(npc: &Npc, origin: (i32, i32), downed: bool) -> Map<String, Value> {
     let (x, y) = super::world_sync::to_absolute(npc.at, origin);
     let mut m = Map::new();
     m.insert("name".into(), Value::String(npc.name.clone()));
@@ -66,11 +78,18 @@ pub fn wire_state(npc: &Npc, origin: (i32, i32)) -> Map<String, Value> {
     m.insert("yaw".into(), serde_json::json!(npc.facing));
     m.insert("walking".into(), Value::Bool(npc.walking));
     m.insert("stride".into(), serde_json::json!(npc.stride));
+    m.insert("hidden".into(), Value::Bool(npc.hidden.is_some()));
+    m.insert("fleeing".into(), Value::Bool(npc.fleeing || npc.flee.goal.is_some()));
+    m.insert("downed".into(), Value::Bool(downed));
     m
 }
 
 fn finite(state: &Map<String, Value>, key: &str) -> Option<f32> {
     state.get(key).and_then(Value::as_f64).map(|v| v as f32).filter(|v| v.is_finite())
+}
+
+fn flag(state: &Map<String, Value>, key: &str) -> bool {
+    state.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 impl NpcSync {
@@ -107,6 +126,9 @@ impl NpcSync {
             yaw: finite(state, "yaw").unwrap_or(0.0),
             walking: state.get("walking").and_then(Value::as_bool).unwrap_or(false),
             stride: finite(state, "stride").unwrap_or(0.0),
+            hidden: flag(state, "hidden"),
+            fleeing: flag(state, "fleeing"),
+            downed: flag(state, "downed"),
             seen: now,
         });
     }
@@ -120,10 +142,11 @@ impl NpcSync {
     pub fn views(&self, origin: (i32, i32), now: Instant) -> Vec<RemoteNpcView> {
         self.remote
             .values()
-            .filter(|n| now.duration_since(n.seen) <= NPC_STALE)
+            // a bot inside a locker is not drawn in the open
+            .filter(|n| !n.hidden && now.duration_since(n.seen) <= NPC_STALE)
             .map(|n| {
                 let (x, y) = super::world_sync::to_window((n.x, n.y), origin);
-                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking }
+                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed }
             })
             .collect()
     }
@@ -157,6 +180,55 @@ mod tests {
         assert_eq!(views[0].at, (20.0, 30.0));
         assert_eq!(views[0].name, "R-04821");
         assert!(views[0].walking);
+    }
+
+    #[test]
+    fn a_hidden_bot_is_not_drawn_and_comes_back_when_it_leaves_the_locker() {
+        let t0 = Instant::now();
+        let mut guest = NpcSync::default();
+        let mut hid = state(5.0, 5.0, 0);
+        hid.insert("hidden".into(), Value::Bool(true));
+        guest.receive_place(1, &hid, t0);
+        assert!(guest.views((0, 0), t0).is_empty(), "a bot in a locker has no figure on a guest");
+        hid.insert("hidden".into(), Value::Bool(false));
+        guest.receive_place(1, &hid, t0);
+        assert_eq!(guest.views((0, 0), t0).len(), 1);
+    }
+
+    #[test]
+    fn fleeing_and_downed_cross_the_wire_and_default_to_false() {
+        let t0 = Instant::now();
+        let mut guest = NpcSync::default();
+        let mut st = state(5.0, 5.0, 0);
+        guest.receive_place(1, &st, t0);
+        let v = guest.views((0, 0), t0);
+        assert!(!v[0].fleeing && !v[0].downed, "an old host sends neither key");
+        st.insert("fleeing".into(), Value::Bool(true));
+        st.insert("downed".into(), Value::Bool(true));
+        guest.receive_place(1, &st, t0);
+        let v = guest.views((0, 0), t0);
+        assert!(v[0].fleeing && v[0].downed);
+    }
+
+    #[test]
+    fn a_hosts_wire_state_names_hidden_fleeing_and_downed() {
+        let content = crate::content::Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let mut g = crate::game::Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-NPC-SYNC", 0, &content, &catalog);
+        let (spot, level) = (g.p.pos, g.runner_level());
+        assert!(g.npc_spawn_at(1, 70, spot, level) >= 1, "the fixture makes a bot");
+        let mut npc = g.npcs[0].clone();
+        npc.hidden = Some(2);
+        let st = wire_state_with(&npc, (0, 0), true);
+        assert_eq!(st.get("hidden"), Some(&Value::Bool(true)));
+        assert_eq!(st.get("downed"), Some(&Value::Bool(true)));
+        assert_eq!(st.get("fleeing"), Some(&Value::Bool(false)));
+        npc.hidden = None;
+        npc.fleeing = true;
+        let st = wire_state(&npc, (0, 0));
+        assert_eq!(st.get("hidden"), Some(&Value::Bool(false)));
+        assert_eq!(st.get("fleeing"), Some(&Value::Bool(true)));
+        assert_eq!(st.get("downed"), Some(&Value::Bool(false)));
     }
 
     #[test]

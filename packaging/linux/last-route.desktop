@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=KYTTU: The Last Route
-Comment=KYTTU: The Last Route
+Name=KYTTU - The Last Route
+Comment=KYTTU - The Last Route
 Exec=last_route
 Icon=last-route
 Terminal=false

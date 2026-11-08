@@ -22,7 +22,10 @@
 //! own-level intents and only run on the runner's level. A bot on a level that is not resident stands still (bots
 //! follow the runner, so this only happens after a rebuild).
 //!
-//! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands, catching,
+//! A chasing hunter that reaches a joined bot puts it down (revive.rs `npc_catches`); a bot walks to a downed teammate
+//! (the "revive" intent).
+//!
+//! Deferred (see docs/NPC_TEAMMATES in the Godot tree): per-NPC commands,
 //! chat, co-op packets, name tags, saves, and the mannequin body. A bot's relay errand stands at the
 //! relay but does not claim it.
 
@@ -156,6 +159,12 @@ pub struct Tuning {
     pub flee: FleeTuning,
     /// How a bot outside the window travels (data `coarse`).
     pub coarse: CoarseTuning,
+    /// A bot walks to a downed teammate within this many times `follow_radius` (data `revive.range_factor`).
+    pub revive_range_factor: f32,
+    /// ... and stands within this fraction of the revive reach (data `revive.stand_fraction`).
+    pub revive_stand: f32,
+    /// The most bots a room holds in all, for owner summons (data `summon.room_cap`).
+    pub summon_room_cap: usize,
 }
 
 /// The coarse travel of a bot outside the loaded window (data `coarse`). A missing key keeps the default.
@@ -512,6 +521,9 @@ impl Tuning {
             goals: GoalTuning::parse(&v["goals"]),
             flee: FleeTuning::parse(&v["flee"]),
             coarse: CoarseTuning::parse(&v["coarse"]),
+            revive_range_factor: num(&v["revive"], "range_factor").unwrap_or(2.0).max(0.0),
+            revive_stand: num(&v["revive"], "stand_fraction").unwrap_or(0.6).clamp(0.0, 1.0),
+            summon_room_cap: v["summon"]["room_cap"].as_u64().map_or(24, |x| x as usize),
         })
     }
 
@@ -1356,6 +1368,8 @@ struct Scene<'a> {
     spots: &'a [Spot],
     /// The points hunters are searching, with their level.
     search_all: &'a [(i32, (f32, f32))],
+    /// The downed bodies a bot may walk to: level, place, and the bot id (None for the runner).
+    downed: &'a [(i32, (f32, f32), Option<u32>)],
 }
 
 /// The step cost a bot plans across levels with: deep water on its own level, and with `avoid_search` the cells within
@@ -1950,11 +1964,31 @@ fn stuck_watch(n: &mut Npc, sc: &Scene, spot: Spot, t: &Tuning, dt: f32, presses
     false
 }
 
+/// The "revive" intent: a bot walks to the nearest downed teammate on its floor inside `revive_range_factor` times the follow
+/// radius, and stands beside it (the hold itself is `Game::tick_revives`). False when there is none.
+fn revive_walk(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let range = t.follow_radius * t.revive_range_factor;
+    let target = sc
+        .downed
+        .iter()
+        .filter(|d| d.0 == n.level && d.2 != Some(n.id) && pdist(n.at, d.1) <= range)
+        .min_by(|a, b| pdist(n.at, a.1).total_cmp(&pdist(n.at, b.1)));
+    let Some(&(_, spot, _)) = target else { return false };
+    if pdist(n.at, spot) <= super::revive::rules().reach * t.revive_stand {
+        n.walking = false;
+        n.path.clear();
+    } else {
+        walk_toward(n, sc.fac, spot, false, t, dt, presses);
+    }
+    true
+}
+
 /// One intent of the bot's list (data `intents`). Returns true when it acted. "flee" acts on any bot. The others need
 /// the bot joined to the runner. A name the bot does not know does nothing.
 fn run_intent(n: &mut Npc, sc: &Scene, intent: &str, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
     match intent {
         "flee" => flee(n, sc.fac, sc.seen, t, dt, presses),
+        "revive" if n.joined && n.hidden.is_none() => revive_walk(n, sc, t, dt, presses),
         _ if !n.joined => false,
         "goal" => run_goal(n, sc, t, dt, presses),
         // hiding and errands are own-level intents: they only run on the runner's level
@@ -2278,7 +2312,22 @@ impl Game {
         let search_all: Vec<(i32, (f32, f32))> = by_level.iter().flat_map(|e| e.2.iter().map(move |p| (e.0, *p))).collect();
         let chunk = crate::world::infinite::CHUNK as f32;
         let infinite = self.inf.is_some();
+        // the downed bodies a bot may walk to revive: the runner, and the bots that are down
+        let mut downed: Vec<(i32, (f32, f32), Option<u32>)> = vec![];
+        if self.downed.is_some() {
+            downed.push((level, leader, None));
+        }
+        for n in self.npcs.iter().filter(|n| self.downed_npcs.contains_key(&n.id)) {
+            downed.push((n.level, n.at, Some(n.id)));
+        }
         for n in self.npcs.iter_mut() {
+            // a downed bot lies still until it is revived or leaves the floor
+            if self.downed_npcs.contains_key(&n.id) {
+                n.walking = false;
+                n.path.clear();
+                n.walk = None;
+                continue;
+            }
             // a bot off the window floor keeps travelling toward the runner a chunk at a time; once its position is on
             // the window floor it is set down on the nearest dry open cell and acts as any other bot
             if infinite {
@@ -2324,6 +2373,7 @@ impl Game {
                 loot: if own { &loot[..] } else { &[] },
                 spots: &spots,
                 search_all: &search_all,
+                downed: &downed,
             };
             // a bot on a flight or ladder finishes the edge before it thinks about anything else
             if n.walk.is_some() {
@@ -2384,6 +2434,12 @@ impl Game {
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
         self.npc_claims();
+        self.npc_catches();
+    }
+
+    /// How many more bots an owner summon may add before the room cap (data `summon.room_cap`).
+    pub fn npc_room_space(&self) -> usize {
+        Tuning::get().summon_room_cap.saturating_sub(self.npcs.len())
     }
 
     /// The places the bots may make their goal (data `goals`): every relay of every resident level (the active level's
@@ -3309,7 +3365,7 @@ mod tests {
         assert_eq!(t.door_think, 0.12, "shorter door think so bots clear doors faster");
         assert_eq!(t.door_think_jitter, 0.08, "door think jitter");
         assert_eq!(t.tasks, vec!["door".to_string()]);
-        let intents: Vec<String> = ["hide", "flee", "goal", "locker", "follow"].iter().map(|s| s.to_string()).collect();
+        let intents: Vec<String> = ["hide", "flee", "revive", "goal", "locker", "follow"].iter().map(|s| s.to_string()).collect();
         assert_eq!(t.intents, intents, "the order the bots try their intents in");
         assert_eq!(t.hide_chase_range, 14.0, "a chase is seen at the threat range");
         assert_eq!(t.hide_reach, 8.0);
@@ -3916,12 +3972,32 @@ mod water_tests {
         (fac, n, cells)
     }
 
+    #[test]
+    fn a_bot_walks_to_a_downed_teammate_in_range_and_ignores_one_out_of_range() {
+        let (fac, mut n, _) = goal_field();
+        let t = Tuning::get();
+        let at = n.at;
+        let near = [(0, (at.0 + t.follow_radius, at.1), None::<u32>)];
+        let sc = Scene { downed: &near, ..goal_scene(&fac, &[]) };
+        let mut presses = vec![];
+        assert!(revive_walk(&mut n, &sc, t, 0.016, &mut presses), "a downed teammate in range is walked to");
+        let far = [(0, (at.0 + t.follow_radius * t.revive_range_factor + 5.0, at.1), None::<u32>)];
+        let sc = Scene { downed: &far, ..goal_scene(&fac, &[]) };
+        assert!(!revive_walk(&mut n, &sc, t, 0.016, &mut presses), "one out of range is left");
+        let own = [(0, at, Some(n.id))];
+        let sc = Scene { downed: &own, ..goal_scene(&fac, &[]) };
+        assert!(!revive_walk(&mut n, &sc, t, 0.016, &mut presses), "a bot never walks to itself");
+        let other_floor = [(1, at, None::<u32>)];
+        let sc = Scene { downed: &other_floor, ..goal_scene(&fac, &[]) };
+        assert!(!revive_walk(&mut n, &sc, t, 0.016, &mut presses), "a body on another floor is left");
+    }
+
     fn spot(kind: SpotKind, c: Cell) -> Spot {
         Spot { kind, level: 0, cell: c, pos: c.center(), claim: None }
     }
 
     fn goal_scene<'a>(fac: &'a Facility, spots: &'a [Spot]) -> Scene<'a> {
-        Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots, search_all: &[] }
+        Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots, search_all: &[], downed: &[] }
     }
 
     #[test]

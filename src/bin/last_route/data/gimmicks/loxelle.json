@@ -1,0 +1,4 @@
+{
+	"_note": "Loxelle's Approach phase gives up after this many seconds if she cannot get within lunge start distance of the locker; she then goes back to wandering and rolls again.",
+	"approach_timeout": 8.0
+}

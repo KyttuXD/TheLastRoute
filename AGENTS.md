@@ -30,7 +30,7 @@ Rules for any AI agent or tool working in this repository. KT's instructions her
 
 The global agent build rules (KT's global CLAUDE.md: edit agents never compile, QA only reads, one build-and-fix agent, then one test-and-fix agent) apply here. This repo's specifics:
 
-- The standard pass is `.claude/workflows/edit-pass.js` (args `{ label, extraRules, tasks: [{ n, files, task }] }`). Each pass compiles into its own `CARGO_TARGET_DIR=target/<pass label>`.
+- The standard pass is `.claude/workflows/edit-pass.js` (args `{ label, extraRules, tasks: [{ n, files, task }] }`). Every pass compiles into the one shared `CARGO_TARGET_DIR=target/pass` (incremental between passes; the main `target/` is for KT).
 - The build-and-fix agent runs, in order: `cargo build --bin last_route`, `cargo test --no-run --lib --bin last_route`, `cargo check --target wasm32-unknown-unknown --bin last_route`, `cargo build --bin lr_server --features server`.
 - The test-and-fix agent runs the newest `<target>/debug/deps/last_route-*.exe --test-threads=4`, then `<target>/debug/last_route.exe --headless --test-suite "tests/*.json"`.
 - Off-limits to every agent: `src/bin/lr_story/`, `src/bin/lr_story_server/`, `packaging/story-*`, `Cargo.toml`, `Cargo.lock`, `.gitignore`, `docs/LR_STORY.md` (another agent owns them).

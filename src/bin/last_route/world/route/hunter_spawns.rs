@@ -57,6 +57,22 @@ pub fn chunk_hunter_spawns(
     region_props: &[Prop],
     safe: bool,
 ) -> Vec<HunterSpawn> {
+    chunk_hunter_spawns_with(world, c, grid, stairs, region_props, safe, None)
+}
+
+/// `chunk_hunter_spawns` with an optional PUBLIC route lineup (content::public_roster `spawn_lineup`, featured first).
+/// `None` or an empty lineup is the plain route: identities come from all of `STREAMED_HUNTER_IDS`. With a lineup the
+/// same draws are spent (so the spawn roll and the cells never change) but the identity is picked from the lineup only.
+pub fn chunk_hunter_spawns_with(
+    world: &str,
+    c: Coord,
+    grid: &Grid,
+    stairs: &[V2],
+    region_props: &[Prop],
+    safe: bool,
+    lineup: Option<&[&'static str]>,
+) -> Vec<HunterSpawn> {
+    let lineup = lineup.filter(|l| !l.is_empty());
     // 5642-5643: a safe room never spawns a hunter, before any draw.
     if safe {
         return Vec::new();
@@ -114,9 +130,12 @@ pub fn chunk_hunter_spawns(
         }
         let picked = rng.next_index(candidates.len());
         let cell = candidates.remove(picked);
-        let mut identity = STREAMED_HUNTER_IDS[rng.next_index(STREAMED_HUNTER_IDS.len())];
+        let mut identity = match lineup {
+            Some(l) => l[rng.next_index(l.len())],
+            None => STREAMED_HUNTER_IDS[rng.next_index(STREAMED_HUNTER_IDS.len())],
+        };
         // 5689-5691: the office void roll, at level -2 and below (not reached at level 0).
-        if profile.rolls_office_void() && rng.next_float() < OFFICE_VOID_CHANCE {
+        if lineup.is_none() && profile.rolls_office_void() && rng.next_float() < OFFICE_VOID_CHANCE {
             identity = crate::world::route::sewer::hunters::office_void_for(&format!("{world}:{tag}:{index}"));
         }
         result.push(HunterSpawn {
@@ -168,6 +187,34 @@ mod tests {
         assert_eq!(STREAMED_HUNTER_IDS.len(), 14);
         assert_eq!(STREAMED_HUNTER_IDS[0], "dovelle");
         assert_eq!(STREAMED_HUNTER_IDS[13], "verrine");
+    }
+
+    #[test]
+    fn a_public_lineup_limits_spawn_identities_and_a_private_room_is_unchanged() {
+        let lineup: [&'static str; 2] = ["elise", "aki"];
+        let grid: Grid = [[0u8; 45]; 45];
+        let mut seen = 0;
+        for x in -20..20 {
+            let c = Coord::new(x, 0, 3);
+            let plain = chunk_hunter_spawns("w-pub", c, &grid, &[], &[], false);
+            assert_eq!(plain, chunk_hunter_spawns_with("w-pub", c, &grid, &[], &[], false, None));
+            let public = chunk_hunter_spawns_with("w-pub", c, &grid, &[], &[], false, Some(&lineup));
+            assert_eq!(public.len(), plain.len(), "same spawns, only identities change");
+            for (a, b) in public.iter().zip(&plain) {
+                assert_eq!(a.cell, b.cell);
+                assert!(lineup.contains(&a.hunter_id), "{} is not in the lineup", a.hunter_id);
+                seen += 1;
+            }
+        }
+        assert!(seen > 0);
+        let primary = Coord::new(1, 0, 0);
+        let spawned = chunk_hunter_spawns_with("w-pub", primary, &grid, &[], &[], false, Some(&lineup));
+        assert!(!spawned.is_empty() && spawned.iter().all(|s| lineup.contains(&s.hunter_id)));
+        // An empty lineup is the plain route.
+        assert_eq!(
+            chunk_hunter_spawns_with("w-pub", primary, &grid, &[], &[], false, Some(&[])),
+            chunk_hunter_spawns("w-pub", primary, &grid, &[], &[], false)
+        );
     }
 
     #[test]

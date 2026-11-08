@@ -9,8 +9,17 @@
   },
   "smart": [50, 70, 85, 100],
   "coarse": { "speed": 4.0, "_source": "Rust-only figure: a bot outside the loaded window walks chunk to chunk toward the runner at the walking speed (4 m/s) and is placed on a dry open cell once its position is on the window floor" },
-  "intents": ["hide", "flee", "goal", "locker", "follow"],
+  "intents": ["hide", "flee", "revive", "goal", "locker", "follow"],
   "_intents_note": "relay and pickup are still valid intent names, but the goal intent already takes every relay and useful item, so the standard list leaves them out",
+  "revive": {
+    "range_factor": 2.0,
+    "stand_fraction": 0.6,
+    "_source": "Rust-only figures: a bot walks to a downed teammate (the runner or a bot) on its floor within range_factor times the follow radius, and stands within stand_fraction of the revive reach (data/revive.json) to hold the revive"
+  },
+  "summon": {
+    "room_cap": 24,
+    "_source": "Rust-only figure: owner summons stop once the room holds this many bots in all"
+  },
   "follow": {
     "radius": 5.0,
     "_source": "Godot game/player/npc_teammates.gd 24 FOLLOW_RADIUS"

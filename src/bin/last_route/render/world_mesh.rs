@@ -1516,6 +1516,68 @@ impl SewerFloor {
     }
 }
 
+/// What lies across one side of a lava cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PitSide {
+    /// More lava: the pit goes on, no wall.
+    Lava,
+    /// A walkable cell: the pit wall rises from the bed to that cell's floor, open to it.
+    Open,
+    /// Rock: the wall rises from the bed to the ceiling.
+    Solid,
+}
+
+/// The faces of one lava cell: the glowing surface at the lava height, the bed, the ceiling over the pit and the wall on
+/// every side that faces something other than lava. The sides are in the order of `PIT_SIDES`.
+#[derive(Clone, Debug)]
+struct PitCell {
+    surface: [Vec3; 4],
+    bed: [Vec3; 4],
+    ceiling: [Vec3; 4],
+    /// Quad corners (top a, top b, bottom b, bottom a) and the normal facing into the pit.
+    walls: Vec<([Vec3; 4], Vec3)>,
+}
+
+/// The sides of a cell as (dx, dz): north, south, west, east.
+const PIT_SIDES: [(i32, i32); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+
+/// The faces of the lava cell (`ci`, `cj`). `floor` and `ceil` give the terrain heights at a grid corner, so a pit wall
+/// meets the floor of the cell beside it (and the rock meets the ceiling) exactly, with no slit.
+fn pit_cell(ci: i32, cj: i32, sides: [PitSide; 4], surf: f32, bed: f32, floor: &dyn Fn(i32, i32) -> f32, ceil: &dyn Fn(i32, i32) -> f32) -> PitCell {
+    let (x, z) = (ci as f32, cj as f32);
+    let flat = |y: f32| [vec3(x, y, z), vec3(x + 1., y, z), vec3(x + 1., y, z + 1.), vec3(x, y, z + 1.)];
+    let mut out = PitCell {
+        surface: flat(surf),
+        bed: flat(bed),
+        // the order of the ceiling quads of the plain cells
+        ceiling: [
+            vec3(x, ceil(ci, cj + 1), z + 1.),
+            vec3(x + 1., ceil(ci + 1, cj + 1), z + 1.),
+            vec3(x + 1., ceil(ci + 1, cj), z),
+            vec3(x, ceil(ci, cj), z),
+        ],
+        walls: vec![],
+    };
+    // the edge corners (integer) and the normal, as the plain cells' edge table lists them
+    let edges: [((i32, i32), (i32, i32), Vec3); 4] = [
+        ((ci + 1, cj), (ci, cj), vec3(0., 0., 1.)),
+        ((ci, cj + 1), (ci + 1, cj + 1), vec3(0., 0., -1.)),
+        ((ci, cj), (ci, cj + 1), vec3(1., 0., 0.)),
+        ((ci + 1, cj + 1), (ci + 1, cj), vec3(-1., 0., 0.)),
+    ];
+    for (k, side) in sides.into_iter().enumerate() {
+        if side == PitSide::Lava {
+            continue;
+        }
+        let (a, b, n) = edges[k];
+        let top = |p: (i32, i32)| if side == PitSide::Open { floor(p.0, p.1) } else { ceil(p.0, p.1) };
+        let (ta, tb) = (vec3(a.0 as f32, top(a), a.1 as f32), vec3(b.0 as f32, top(b), b.1 as f32));
+        let (la, lb) = (vec3(a.0 as f32, bed, a.1 as f32), vec3(b.0 as f32, bed, b.1 as f32));
+        out.walls.push(([ta, tb, lb, la], n));
+    }
+    out
+}
+
 /// Whether a cell draws its ceiling quad: not over the well of a flight up (the lower level's well is open to the level
 /// above, whose floor has the matching hole).
 fn draws_ceiling(step: Option<Stair>) -> bool {
@@ -1706,7 +1768,9 @@ fn build_meshes(
             {
                 painted(&mut surf, floor_kind, assets.floor(set)).quad([a, b, b + up * bed, a + up * bed], UV1, n, WHITE, 0.0);
             }
-            let fill = edge_fill(f, &steps, c, (dx, dz), draw, wall_h);
+            // the side facing a lava pit is open: the pit's own wall (below) stands there instead of rock
+            let into_pit = inferno.as_mut().is_some_and(|s| s.cell(c.x + dx, c.y + dz).1);
+            let fill = if into_pit { EdgeFill::None } else { edge_fill(f, &steps, c, (dx, dz), draw, wall_h) };
             let wall_v = |y: f32| wall_tiers * (1.0 - y / wall_h);
             // in the caverns the wall's ends follow the noisy floor and ceiling corners
             let corner_at = |p: Vec3, y: f32| match inferno.as_ref() {
@@ -1788,6 +1852,38 @@ fn build_meshes(
                     d.floor_y = terrain.floor_at(px, pz);
                     add_deco(&mut plain, &mut glow, &d, at, terrain.ceiling_at(px, pz), cfg);
                 }
+            }
+        }
+    }
+    // level -3 lava pits (look from render/inferno_deco.rs): the part that owns a chunk's fixtures draws its pits, so no pit
+    // is drawn twice. Lava cells are wall cells to the build, so nothing else draws them.
+    if let (Some(inf), Some((x0, y0, _, _))) = (inferno.as_mut(), pick.fixtures) {
+        let key = chunk_cell(f.origin, x0, y0).0;
+        let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+        let lava: Vec<Cell> = inf.carve(key).lava_cells();
+        let rules = crate::world::inferno::InfernoRules::builtin();
+        let look = crate::render::inferno_deco::lava_look();
+        let mid = |k: usize| (look.hot[k] + look.cool[k]) * 0.5;
+        let glow_col = Color::new(mid(0), mid(1), mid(2), 1.0);
+        let pit_col = Color::new(look.pit_color[0], look.pit_color[1], look.pit_color[2], 1.0);
+        let terrain = inf.terrain.clone();
+        for lc in lava {
+            let (wx, wz) = (at.0 + lc.x, at.1 + lc.y);
+            let sides = PIT_SIDES.map(|(dx, dz)| {
+                if inf.cell(wx + dx, wz + dz).1 {
+                    PitSide::Lava
+                } else if f.is_wall_cell(wx + dx, wz + dz) {
+                    PitSide::Solid
+                } else {
+                    PitSide::Open
+                }
+            });
+            let q = pit_cell(wx, wz, sides, rules.lava_y, rules.lava_basin_y, &|i, j| terrain.floor_corner(i, j), &|i, j| terrain.ceiling_corner(i, j));
+            glow.quad(q.surface, UV1, up, glow_col, 2.0);
+            plain.quad(q.bed, UV1, up, pit_col, 0.0);
+            plain.quad(q.ceiling, UV1, -up, ceiling, 0.0);
+            for (corners, n) in q.walls {
+                plain.quad(corners, UV1, n, pit_col, 0.0);
             }
         }
     }
@@ -2040,6 +2136,56 @@ mod tests {
         assert!(keep_in_rects(cells.clone(), |c| *c, &[]).is_empty(), "no built part, no leaf");
         let two = [(0, 0, 45, 45), (45, 0, 90, 45)];
         assert_eq!(keep_in_rects(cells, |c| *c, &two).len(), 3, "a second built part brings its doors");
+    }
+
+    #[test]
+    fn a_lava_cell_builds_surface_at_the_pit_height_and_open_walls() {
+        let (surf, bed) = (-0.9, -2.0);
+        let floor = |_: i32, _: i32| 0.0;
+        let ceil = |_: i32, _: i32| 4.0;
+        let q = pit_cell(5, 7, [PitSide::Open, PitSide::Lava, PitSide::Solid, PitSide::Lava], surf, bed, &floor, &ceil);
+        assert!(q.surface.iter().all(|p| p.y == surf), "the surface lies at the pit height");
+        assert!(q.bed.iter().all(|p| p.y == bed));
+        assert_eq!(q.walls.len(), 2, "one wall per side that is not lava");
+        let span = |c: &[Vec3; 4]| (c.iter().map(|p| p.y).fold(f32::MAX, f32::min), c.iter().map(|p| p.y).fold(f32::MIN, f32::max));
+        assert_eq!(span(&q.walls[0].0), (bed, 0.0), "the open side rises to the floor beside it");
+        assert_eq!(span(&q.walls[1].0), (bed, 4.0), "the rock side rises to the ceiling");
+        for quad in [q.surface, q.bed, q.ceiling] {
+            assert!(quad.iter().all(|p| p.x >= 5.0 && p.x <= 6.0 && p.z >= 7.0 && p.z <= 8.0), "covers exactly the cell");
+        }
+        assert!(q.ceiling.iter().all(|p| p.y == 4.0), "the ceiling over the pit is kept");
+    }
+
+    #[test]
+    fn a_pit_wall_winds_like_a_plain_wall_and_meets_the_neighbour_floor() {
+        let floor = |i: i32, j: i32| 0.1 * (i + j) as f32;
+        let ceil = |_: i32, _: i32| 4.0;
+        let q = pit_cell(2, 2, [PitSide::Open; 4], -1.0, -2.0, &floor, &ceil);
+        assert_eq!(q.walls.len(), 4);
+        for (c, n) in &q.walls {
+            let rh = (c[1] - c[0]).cross(c[2] - c[1]);
+            assert!(rh.dot(*n) > 0.0, "{c:?} winds against its normal");
+            for p in &c[..2] {
+                assert_eq!(p.y, floor(p.x as i32, p.z as i32), "the rim sits on the terrain corners: no slit round the pit");
+            }
+        }
+        let inner = pit_cell(2, 2, [PitSide::Lava; 4], -1.0, -2.0, &floor, &ceil);
+        assert!(inner.walls.is_empty(), "a pit inside the pit has no wall");
+    }
+
+    #[test]
+    fn lava_cells_are_not_walls_in_the_inferno_chunk() {
+        for cx in 0..8 {
+            for cy in 0..8 {
+                let c = InfernoChunk::carve("pit-seed", ChunkKey { cx, cy, level: INFERNO_LEVEL });
+                if let Some(l) = c.lava_cells().first().copied() {
+                    assert!(!c.draws_wall(l, true), "a lava cell draws no wall mass");
+                    assert!(c.draws_wall(c.open_cells()[0], true));
+                    return;
+                }
+            }
+        }
+        panic!("no lava in the sample");
     }
 
     #[test]

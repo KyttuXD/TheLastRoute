@@ -77,6 +77,8 @@ impl Content {
             // hunters/water.json and hunters/noise_events.json are rule tables, not hunter definitions
             if path == crate::hunters::water::WATER_PATH
                 || path == "hunters/noise_events.json"
+                || path == crate::hunters::vent_nav::VENTS_PATH
+                || path == crate::hunters::activities::PATH
                 || path == crate::hunters::flight_edges::FLIGHTS_PATH
             {
                 continue;

@@ -10,7 +10,8 @@
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::net::chat::{ChatFeed, ChatLine, ChatRules};
-use macroquad::input::{get_char_pressed, is_key_pressed, KeyCode};
+use super::text_field::{HoldTimer, KeyRepeat};
+use macroquad::input::{get_char_pressed, is_key_down, is_key_pressed, KeyCode};
 use macroquad::prelude::*;
 
 const SAFE: f32 = 8.0;
@@ -19,6 +20,8 @@ const SAFE: f32 = 8.0;
 #[derive(Default, Debug, PartialEq)]
 pub struct ChatBox {
     text: Option<String>,
+    /// How long Backspace has been held (it repeats, data/ui/key_repeat.json).
+    backspace_hold: HoldTimer,
 }
 
 /// `text` cut to at most `max` characters, never inside a multi-byte character.
@@ -115,7 +118,8 @@ impl ChatBox {
         while let Some(c) = get_char_pressed() {
             self.insert_char(c);
         }
-        if is_key_pressed(KeyCode::Backspace) {
+        let cfg = KeyRepeat::load();
+        for _ in 0..self.backspace_hold.step(is_key_pressed(KeyCode::Backspace), is_key_down(KeyCode::Backspace), get_frame_time(), &cfg) {
             self.backspace();
         }
         if is_key_pressed(KeyCode::Escape) {

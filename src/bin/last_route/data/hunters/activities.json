@@ -1,0 +1,56 @@
+{
+  "schema": "lr.hunter_activities/1",
+  "_note": "Where a wandering hunter goes and what it does there (hunters/activities.rs). A wander goal is a point of interest built from the facility; weight = kind weight x personality x region x room type. Durations are seconds [min, max]. Everything here is tunable.",
+  "memory": 4,
+  "min_distance": 4.0,
+  "pause": [0.8, 2.4],
+  "spawn_pause": [0.6, 1.8],
+  "locker_front": 0.9,
+  "vent_types": ["vent", "lavaVent", "sewerFloorGrate", "sewerOverflowGrate", "sewerGrateDeck"],
+  "noise_types": ["generator", "fan", "pump", "boiler", "radiator", "speaker", "tvWall"],
+  "kinds": {
+    "room_centre": { "weight": 1.0, "activities": { "look_around": 3, "check_room": 3, "listen": 1, "sniff": 1 } },
+    "locker": { "weight": 0.9, "activities": { "inspect_locker": 1 } },
+    "relay": { "weight": 0.6, "activities": { "look_around": 2, "listen": 2, "sniff": 1 } },
+    "door": { "weight": 0.5, "activities": { "knock": 2, "push": 2, "listen": 1 } },
+    "vent": { "weight": 0.4, "activities": { "listen": 3, "sniff": 2 } },
+    "safe_zone": { "weight": 0.15, "activities": { "look_around": 2, "listen": 1 } },
+    "lit_prop": { "weight": 0.35, "activities": { "look_around": 2, "sniff": 1 } },
+    "noise_spot": { "weight": 0.5, "activities": { "listen": 3, "look_around": 1 } }
+  },
+  "activities": {
+    "inspect_locker": { "duration": [2.2, 3.6] },
+    "look_around": { "duration": [2.0, 3.5] },
+    "sniff": { "duration": [2.0, 3.2] },
+    "check_room": { "duration": [4.0, 7.0] },
+    "listen": { "duration": [2.5, 4.5] },
+    "knock": { "duration": [1.6, 2.6] },
+    "push": { "duration": [1.6, 2.6] }
+  },
+  "params": {
+    "sweep_degrees": 100.0,
+    "sweeps": 1.5,
+    "lean_at": 0.5,
+    "push_at": 0.5,
+    "listen_hearing_scale": 1.5,
+    "sniff_creep_speed": 0.3,
+    "check_room_inset": 1.5,
+    "check_room_speed_scale": 0.7
+  },
+  "default_personality": "steady",
+  "by_tier": ["curious", "steady", "prowler"],
+  "by_hunter": {},
+  "personalities": {
+    "curious": { "locker": 1.4, "door": 1.3, "noise_spot": 1.2, "room_centre": 0.9 },
+    "steady": {},
+    "prowler": { "locker": 1.6, "relay": 1.6, "vent": 1.3, "safe_zone": 1.5, "room_centre": 0.8 }
+  },
+  "regions": {
+    "hospital": { "locker": 1.3, "door": 1.2 },
+    "prison": { "door": 1.5, "locker": 0.8 },
+    "sewer": { "vent": 1.8, "noise_spot": 1.4, "locker": 0.5 },
+    "greenhouse": { "lit_prop": 1.4 },
+    "gothic": { "lit_prop": 1.3, "door": 1.2 }
+  },
+  "room_types": {}
+}

@@ -968,4 +968,38 @@ mod tests {
         g.apply_landing(landing(0, (3.5, 3.5), swim::fall_rules().min_height * 0.5), &content, &catalog);
         assert!(g.noise_events.is_empty());
     }
+
+    // --- hunters and bots that stand in sewer water can leave it ---
+
+    use crate::hunters::water::{WaterField, WaterRules, Zone};
+    use crate::world::facility::Options;
+    use crate::world::Facility;
+
+    #[test]
+    fn a_hunter_in_deep_water_keeps_moving_and_the_shore_beside_it_is_open() {
+        let rules = WaterRules::get().default;
+        let field = WaterField::from_depths(&[((5, 5), 2.0), ((6, 5), 0.1)], &[]);
+        assert_eq!(rules.zone(&field, (5, 5)), Zone::Deep);
+        assert!(rules.speed_scale(&field, (5, 5)) > 0.0, "standing in deep water never freezes the hunter");
+        assert!(rules.step_factor(&field, (6, 5), false).is_some(), "the shore cell beside the pool is walkable");
+        assert!(rules.step_factor(&field, (4, 5), false).is_some(), "so is the dry cell beside it");
+        assert!(rules.step_factor(&field, (6, 5), true).is_some(), "and chasing");
+    }
+
+    #[test]
+    fn a_bot_in_water_has_a_route_to_dry_floor() {
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("SWIM-OUT-1", &Options::default(), &cat);
+        let cells = fac.floor_cells();
+        let wet = cells[cells.len() / 2];
+        let dry = cells
+            .iter()
+            .copied()
+            .find(|c| *c != wet && !fac.find_path(wet, *c).is_empty())
+            .expect("a floor cell the wet cell reaches");
+        // the grid a bot walks does not close water cells: a bot placed in a pool still gets a route out
+        let route = fac.find_path(wet, dry);
+        assert_eq!(route.first().copied(), Some(wet));
+        assert_eq!(route.last().copied(), Some(dry));
+    }
 }

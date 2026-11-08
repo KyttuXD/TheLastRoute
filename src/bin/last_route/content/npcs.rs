@@ -30,7 +30,7 @@ impl Default for NpcRules {
             min_distance: 6.0,
             max_distance: 20.0,
             join_radius: 6.0,
-            smart: vec![30, 50, 70, 90],
+            smart: vec![50, 70, 85, 100],
         }
     }
 }
@@ -98,12 +98,12 @@ mod tests {
     #[test]
     fn the_bots_tuning_reads_the_embedded_standard_values() {
         let t = Tuning::parse(&embedded_json()).expect("embedded npcs.json has the tuning keys");
-        assert!((t.threat_range - 14.0_f32).abs() < 1e-4);
-        assert!((t.smart_base - 0.5_f32).abs() < 1e-4);
+        assert!((t.threat_range - 16.0_f32).abs() < 1e-4);
+        assert!((t.smart_base - 0.6_f32).abs() < 1e-4);
         assert!(t.flee_running);
         assert!((t.follow_radius - 5.0_f32).abs() < 1e-4);
-        assert!((t.door_think - 0.25_f32).abs() < 1e-4);
-        assert!((t.door_think_jitter - 0.1_f32).abs() < 1e-4);
+        assert!((t.door_think - 0.12_f32).abs() < 1e-4);
+        assert!((t.door_think_jitter - 0.08_f32).abs() < 1e-4);
         assert_eq!(t.tasks, vec!["door".to_string()]);
         assert_eq!(*Tuning::get(), t);
     }

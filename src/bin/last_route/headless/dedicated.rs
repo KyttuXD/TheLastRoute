@@ -317,7 +317,7 @@ impl Room {
         // the NPC teammates this host runs go to every guest, route on or not
         // (the fields are borrowed apart: the net session sends while the game's NPCs are read)
         if let Some(game) = self.sim.game.as_ref() {
-            self.net.publish_npcs(&game.npcs, game.window_origin());
+            self.net.publish_npcs(&game.npcs, game.window_origin(), &game.downed_npcs.keys().copied().collect());
         }
         if !self.route_on {
             // the route is ended: what the guests report is dropped, nothing steps, nobody is hunted
@@ -430,7 +430,13 @@ impl Room {
         }
         let origin = self.game().window_origin();
         let spot = crate::net::world_sync::to_window(at, origin);
-        let made = self.game_mut().npc_spawn_at(count as i32, smart, spot, level);
+        // the room holds only so many bots in all (data npcs.json summon.room_cap): a summon past it makes none
+        let room = self.game().npc_room_space();
+        if room == 0 {
+            self.notes.push(format!("npc summon from {from} dropped: the room is full of NPCs"));
+            return;
+        }
+        let made = self.game_mut().npc_spawn_at((count as usize).min(room) as i32, smart, spot, level);
         self.notes.push(format!("npc summon from {from}: {made} made"));
     }
 

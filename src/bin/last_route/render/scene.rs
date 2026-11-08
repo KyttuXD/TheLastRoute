@@ -7,6 +7,7 @@ use super::anim::{
     self, grab, hide,
     hunter::{CreatureInput, HunterView, Input},
 };
+use super::anim::hunter_activity_pose::{self as hunter_act, ActivityRead};
 use super::builder::{submit_all, Builder};
 use super::frustum::{Frustum, FRUSTUM_MARGIN_M};
 use super::hunter_cache::{self, HunterMeshCache};
@@ -789,7 +790,8 @@ pub fn draw_scene(
                     Gimmick::Xivvy(x) if !held => x.sway_offset(h.facing),
                     _ => (0.0, 0.0),
                 },
-                charging: matches!(&h.gimmick, Gimmick::Loxelle(l) if l.holds_position()),
+                // Loxelle's charge, and Nyxie's / Solyth's leap: the charge clip plays for both (hunter_view_3d.gd 1752)
+                charging: matches!(&h.gimmick, Gimmick::Loxelle(l) if l.holds_position()) || hunter_act::leaping(&h.gimmick),
                 look_target,
                 path_ahead: Some(&|d| h.path_look_ahead(d)),
                 chase_style: &h.def.chase_style,
@@ -808,6 +810,8 @@ pub fn draw_scene(
                 },
                 mechanic: anim::profile::mechanic_of(h),
             };
+            // the brain's activity pose and emote (face, clip, voice cue), next to the Input
+            view.set_extras(hunter_act::Extras { activity: h.activity_name(), emote: h.emote });
             let (pose, normal) = view.update(&input, dt, g.time);
             // a far hunter re-poses every few frames (data/render/hunters.json lod_bands) and shows its last mesh between;
             // near ones have interval 1 and are always due. A held, stunned, mechanic or beam hunter is always posed.
@@ -866,6 +870,12 @@ pub fn draw_scene(
             if let (Some((item, hand)), Some(d)) = (view.held_prop(&out), crate::net::held_wire::data()) {
                 if let Some(m) = item_model(a, item_file(item)) {
                     m.draw_faded(crate::net::held_wire::item_transform(d, item, out.root, hand, rig.draw_scale()), WHITE);
+                }
+            }
+            // Kathy's scythe on her right hand (the model comes from the loaded assets; absent, she carries nothing)
+            if let Some((model_path, xf)) = view.scythe_prop(&out) {
+                if let Some(m) = a.models.get(model_path) {
+                    m.draw_faded(xf, WHITE);
                 }
             }
             let star = if view.heavy(&input) {

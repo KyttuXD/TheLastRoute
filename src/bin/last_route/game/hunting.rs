@@ -153,6 +153,11 @@ impl Game {
                 h.disguise = entry["disguise"].as_str().map(str::to_string);
             }
             h.set_net_mechanic(entry["mech"].as_str());
+            // the activity keys are optional: absent means none
+            h.set_net_activity(match (entry["act"].as_u64(), finite(&entry["actp"])) {
+                (Some(a), Some(p)) if a <= u8::MAX as u64 => Some((a as u8, p)),
+                _ => None,
+            });
             if let crate::hunters::gimmicks::Gimmick::WolfSpider(s) = &mut h.gimmick {
                 if let (Some(phase), Some(bark)) = (entry["phase"].as_i64(), entry["bark_seq"].as_u64()) {
                     s.apply_network_state(phase, bark.min(u32::MAX as u64) as u32);
@@ -380,6 +385,41 @@ impl Game {
                     vec![("index", json!(i)), ("hunter_id", json!(id)), ("ability", json!(ability))],
                     crate::shared::clock::Instant::now(),
                 );
+            }
+            // activity results (hunters/activities.rs): a locker leaned into, a door pushed. Only this side simulates hunters.
+            let checked = self.hunters[i].take_locker_check();
+            let found = self.hunters[i].take_locker_found();
+            if let Some(li) = found.or(checked) {
+                // the local runner hiding in that locker is revealed and pulled out; the hunter chases from there
+                if self.p.hidden == Some(li) {
+                    self.leave_locker(None);
+                    let at = self.p.pos;
+                    self.hunters[i].chase(at);
+                }
+            }
+            if let Some((cell, act)) = self.hunters[i].take_door_action() {
+                if act == crate::hunters::activities::Activity::Push {
+                    let at = self.hunters[i].pos;
+                    self.fac.toggle_door(cell, &[at]);
+                }
+            }
+            // Verrine's duct thumps and burst raise a noise the other hunters can hear
+            let mut thump_at: Vec<(f32, f32)> = vec![];
+            if let Gimmick::Verrine(v) = &mut self.hunters[i].gimmick {
+                thump_at = v.take_thumps();
+                let _burst = v.take_burst();
+            }
+            let crawled = self.hunters[i].take_vent_thumps();
+            let _ = self.hunters[i].take_vent_hatch();
+            if crawled > 0 {
+                let at = self.hunters[i].pos;
+                let loud = crate::hunters::vent_nav::rules().thump_loudness;
+                for _ in 0..crawled {
+                    self.push_noise_scaled(NoiseKind::VentThump, at, list_level, loud);
+                }
+            }
+            for p in thump_at {
+                self.push_noise_at(NoiseKind::VentThump, p, list_level);
             }
             // a capture ends the run only when the runner was the target: a bot caught is no run end
             if c && !chose_bot {

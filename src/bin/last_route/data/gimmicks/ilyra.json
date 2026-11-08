@@ -1,0 +1,5 @@
+{
+	"_note": "Ilyra pounce delay in seconds after she loses sight of a runner she has seen (game_config.gd ILYRA_POUNCE_DELAY 15). Nightmare pounces at once (ilyra_gimmick.gd line 52). A difficulty with no entry uses pounce_delay.",
+	"pounce_delay": 15.0,
+	"difficulty": { "nightmare": 0.0 }
+}

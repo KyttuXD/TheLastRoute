@@ -1,0 +1,5 @@
+{
+  "_note": "Held-key repeat for Backspace and Delete in the chat box and every text field. delay_seconds = how long the key is held before it starts repeating; repeats_per_second = the rate after that. Set repeats_per_second to 0 to turn repeating off (one press, one delete).",
+  "delay_seconds": 0.4,
+  "repeats_per_second": 25.0
+}
