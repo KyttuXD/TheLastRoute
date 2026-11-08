@@ -51,6 +51,8 @@ fn window_conf() -> macroquad::conf::Conf {
             sample_count: 4,
             ..Default::default()
         },
+        draw_call_vertex_capacity: 65536,
+        draw_call_index_capacity: 65536 * 3 / 2,
         ..Default::default()
     }
 }

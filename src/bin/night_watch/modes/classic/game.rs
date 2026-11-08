@@ -24,6 +24,7 @@ use crate::core::{
 use crate::gfx::building::{classic_layout, Building};
 use crate::gfx::office::{Office, OfficeConfig, SPAWN};
 use crate::gfx::LightSet;
+use crate::hunters::rig::FeedView;
 use crate::hunters::{yaw_toward, Actor, ActorDriver, BehaviourEvent, PoseState};
 use macroquad::prelude::{vec3, Vec3};
 use std::collections::BTreeMap;
@@ -493,6 +494,12 @@ impl ClassicMode {
         self.sync_world(feet, ctx.manual_clock);
     }
 
+    /// The view of a room's feed camera (the one `draw_feed` renders and `feed_report` checks).
+    fn feed_view(room: &str) -> FeedView {
+        let (pos, target) = Building::camera_transform(room);
+        FeedView::new(pos, target, 62.0)
+    }
+
     /// The part of `sync` that needs no HUD: the office and the walkers.
     fn sync_world(&mut self, player_pos: Vec3, snap: bool) {
         if let Some(g) = self.gx.as_mut() {
@@ -870,11 +877,10 @@ impl Mode for ClassicMode {
         let lights = LightSet::feed();
         g.building.draw_feed_world(&ctx.gfx, pos);
         g.props.draw(&ctx.gfx, &lights, pos);
+        let view = Self::feed_view(room);
         for a in self.placement.crowd.visible_in(room) {
             if let Some(s) = g.slots.iter().find(|s| s.id == a.id) {
-                if s.actor.visible {
-                    s.actor.draw_in(&ctx.gfx, &lights, pos, Actor::is_duct_room(room));
-                }
+                s.actor.draw_feed(&ctx.gfx, &lights, &view, s.actor.visible, Actor::is_duct_room(room));
             }
         }
         ctx.gfx.feed.end();
@@ -883,9 +889,11 @@ impl Mode for ClassicMode {
     fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
         let g = self.gx.as_ref()?;
         let inside: Vec<String> = self.placement.crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
+        let view = Self::feed_view(room);
+        let duct = Actor::is_duct_room(room);
         let drawn = inside
             .iter()
-            .filter(|id| g.slots.iter().any(|s| &s.id == *id && s.actor.drawn_in_room(room)))
+            .filter(|id| g.slots.iter().any(|s| &s.id == *id && s.actor.feed_drawn(s.actor.visible, duct, &view)))
             .cloned()
             .collect();
         Some((inside, drawn))
@@ -893,6 +901,8 @@ impl Mode for ClassicMode {
 
     fn tour_protect(&mut self) {
         self.sim.god = true;
+        // god mode leaves a hunter camping at her door for good: pull her back so she walks through the camera rooms again
+        self.sim.tour_pull_back();
         self.sim.infinite_power = true;
         self.admin_no_scare = true;
         let e = crate::core::tour_clock_wrap(self.sim.elapsed);
@@ -1309,6 +1319,26 @@ mod tests {
         m.flinch_left.insert("ravelle".to_string(), 0.7);
         m.sync_world(vec3(0.0, 0.0, 0.9), false);
         assert!(!m.placement.crowd.agent("ravelle").map_or(true, |a| a.brain.enabled()));
+    }
+
+    #[test]
+    fn a_hunter_at_a_stand_spot_is_in_that_rooms_feed() {
+        let mut a = crate::hunters::rig::tests::test_actor();
+        for room in crate::core::cam_rooms() {
+            let room = room.as_str();
+            for slot in 0..2 {
+                a.pos = Building::stand_position(room, slot);
+                assert!(a.feed_drawn(true, Actor::is_duct_room(room), &ClassicMode::feed_view(room)), "{room} slot {slot}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_tour_pulls_a_hunter_off_her_door_so_she_walks_the_cameras_again() {
+        let mut m = mode(3);
+        m.sim.admin_send("dovelle", "doorL");
+        m.sim.tour_pull_back();
+        assert_eq!(m.sim.hunter("dovelle").map(|h| h.room.as_str()), Some("stage"));
     }
 
     #[test]

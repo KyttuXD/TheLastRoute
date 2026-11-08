@@ -11,6 +11,76 @@ use std::collections::{BTreeMap, HashMap};
 pub const MAX_BATCH_VERTS: usize = 10_000;
 pub const MAX_BATCH_INDICES: usize = 30_000;
 
+/// macroquad's immediate geometry buffer (default conf) holds 10000 vertices / 5000 indices and clamps (warning, grey
+/// output) at `>=` those numbers. Every mesh handed to `draw_mesh` stays strictly under these.
+pub const DRAW_MAX_VERTS: usize = 9_000;
+pub const DRAW_MAX_INDICES: usize = 4_500;
+
+/// Split triangle geometry into chunks that fit one draw call (`DRAW_MAX_*`). Pure, no GL.
+pub fn split_geometry(verts: &[Vertex], idx: &[u16]) -> Vec<(Vec<Vertex>, Vec<u16>)> {
+    if verts.len() <= DRAW_MAX_VERTS && idx.len() <= DRAW_MAX_INDICES {
+        return vec![(verts.to_vec(), idx.to_vec())];
+    }
+    let mut out: Vec<(Vec<Vertex>, Vec<u16>)> = Vec::new();
+    let mut cur: (Vec<Vertex>, Vec<u16>) = (Vec::new(), Vec::new());
+    let mut remap: HashMap<u16, u16> = HashMap::new();
+    for tri in idx.chunks_exact(3) {
+        let new_verts = tri.iter().filter(|i| !remap.contains_key(i)).count();
+        if cur.0.len() + new_verts > DRAW_MAX_VERTS || cur.1.len() + 3 > DRAW_MAX_INDICES {
+            out.push(std::mem::take(&mut cur));
+            remap.clear();
+        }
+        for &i in tri {
+            let n = *remap.entry(i).or_insert_with(|| {
+                cur.0.push(verts[i as usize]);
+                (cur.0.len() - 1) as u16
+            });
+            cur.1.push(n);
+        }
+    }
+    if !cur.1.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Chunked meshes for one texture.
+pub fn chunked_meshes(verts: Vec<Vertex>, idx: Vec<u16>, texture: Option<Texture2D>) -> Vec<Mesh> {
+    split_geometry(&verts, &idx)
+        .into_iter()
+        .map(|(vertices, indices)| Mesh { vertices, indices, texture: texture.clone() })
+        .collect()
+}
+
+/// Re-cut any oversized mesh of a baked list (meshes already under the cap pass through untouched).
+pub fn rechunk(meshes: Vec<Mesh>) -> Vec<Mesh> {
+    let mut out = Vec::with_capacity(meshes.len());
+    for m in meshes {
+        if fits_draw_call(&m) {
+            out.push(m);
+        } else {
+            out.extend(chunked_meshes(m.vertices, m.indices, m.texture));
+        }
+    }
+    out
+}
+
+/// True when the mesh fits one macroquad draw call.
+pub fn fits_draw_call(m: &Mesh) -> bool {
+    m.vertices.len() <= DRAW_MAX_VERTS && m.indices.len() <= DRAW_MAX_INDICES
+}
+
+/// Drop-in for `draw_mesh`: draws in-cap meshes directly, splits oversized ones on the fly (slow path, bake instead).
+pub fn draw_mesh_safe(m: &Mesh) {
+    if fits_draw_call(m) {
+        draw_mesh(m);
+    } else {
+        for (vertices, indices) in split_geometry(&m.vertices, &m.indices) {
+            draw_mesh(&Mesh { vertices, indices, texture: m.texture.clone() });
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Cube {
     pub name: String,
@@ -426,10 +496,9 @@ impl WGroup {
     fn rebuild(&mut self, handles: &HashMap<String, Texture2D>) {
         self.meshes = build_batches(&self.cubes, &self.scales, self.origin)
             .into_iter()
-            .map(|b| Mesh {
-                vertices: b.vertices,
-                indices: b.indices,
-                texture: handles.get(&b.kind).or_else(|| handles.get("concrete")).cloned(),
+            .flat_map(|b| {
+                let tex = handles.get(&b.kind).or_else(|| handles.get("concrete")).cloned();
+                chunked_meshes(b.vertices, b.indices, tex)
             })
             .collect();
     }
@@ -472,7 +541,7 @@ impl World {
                 }
             }
             for m in &g.meshes {
-                draw_mesh(m);
+                draw_mesh_safe(m);
             }
             if moved {
                 unsafe {
@@ -563,6 +632,58 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quad_soup(quads: usize) -> (Vec<Vertex>, Vec<u16>) {
+        let v = Vertex::new(0.0, 0.0, 0.0, 0.0, 0.0, WHITE);
+        let (mut verts, mut idx) = (Vec::new(), Vec::new());
+        for q in 0..quads {
+            let b = (q * 4 % 60_000) as u16;
+            verts.extend([v, v, v, v]);
+            idx.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+        }
+        (verts, idx)
+    }
+
+    #[test]
+    fn split_geometry_keeps_every_chunk_under_the_draw_cap() {
+        let (v, i) = quad_soup(9_000);
+        let chunks = split_geometry(&v, &i);
+        assert!(chunks.len() > 1);
+        let mut tris = 0;
+        for (cv, ci) in &chunks {
+            assert!(cv.len() < 10_000 && ci.len() < 5_000, "chunk {} verts {} indices", cv.len(), ci.len());
+            assert!(ci.iter().all(|&k| (k as usize) < cv.len()));
+            tris += ci.len() / 3;
+        }
+        assert_eq!(tris, 18_000);
+    }
+
+    #[test]
+    fn small_geometry_stays_one_chunk() {
+        let (v, i) = quad_soup(10);
+        assert_eq!(split_geometry(&v, &i).len(), 1);
+    }
+
+    #[test]
+    fn cube_world_batches_chunk_under_the_cap() {
+        let cubes: Vec<Cube> = (0..2_000).map(|i| Cube::new("Wall", Vec3::ONE, vec3(i as f32, 0.0, 0.0))).collect();
+        let scales = vec![Vec3::ONE; cubes.len()];
+        let mut tris = 0;
+        for b in build_batches(&cubes, &scales, Vec3::ZERO) {
+            for m in chunked_meshes(b.vertices, b.indices, None) {
+                assert!(fits_draw_call(&m));
+                tris += m.indices.len() / 3;
+            }
+        }
+        assert_eq!(tris, 2_000 * 12);
+    }
+
+    #[test]
+    fn rechunk_cuts_oversized_meshes_only() {
+        let (v, i) = quad_soup(5_000);
+        let out = rechunk(vec![Mesh { vertices: v, indices: i, texture: None }]);
+        assert!(out.len() > 1 && out.iter().all(fits_draw_call));
+    }
 
     #[test]
     fn a_cube_has_24_vertices_and_36_indices() {

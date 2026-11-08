@@ -353,6 +353,22 @@ impl Actor {
         self.drawn_for(Self::is_duct_room(room))
     }
 
+    /// Whether this actor is submitted to a feed's draw: drawn for the camera (see `drawn_for`) AND inside its view. The one rule
+    /// `draw_feed` and every mode's `feed_report` share, so "drawn" in the tour means "really in the picture".
+    /// `shown` is whether the mode shows her in this feed at all (her `visible` flag, or the rules' "on the floor tonight").
+    pub fn feed_drawn(&self, shown: bool, cam_in_duct: bool, view: &FeedView) -> bool {
+        shown && (!self.hidden || cam_in_duct) && view.sees_body(self.pos)
+    }
+
+    /// Draw into the feed that is begun (see `feed_drawn`). Returns whether anything was submitted.
+    pub fn draw_feed(&self, gfx: &Gfx, lights: &LightSet, view: &FeedView, shown: bool, cam_in_duct: bool) -> bool {
+        if !self.feed_drawn(shown, cam_in_duct, view) {
+            return false;
+        }
+        self.draw_mesh(gfx, lights, view.pos);
+        true
+    }
+
     /// Draw for a camera feed; `cam_in_duct` lets a vent cam show a crawling hunter.
     pub fn draw_in(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3, cam_in_duct: bool) {
         if !self.drawn_for(cam_in_duct) {
@@ -373,8 +389,51 @@ impl Actor {
             return;
         }
         gfx.shader.begin(lights, cam_pos);
-        draw_mesh(&Mesh { vertices: verts, indices: idx, texture });
+        crate::gfx::mesh::draw_mesh_safe(&Mesh { vertices: verts, indices: idx, texture });
         gfx.shader.end();
+    }
+}
+
+// ------------------------------------------------------------------------------------------- FeedView
+
+/// A camera feed's view: where the camera sits, what it looks at, the vertical field of view in degrees and the aspect.
+#[derive(Clone, Copy, Debug)]
+pub struct FeedView {
+    pub pos: Vec3,
+    pub target: Vec3,
+    pub fov_deg: f32,
+    pub aspect: f32,
+}
+
+impl FeedView {
+    /// A 16:9 feed.
+    pub fn new(pos: Vec3, target: Vec3, fov_deg: f32) -> FeedView {
+        FeedView { pos, target, fov_deg, aspect: 16.0 / 9.0 }
+    }
+
+    /// Is the point inside the view frustum (in front of the camera, within the field of view, inside the far plane)?
+    pub fn contains(&self, p: Vec3) -> bool {
+        let fwd = (self.target - self.pos).normalize_or_zero();
+        if fwd == Vec3::ZERO {
+            return false;
+        }
+        let right = fwd.cross(Vec3::Y).normalize_or_zero();
+        if right == Vec3::ZERO {
+            return false;
+        }
+        let up = right.cross(fwd);
+        let d = p - self.pos;
+        let depth = d.dot(fwd);
+        if depth < 0.05 || depth > 80.0 {
+            return false;
+        }
+        let half_v = (self.fov_deg.to_radians() * 0.5).tan();
+        d.dot(up).abs() <= depth * half_v && d.dot(right).abs() <= depth * half_v * self.aspect
+    }
+
+    /// Is any part of a standing body (feet, chest or head, `pos` at the feet) inside the view?
+    pub fn sees_body(&self, pos: Vec3) -> bool {
+        [0.1f32, 0.9, 1.7].iter().any(|h| self.contains(pos + Vec3::Y * *h))
     }
 }
 
@@ -502,7 +561,7 @@ pub fn roster_entry(id: &str) -> Option<&'static RosterEntry> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -590,6 +649,28 @@ mod tests {
 
     const DOVELLE: &str = include_str!("../../last_route/assets/hunters/anim/dovelle.json");
     const VERRINE: &str = include_str!("../../last_route/assets/hunters/anim/verrine.json");
+
+    /// A GL-free dovelle actor for the modes' feed tests (Actor::from_parts stays in this file).
+    pub fn test_actor() -> Actor {
+        actor("dovelle", DOVELLE)
+    }
+
+    #[test]
+    fn a_feed_view_sees_what_is_in_front_and_not_what_is_behind() {
+        let v = FeedView::new(vec3(0.0, 2.0, 5.0), vec3(0.0, 1.0, 0.0), 62.0);
+        assert!(v.sees_body(vec3(0.0, 0.0, 0.0)));
+        assert!(!v.sees_body(vec3(0.0, 0.0, 9.0)), "behind the camera");
+        assert!(!v.sees_body(vec3(40.0, 0.0, 0.0)), "far to the side");
+        let mut a = test_actor();
+        a.pos = vec3(0.0, 0.0, 0.0);
+        assert!(a.feed_drawn(true, false, &v));
+        assert!(!a.feed_drawn(false, false, &v), "not shown");
+        a.hidden = true;
+        assert!(!a.feed_drawn(true, false, &v));
+        assert!(a.feed_drawn(true, true, &v));
+        a.pos = vec3(40.0, 0.0, 0.0);
+        assert!(!a.feed_drawn(true, true, &v));
+    }
 
     fn actor(id: &str, text: &str) -> Actor {
         let mut rig = Rig::parse(id, text).expect("rig");

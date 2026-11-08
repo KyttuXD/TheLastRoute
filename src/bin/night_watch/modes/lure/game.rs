@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 /// Seconds the static flash lasts (the HUD's `STATIC_SECONDS`).
 const FLASH_S: f32 = 0.14;
-/// Seconds a message ("Cameras is down...") stays in the call box.
+/// Seconds a message ("Cameras are down...") stays in the call box.
 const MESSAGE_S: f32 = 4.0;
 
 fn capitalize_word(s: &str) -> String {
@@ -36,6 +36,13 @@ fn capitalize_word(s: &str) -> String {
         Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
         None => String::new(),
     }
+}
+
+/// Zellia's line when a system breaks: plural labels (CAMERAS, VENTS) take "are / them", the rest "is / it".
+fn down_line(label: &str) -> String {
+    let plural = label.trim_end().to_uppercase().ends_with('S');
+    let (be, pronoun) = if plural { ("are", "them") } else { ("is", "it") };
+    format!("{} {} down. Reboot {} from the monitor.", capitalize_word(label), be, pronoun)
 }
 
 /// Live switches the admin hooks set (the Godot `_admin_*` fields).
@@ -329,9 +336,12 @@ impl LureMode {
             }
             SimEvent::Broken { system, .. } => {
                 ctx.snd.cues(&cue_names::office("drain", 0.0, 1.0));
-                let label = t.system(system).map(|s| s.label.clone()).unwrap_or_default();
-                let text = format!("{} is down. Reboot it from the monitor.", capitalize_word(&label));
-                self.say(ctx, &text);
+                // the call only plays while that system is actually down
+                if self.sim.state_of(system) == SysState::Broken {
+                    let label = t.system(system).map(|s| s.label.clone()).unwrap_or_default();
+                    let text = down_line(&label);
+                    self.say(ctx, &text);
+                }
             }
             SimEvent::Fixed { .. } => {
                 ctx.snd.cues(&cue_names::office("control", 0.0, 0.9));
@@ -1007,6 +1017,15 @@ mod tests {
         assert_eq!(capitalize_word(""), "");
         assert_eq!(rating_of(400, 400), "Unbeatable!");
         assert_eq!(hour_label(hour_index(5.0 * HOUR_MS)), "5 AM");
+    }
+
+    #[test]
+    fn the_down_line_agrees_with_plural_system_names() {
+        assert_eq!(down_line("CAMERAS"), "Cameras are down. Reboot them from the monitor.");
+        assert_eq!(down_line("VENTS"), "Vents are down. Reboot them from the monitor.");
+        assert_eq!(down_line("AUDIO"), "Audio is down. Reboot it from the monitor.");
+        assert_eq!(down_line("HEATER"), "Heater is down. Reboot it from the monitor.");
+        assert_eq!(down_line("FAN"), "Fan is down. Reboot it from the monitor.");
     }
 
     #[test]

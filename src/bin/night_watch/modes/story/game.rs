@@ -23,7 +23,7 @@ use crate::hunters::behaviour::{ActorDriver, BehaviourData, BehaviourEvent, Crow
 use crate::hunters::nav::{NavMap, Pace};
 use crate::hunters::place::yaw_toward;
 use crate::hunters::pose_state::PoseState;
-use crate::hunters::rig::Actor;
+use crate::hunters::rig::{Actor, FeedView};
 use crate::ui::theme::{k, ox, oy};
 use crate::ui::{ButtonStyle, Ui};
 use macroquad::prelude::*;
@@ -292,17 +292,42 @@ impl StoryGame {
 
     /// Which hunters are drawn: the player's view hides Quenelle in her car; a camera sees into it.
     fn draw_hunters(&mut self, gfx: &Gfx, lights: &LightSet, cam: Vec3, player_pass: bool) {
-        let open = self.sim.quenelle.state == LiftState::Open;
-        for slot in &mut self.slots {
+        let shown: Vec<bool> = self.slots.iter().map(|s| self.hunter_shown(s.who, player_pass)).collect();
+        for (slot, on) in self.slots.iter_mut().zip(shown) {
             let Some(actor) = slot.actor.as_mut() else { continue };
-            let base = self.sim.base_level(slot.who) > 0;
-            let killer = self.state == State::Lost && self.sim.by == Some(slot.who);
-            actor.visible = match slot.who {
-                Who::Opalie | Who::Porcelle => base,
-                Who::Quenelle => base && (!player_pass || open || self.q_trip),
-            } || killer;
+            actor.visible = on;
             actor.draw(gfx, lights, cam);
         }
+    }
+
+    /// Is she drawn at all: on tonight's floor (a camera sees into the lift car; the player's view hides Quenelle in it), or the killer.
+    fn hunter_shown(&self, who: Who, player_pass: bool) -> bool {
+        let open = self.sim.quenelle.state == LiftState::Open;
+        let base = self.sim.base_level(who) > 0;
+        let killer = self.state == State::Lost && self.sim.by == Some(who);
+        let on_floor = match who {
+            Who::Opalie | Who::Porcelle => base,
+            Who::Quenelle => base && (!player_pass || open || self.q_trip),
+        };
+        on_floor || killer
+    }
+
+    /// The view of a room's feed camera (what `draw_feed` renders and `feed_report` checks).
+    fn feed_view(room: &str) -> Option<FeedView> {
+        layout().camera(room).map(|c| FeedView::new(c.pos, c.target, c.fov))
+    }
+
+    /// Submit the hunters to the feed that is begun: the shown ones inside the view. Returns the ids submitted.
+    fn draw_feed_hunters(&self, gfx: &Gfx, lights: &LightSet, view: &FeedView, room: &str) -> Vec<String> {
+        let duct = Actor::is_duct_room(room);
+        let mut out = Vec::new();
+        for slot in &self.slots {
+            let Some(actor) = slot.actor.as_ref() else { continue };
+            if actor.draw_feed(gfx, lights, view, self.hunter_shown(slot.who, false), duct) {
+                out.push(slot.who.id().to_string());
+            }
+        }
+        out
     }
 
     // ---- what the player does
@@ -928,18 +953,26 @@ impl Mode for StoryGame {
         if let Some(w) = self.world.as_ref() {
             w.draw(&*ctx.gfx, &lights, cam.pos);
         }
-        self.draw_hunters(&*ctx.gfx, &lights, cam.pos, false);
+        let view = FeedView::new(cam.pos, cam.target, cam.fov);
+        self.draw_feed_hunters(&*ctx.gfx, &lights, &view, room);
         set_default_camera();
     }
 
     fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
         let crowd = self.crowd.as_ref()?;
-        let inside: Vec<String> = crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
-        // the feed pass shows a hunter whose base level is above 0 and who is not hidden in a duct
+        let view = Self::feed_view(room)?;
+        let duct = Actor::is_duct_room(room);
+        // in the room's view and on tonight's floor; "drawn" is exactly what `draw_feed_hunters` submits
+        let inside: Vec<String> = crowd
+            .visible_in(room)
+            .iter()
+            .map(|a| a.id.clone())
+            .filter(|id| self.slots.iter().any(|s| s.who.id() == id.as_str() && self.hunter_shown(s.who, false)))
+            .collect();
         let drawn = inside
             .iter()
             .filter(|id| {
-                self.slots.iter().any(|s| s.who.id() == id.as_str() && self.sim.base_level(s.who) > 0 && s.actor.as_ref().map_or(false, |a| !a.hidden || Actor::is_duct_room(room)))
+                self.slots.iter().any(|s| s.who.id() == id.as_str() && s.actor.as_ref().map_or(false, |a| a.feed_drawn(self.hunter_shown(s.who, false), duct, &view)))
             })
             .cloned()
             .collect();
@@ -947,6 +980,12 @@ impl Mode for StoryGame {
     }
 
     fn tour_protect(&mut self) {
+        // the early nights keep part of the cast off the floor: the tour needs all three on it
+        for who in Who::ALL {
+            if self.sim.base_level(who) <= 0 {
+                self.sim.levels.insert(who.id().to_string(), 6);
+            }
+        }
         self.sim.god = true;
         self.sim.infinite_beacon = true;
         self.admin_no_scare = true;
@@ -1181,6 +1220,31 @@ mod tests {
         let mut s = Session::new();
         s.start_mode("story", night, Default::default(), Some(seed));
         s
+    }
+
+    #[test]
+    fn a_hunter_at_a_stand_spot_is_in_that_cameras_feed() {
+        let l = layout();
+        let mut a = crate::hunters::rig::tests::test_actor();
+        let mut spots = vec![("gallery", creeper_spot(Who::Opalie, "gallery", 3, -1.0)), ("lift", l.in_car), ("lift", l.at_door)];
+        for room in rules().porcelle_rooms.iter() {
+            spots.push((room.as_str(), creeper_spot(Who::Porcelle, room, 3, 1.0)));
+        }
+        for (room, pos) in spots {
+            let Some(view) = StoryGame::feed_view(room) else { continue };
+            a.pos = pos;
+            assert!(a.feed_drawn(true, false, &view), "{room} at {pos:?}");
+        }
+        assert!(StoryGame::feed_view("workshop").is_some());
+    }
+
+    #[test]
+    fn the_tour_puts_all_three_on_the_floor() {
+        let mut g = StoryGame::new(&session(1, 5));
+        g.tour_protect();
+        for who in Who::ALL {
+            assert!(g.sim.base_level(who) > 0, "{who:?}");
+        }
     }
 
     #[test]

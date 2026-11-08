@@ -787,7 +787,7 @@ impl PropKit {
         if !verts.is_empty() {
             meshes.push(Mesh { vertices: verts, indices: idx, texture });
         }
-        PropMeshes { meshes }
+        PropMeshes { meshes: crate::gfx::mesh::rechunk(meshes) }
     }
 }
 

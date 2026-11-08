@@ -196,6 +196,12 @@ impl Stalker {
     }
 
     /// Admin: put her in `to_room` now. A door node makes it her door (she waits there as if she had walked up to it).
+    /// Shots tour: leave the door for the room her push sends her to.
+    pub fn tour_pull_back(&mut self) {
+        let to = self.push_to.clone();
+        self.admin_send(&to);
+    }
+
     pub fn admin_send(&mut self, to_room: &str) {
         self.room = to_room.to_string();
         self.at_door_ms = 0.0;

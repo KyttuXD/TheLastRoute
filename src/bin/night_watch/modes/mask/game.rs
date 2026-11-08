@@ -13,7 +13,8 @@
 use super::controls::{CtlEvent, CtlKind, MaskControls, Panel};
 use super::data::{map, rules, VENT_HUNTERS};
 use super::sim::{Ev, HallState, MaskSim, Over, RushState, SimInput, VentState};
-use super::walk::Stage;
+use super::walk::{present, Stage};
+use crate::hunters::rig::FeedView;
 use super::world::{feed_lights, office_lights, MaskWorld};
 use crate::audio::cue_names;
 use crate::core::{
@@ -412,6 +413,16 @@ impl MaskMode {
         }
     }
 
+    /// A vent or duct camera (and the crawl cam above the office vents) sees a hunter crawling in a shaft.
+    fn feed_duct(room: &str) -> bool {
+        Actor::is_duct_room(room) || room == "crawl"
+    }
+
+    /// The view of a room's feed camera (what `draw_feed` renders and `feed_report` checks).
+    fn feed_view(room: &str) -> Option<FeedView> {
+        map().camera(room).map(|c| FeedView::new(c.mount, c.target, c.fov))
+    }
+
     /// Place and animate the actors from the walkers. No GL.
     fn update_actors(&mut self, dt_s: f32) {
         for id in rules().cast.iter() {
@@ -736,21 +747,33 @@ impl Mode for MaskMode {
         clear_background(Color::new(0.02, 0.03, 0.03, 1.0));
         let lights = feed_lights(room, self.sim.lit);
         w.draw(&*ctx.gfx, &lights, cam.mount);
-        // a duct camera sees a crawling hunter; every other camera skips one inside a duct
-        let duct = Actor::is_duct_room(room);
-        for a in self.actors.values() {
-            a.draw_in(&*ctx.gfx, &lights, cam.mount, duct);
+        // a duct camera sees a crawling hunter; every other camera skips one inside a duct. A camera does not need the
+        // office light to see her: she is drawn whenever she is on the floor tonight and inside this feed's view.
+        let duct = Self::feed_duct(room);
+        let view = FeedView::new(cam.mount, cam.target, cam.fov);
+        for (id, a) in self.actors.iter() {
+            a.draw_feed(&*ctx.gfx, &lights, &view, present(&self.sim, id), duct);
         }
         ctx.gfx.feed.end();
     }
 
     fn feed_report(&self, room: &str) -> Option<(Vec<String>, Vec<String>)> {
-        let inside: Vec<String> = self.stage.crowd.visible_in(room).iter().map(|a| a.id.clone()).collect();
-        let drawn = inside.iter().filter(|id| self.actors.get(*id).map_or(false, |a| a.drawn_in_room(room))).cloned().collect();
+        let view = Self::feed_view(room)?;
+        let duct = Self::feed_duct(room);
+        // in the room's view, and on the floor tonight (a hunter the rules keep off the floor is neither)
+        let inside: Vec<String> =
+            self.stage.crowd.visible_in(room).iter().map(|a| a.id.clone()).filter(|id| present(&self.sim, id)).collect();
+        let drawn = inside.iter().filter(|id| self.actors.get(*id).map_or(false, |a| a.feed_drawn(true, duct, &view))).cloned().collect();
         Some((inside, drawn))
     }
 
     fn tour_protect(&mut self) {
+        // night 1 keeps most of the cast off the floor: the tour needs everyone on it (Nyxie only comes in the dark)
+        for id in rules().cast.iter() {
+            if id != "nyxie" && self.sim.base_level(id) <= 0 {
+                self.sim.set_hunter_level(id, 6);
+            }
+        }
         self.admin_god = true;
         self.admin_no_scare = true;
         self.sim.infinite_battery = true;
@@ -943,6 +966,25 @@ mod tests {
         assert_eq!(m.sim.base_level("umbriel"), 10);
         assert!(!m.wants_mouse_free());
         assert!(m.killer().is_none());
+    }
+
+    #[test]
+    fn a_hunter_at_a_stand_spot_is_in_that_cameras_feed() {
+        let mut a = crate::hunters::rig::tests::test_actor();
+        for room in ["music", "costume", "gallery", "ballroom", "crawl", "ductL", "ductR", "hall"] {
+            a.pos = map().stand_at(room, 0, "stand");
+            let view = MaskMode::feed_view(room).expect("camera");
+            assert!(a.feed_drawn(true, MaskMode::feed_duct(room), &view), "{room}");
+        }
+    }
+
+    #[test]
+    fn the_tour_puts_every_hunter_but_nyxie_on_the_floor() {
+        let mut m = mode(1, 5);
+        m.tour_protect();
+        assert!(m.sim.glyra_present());
+        assert!(present(&m.sim, "umbriel"));
+        assert!(!present(&m.sim, "nyxie"), "she needs the dark");
     }
 
     #[test]

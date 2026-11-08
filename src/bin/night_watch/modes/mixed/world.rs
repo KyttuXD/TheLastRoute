@@ -955,7 +955,7 @@ impl HubWorld {
         if !self.props.is_empty() {
             gfx.shader.begin(lights, cam_pos);
             for m in &self.props {
-                draw_mesh(m);
+                crate::gfx::mesh::draw_mesh_safe(m);
             }
             gfx.shader.end();
         }

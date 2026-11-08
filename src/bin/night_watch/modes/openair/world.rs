@@ -703,13 +703,13 @@ impl OpenAirWorld {
         self.world.draw(&gfx.shader, lights, cam_pos);
         gfx.shader.begin(lights, cam_pos);
         for m in &self.props {
-            draw_mesh(m);
+            crate::gfx::mesh::draw_mesh_safe(m);
         }
         gfx.shader.end();
         if let Some(t) = weather_time {
             if let Some(mesh) = self.weather_mesh(gfx, t) {
                 gfx.shader.begin(lights, cam_pos);
-                draw_mesh(&mesh);
+                crate::gfx::mesh::draw_mesh_safe(&mesh);
                 gfx.shader.end();
             }
         }

@@ -262,7 +262,7 @@ impl PropSet {
         }
         gfx.shader.begin(lights, cam_pos);
         for m in &self.meshes {
-            draw_mesh(m);
+            crate::gfx::mesh::draw_mesh_safe(m);
         }
         gfx.shader.end();
     }

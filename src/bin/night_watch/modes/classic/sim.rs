@@ -429,6 +429,16 @@ impl ClassicSim {
         }
     }
 
+    /// The shots tour only: god mode shrugs off the attack and leaves her at her door, so send every hunter standing at a door
+    /// back to where her push sends her (her camera rooms are then walked again).
+    pub fn tour_pull_back(&mut self) {
+        for h in &mut self.hunters {
+            if super::stalker::door_index(&h.room).is_some() {
+                h.tour_pull_back();
+            }
+        }
+    }
+
     pub fn admin_all_to_doors(&mut self) {
         for h in &mut self.hunters {
             let d = h.door().to_string();
