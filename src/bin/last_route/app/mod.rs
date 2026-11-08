@@ -115,7 +115,7 @@ pub fn targets_scaled(old: Option<Targets>, scale: f32) -> Targets {
 }
 
 pub fn render_play(g: &Game, a: &Assets, mat: &Material, t: &Targets) {
-    render_play_with(g, a, mat, t, &[]);
+    render_play_with(g, a, mat, t, &[], &[]);
 }
 
 /// The remotes on the viewer's own level: what the HUD, the map pins and a guest event's placing may use. A teammate one floor
@@ -125,8 +125,15 @@ pub fn same_level_remotes(remotes: &[RemoteView], depth: i32) -> Vec<RemoteView>
 }
 
 /// [`render_play`] with the other runners of an open room, drawn into the 3D view on this floor.
-pub fn render_play_with(g: &Game, a: &Assets, mat: &Material, t: &Targets, remotes: &[RemoteView]) {
-    scene::draw_scene(g, a, mat, &t.scene, &crate::net::runner_figure::flashlight_lamps(g, remotes));
+pub fn render_play_with(
+    g: &Game,
+    a: &Assets,
+    mat: &Material,
+    t: &Targets,
+    remotes: &[RemoteView],
+    npcs: &[crate::net::npc_sync::RemoteNpcView],
+) {
+    scene::draw_scene(g, a, mat, &t.scene, &crate::net::runner_figure::flashlight_lamps(g, remotes), npcs);
     {
         let _t = perf::section("remote players");
         world_sync::draw_remotes(g, a, mat, &t.scene, remotes);
@@ -1006,6 +1013,11 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
         }
 
+        // a player who hosts the room sends the NPCs this game runs (their admin summons too) to the guests
+        if let (Some(n), Some(g)) = (net.as_mut(), playing.as_ref()) {
+            n.publish_npcs(&g.npcs, g.window_origin());
+        }
+
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
         let sample = match (playing.as_ref(), loading.is_none()) {
             (Some(g), true) => Some(
@@ -1376,6 +1388,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
         } else if let Some(g) = playing.as_mut() {
             let in_report = g.report.is_some();
             let mut remotes = net.as_ref().map(|n| n.remotes_at(g.p.y(), g.depth, g.window_origin())).unwrap_or_default();
+            let npcs = net.as_ref().map(|n| n.remote_npc_views(g.window_origin())).unwrap_or_default();
             // LR_SHOT_REMOTE=1 stands a second runner three metres ahead, as an open room would show one
             if screenshot.is_some() && env("LR_SHOT_REMOTE").is_some() {
                 remotes.push(shot_remote(g));
@@ -1393,7 +1406,9 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             // RESET PASSWORD (FIELDS tab) is for the full admin owners, by the server's own flag; the field's request goes out here
             admin.owner = backend.signed_in() && backend.account_info.as_ref().is_some_and(|a| a.admin_owner);
+            admin.in_room = net.as_ref().is_some_and(|n| !n.is_host());
             admin.run_password_reset(&backend.config, &backend.account.session_token);
+            admin.run_public(&backend.config, &backend.account.session_token);
             let admin_esc = if in_report || pz.open {
                 false
             } else {
@@ -1616,7 +1631,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
             }
             match death.as_mut() {
                 Some(Death::Moment(m)) => {
-                    render_play_with(g, &w.assets, &w.mat, &tg, &remotes);
+                    render_play_with(g, &w.assets, &w.mat, &tg, &remotes, &npcs);
                     m.update(dt);
                     m.draw(&w.assets);
                     if m.done {
@@ -1688,7 +1703,7 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                 None => {
                     {
                         let _t = perf::section("render 3d");
-                        render_play_with(g, &w.assets, &w.mat, &tg, &remotes);
+                        render_play_with(g, &w.assets, &w.mat, &tg, &remotes, &npcs);
                     }
                     if !hud_hidden || g.escape.is_some() {
                         let _t = perf::section("hud");
@@ -1772,6 +1787,12 @@ pub async fn run(screenshot: Option<String>, stress_cfg: Option<stress::Config>,
                             }
                         }
                         Some(crate::ui::admin::Request::EndRoute) => leave = true,
+                        Some(crate::ui::admin::Request::RoomNpcs { count, smart, at, level }) => {
+                            let action = OwnerAction::SpawnNpc { count, smart, x: at.0, y: at.1, level };
+                            if !submit_owner(&mut owner_cmd, &mut ui, net.is_some(), action, &mut owner_status_until, get_time()) {
+                                g.say("ADMIN // ONLY THE ROOM OWNER CAN SUMMON NPCS IN THIS ROOM");
+                            }
+                        }
                         None => {}
                     }
                     if pz.open {

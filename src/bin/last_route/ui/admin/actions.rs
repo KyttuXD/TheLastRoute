@@ -311,13 +311,21 @@ impl Admin {
                     "spawn" => {
                         let eye = g.eye();
                         let (fwd, _, _) = g.camera_basis();
-                        let n = g.npc_spawn(
-                            self.npc_count,
-                            smart,
-                            (eye.x, eye.y, eye.z),
-                            (fwd.x, fwd.y, fwd.z),
-                        );
-                        format!("ADMIN // {n} NPC(S) SPAWNED")
+                        if self.in_room {
+                            // a room's NPCs live on its host: the owner's command carries the spot, the host makes them
+                            let spot = g.npc_crosshair_spot((eye.x, eye.y, eye.z), (fwd.x, fwd.y, fwd.z));
+                            let at = crate::net::world_sync::to_absolute(spot, g.window_origin());
+                            self.request = Some(Request::RoomNpcs { count: self.npc_count.max(1) as u32, smart, at, level: g.runner_level() });
+                            "ADMIN // SUMMONING NPC(S) ON THE ROOM'S HOST".to_string()
+                        } else {
+                            let n = g.npc_spawn(
+                                self.npc_count,
+                                smart,
+                                (eye.x, eye.y, eye.z),
+                                (fwd.x, fwd.y, fwd.z),
+                            );
+                            format!("ADMIN // {n} NPC(S) SPAWNED")
+                        }
                     }
                     "remove_nearest" => match g.npc_remove_nearest() {
                         Some(name) => format!("ADMIN // NPC REMOVED // {name}"),
@@ -438,6 +446,32 @@ impl Admin {
                 4 | 6 => {
                     debug = false;
                     g.say("ROOM CHAT // NO GUEST HAS SPOKEN HERE YET");
+                }
+                // the PUBLIC ROUTE rows (owner changes, SHOW for everyone): the server holds the values
+                7 => {
+                    debug = false;
+                    let line = self.ask_public(super::public_settings::PublicOp::JoinLimit(-1));
+                    g.say(&line);
+                }
+                8 => {
+                    debug = false;
+                    let line = self.ask_public(super::public_settings::PublicOp::JoinLimit(1));
+                    g.say(&line);
+                }
+                9 => {
+                    debug = false;
+                    let line = self.ask_public(super::public_settings::PublicOp::PlayerTimeout(-1));
+                    g.say(&line);
+                }
+                10 => {
+                    debug = false;
+                    let line = self.ask_public(super::public_settings::PublicOp::PlayerTimeout(1));
+                    g.say(&line);
+                }
+                11 => {
+                    debug = false;
+                    let line = self.ask_public(super::public_settings::PublicOp::Show);
+                    g.say(&line);
                 }
                 _ => {
                     debug = false;

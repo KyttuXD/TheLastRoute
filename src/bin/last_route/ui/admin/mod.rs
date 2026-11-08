@@ -23,6 +23,7 @@ mod menu;
 mod menu_data;
 mod password;
 mod prefs;
+mod public_settings;
 
 pub use hub::{draw_hub, HubPanel};
 
@@ -72,6 +73,9 @@ pub enum Request {
     RestartSameSeed,
     /// END ROUTE
     EndRoute,
+    /// NPC SUMMON in a room this player is a guest of: the room owner's command to the host. `at` is the absolute cell
+    /// the crosshair named, `level` its level.
+    RoomNpcs { count: u32, smart: i32, at: (f32, f32), level: i32 },
 }
 
 /// DebugView.Mode.
@@ -132,8 +136,12 @@ pub struct Admin {
     /// The signed-in account is a full admin owner (the server's `adminOwner`, set by the app each frame). Only then the
     /// FIELDS tab shows RESET PASSWORD; the server refuses anyone else anyway.
     pub owner: bool,
+    /// The player is a guest of a room whose host runs the game (set by the app each frame). An NPC summon then goes to
+    /// the host as the room owner's command, so every player sees the NPCs.
+    pub in_room: bool,
     /// The RESET PASSWORD request, its answer and the message box (password.rs).
     reset: password::ResetState,
+    public: public_settings::PublicState,
     open: bool,
     tab: usize,
     tab_offset: usize,
@@ -201,7 +209,9 @@ impl Admin {
         let mut admin = Admin {
             enabled: true,
             owner: false,
+            in_room: false,
             reset: password::ResetState::default(),
+            public: public_settings::PublicState::default(),
             open: false,
             tab: 0,
             tab_offset: 0,
@@ -580,6 +590,7 @@ impl Admin {
         }
         self.lights_all_on = g.lights_on.iter().all(|l| *l);
         self.poll_password_reset();
+        self.poll_public(g);
         self.draw_overlays(g, a);
         if self.open {
             self.draw_menu(g, a, content);

@@ -1940,10 +1940,18 @@ impl Game {
         if count <= 0 {
             return 0;
         }
+        // a bot is only ever put down on a dry, walkable spot (never channel water, never a cell the grid closes)
+        let spot = self.npc_crosshair_spot(eye, dir);
+        let level = self.runner_level();
+        self.npc_spawn_at(count, smart, spot, level)
+    }
+
+    /// The spot an admin spawn goes to from the crosshair ray: the crosshair floor point when it is open and near the
+    /// runner, else the runner's own cell (the rule [`Game::npc_spawn`] uses). A room sends this spot to its host.
+    pub fn npc_crosshair_spot(&self, eye: (f32, f32, f32), dir: (f32, f32, f32)) -> (f32, f32) {
         let runner = self.p.pos;
         let floor_y = (self.p.height + self.p.feet_y).max(0.0);
-        // a bot is only ever put down on a dry, walkable spot (never channel water, never a cell the grid closes)
-        let spot = match self.npc_crosshair_floor(eye, dir, floor_y) {
+        match self.npc_crosshair_floor(eye, dir, floor_y) {
             Some(p)
                 if pdist(p, runner) < SPAWN_NEAR_ADMIN
                     && self.fac.body_fits(p.0, p.1, NAV_RADIUS)
@@ -1952,8 +1960,16 @@ impl Game {
                 p
             }
             _ => runner,
-        };
-        let level = self.runner_level();
+        }
+    }
+
+    /// Makes `count` NPCs round `spot` on `level`: the loop of [`Game::npc_spawn`], for a spot chosen elsewhere (a
+    /// dedicated room's host spawns the NPCs an owner asks for at the spot the owner's crosshair named). Returns how
+    /// many were made; a spot with no dry floor near it makes none.
+    pub fn npc_spawn_at(&mut self, count: i32, smart: i32, spot: (f32, f32), level: i32) -> usize {
+        if count <= 0 {
+            return 0;
+        }
         let mut made = 0;
         for _ in 0..count {
             let slot = self.npc_next + 1;

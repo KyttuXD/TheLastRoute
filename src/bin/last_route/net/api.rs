@@ -410,6 +410,46 @@ pub fn admin_reset_password(cfg: &BackendConfig, token: &str, username: &str, ne
     })
 }
 
+// ---- public route settings ----------------------------------------------------------------------------
+
+/// The PUBLIC route's settings the server holds (`backend/public_settings.mjs`). The server enforces the join limit and
+/// the player timeout; the heartbeat and the fallback are the values a public host is told to use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublicSettings {
+    pub join_per_minute: u32,
+    pub player_ttl_seconds: f64,
+    pub heartbeat_seconds: f64,
+    pub client_host_fallback: bool,
+}
+
+impl PublicSettings {
+    /// The settings out of a `{settings: {...}}` answer; None when a value is missing or the wrong type.
+    pub fn from_answer(p: &Json) -> Option<PublicSettings> {
+        let v = &p["settings"];
+        Some(PublicSettings {
+            join_per_minute: v["join_per_minute"].as_u64()?.min(u32::MAX as u64) as u32,
+            player_ttl_seconds: v["player_ttl_seconds"].as_f64()?,
+            heartbeat_seconds: v["heartbeat_seconds"].as_f64()?,
+            client_host_fallback: v["client_host_fallback"].as_bool()?,
+        })
+    }
+}
+
+/// `GET /api/public/settings` (public, no token): the values the owner set, or the defaults.
+pub fn public_settings(cfg: &BackendConfig) -> Result<PublicSettings, NetError> {
+    guard(cfg)?;
+    let url = cfg.url("/api/public/settings");
+    let answer = check(json_request(Method::Get, url).timeout(Duration::from_secs(10)).send()?)?;
+    PublicSettings::from_answer(&answer).ok_or_else(|| NetError::Refused("the server sent the public route settings in a form this build does not read".into()))
+}
+
+/// `POST /api/admin/public/settings {sessionToken, changes}`: an owner changes some settings, all or none. The answer
+/// carries the values as they are now. A refused value comes back as the server's own message.
+pub fn admin_set_public_settings(cfg: &BackendConfig, token: &str, changes: &Value) -> Result<PublicSettings, NetError> {
+    let p = post(cfg, "/api/admin/public/settings", &json!({"sessionToken": token, "changes": changes}))?;
+    PublicSettings::from_answer(&p).ok_or_else(|| NetError::Refused("the server did not confirm the change".into()))
+}
+
 // ---- guest names ------------------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

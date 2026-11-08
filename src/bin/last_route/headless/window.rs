@@ -84,7 +84,7 @@ pub async fn run() {
             g.sync_world(&assets, &s.sim.content);
         }
         if let Some(g) = s.sim.game.as_ref() {
-            render_play_with(g, &assets, &mat, &tg, &s.remotes);
+            render_play_with(g, &assets, &mat, &tg, &s.remotes, &[]);
             hud::draw_hud(g, &assets, 60, style::ui_scale());
         } else {
             set_default_camera();

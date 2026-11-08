@@ -314,6 +314,11 @@ impl Room {
         } else {
             self.empty_for = Duration::ZERO;
         }
+        // the NPC teammates this host runs go to every guest, route on or not
+        // (the fields are borrowed apart: the net session sends while the game's NPCs are read)
+        if let Some(game) = self.sim.game.as_ref() {
+            self.net.publish_npcs(&game.npcs, game.window_origin());
+        }
         if !self.route_on {
             // the route is ended: what the guests report is dropped, nothing steps, nobody is hunted
             let _ = (self.net.take_guest_events(), self.net.take_valve_requests(), self.net.take_burst_requests());
@@ -406,7 +411,27 @@ impl Room {
                 self.difficulty = d;
                 self.net.set_room_difficulty(d);
             }
+            OwnerAction::SpawnNpc { count, smart, x, y, level } => self.spawn_owner_npcs(from, count, smart, (x, y), level),
         }
+    }
+
+    /// An owner's NPC summon: the NPCs appear in this host's game, at the spot the owner named (absolute cells), if that
+    /// spot is near the owner's own body. The host runs them from then on and every guest sees them (see
+    /// [`NetSession::publish_npcs`]). A summon from anyone else, or far from the owner, is dropped with a note.
+    fn spawn_owner_npcs(&mut self, from: u32, count: u32, smart: i32, at: (f32, f32), level: i32) {
+        let Some(owner) = self.net.guest_poses().into_iter().find(|p| p.peer == from) else {
+            self.notes.push(format!("npc summon from {from} dropped: no body in the room"));
+            return;
+        };
+        let reach = (at.0 - owner.x).hypot(at.1 - owner.y);
+        if !at.0.is_finite() || !at.1.is_finite() || reach > crate::net::hosted::MAX_SUMMON_DISTANCE {
+            self.notes.push(format!("npc summon from {from} dropped: {reach:.1} cells from the owner"));
+            return;
+        }
+        let origin = self.game().window_origin();
+        let spot = crate::net::world_sync::to_window(at, origin);
+        let made = self.game_mut().npc_spawn_at(count as i32, smart, spot, level);
+        self.notes.push(format!("npc summon from {from}: {made} made"));
     }
 
     /// Runs the route: a fresh game on the room's seed (a new seed when `fresh_seed`), the guests sent to enter it. A route

@@ -44,6 +44,7 @@ pub mod hide_sync;
 /// Online rooms hosted by the server: create, wait for the listing, join as a guest, and the owner's commands.
 pub mod hosted;
 pub mod interp;
+pub mod npc_sync;
 pub mod config;
 pub mod http;
 pub mod pending;

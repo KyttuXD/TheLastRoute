@@ -293,7 +293,14 @@ fn held_slot_drawn(g: &Game, a: &Assets, slot: usize) -> bool {
 
 /// Draws the 3D view's world. `remote_lamps` are the lit flashlights of the other runners on this floor: their lamps
 /// join the room's, so the walls and floor they reach are lit by them (net/runner_figure.rs `flashlight_lamps`).
-pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remote_lamps: &[super::shader::Lamp]) {
+pub fn draw_scene(
+    g: &Game,
+    a: &Assets,
+    mat: &Material,
+    rt: &RenderTarget,
+    remote_lamps: &[super::shader::Lamp],
+    remote_npcs: &[crate::net::npc_sync::RemoteNpcView],
+) {
     hide::tick(g.p.hidden, g.time);
     if g.escape.as_ref().is_some_and(|e| !held_slot_drawn(g, a, e.hunter)) {
         grab::abandon();
@@ -831,7 +838,7 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remot
     });
     // NPC teammates (game/npc.rs) and bots: the runner mannequin in its skin, bent like a runner (net/runner_figure.rs),
     // in this camera and material scope like the remote runners. A bot on another floor shows through an opening only.
-    let bot_views: Vec<runner_figure::BotView> = crate::render::stack_actors::draw_list(g)
+    let mut bot_views: Vec<runner_figure::BotView> = crate::render::stack_actors::draw_list(g)
         .iter()
         .filter(|r| r.kind == crate::render::stack_actors::ActorKind::Bot)
         .filter(|r| cull.visible(g, r.level, r.y, r.pos, cull_eye))
@@ -852,6 +859,18 @@ pub fn draw_scene(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, remot
             }
         })
         .collect();
+    // the NPC teammates the room's host runs, on this floor (the host sends them; this client keeps no copy of its own)
+    let here = g.runner_level();
+    bot_views.extend(remote_npcs.iter().filter(|n| n.level == here).map(|n| runner_figure::BotView {
+        name: &n.name,
+        at: n.at,
+        facing: n.facing,
+        stride: n.stride,
+        walking: n.walking,
+        y: 0.0,
+        climbing: false,
+        falling: false,
+    }));
     runner_figure::draw_bots(a, &bot_views);
     for h in g.hunters.iter().filter(|h| h.active) {
         let faded = h.gimmick.hidden_from_view();

@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(m.hunter_do[2], "TOGGLE (SUMMON / REMOVE ALL MATCHES)");
         assert_eq!(m.emotes.len(), 14);
         assert_eq!(m.emotes[13], "VICTORY");
-        assert_eq!(m.act_general.len(), 7);
+        assert_eq!(m.act_general.len(), 12);
         assert_eq!(m.act_general[0], ("roster_refresh", "REFRESH ADMIN ROSTER"));
         assert_eq!(m.act_player.len(), 3);
         assert_eq!(m.act_hunters.len(), 7);

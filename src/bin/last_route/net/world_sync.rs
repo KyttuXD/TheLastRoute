@@ -704,6 +704,8 @@ pub struct NetSession {
     seq: u32,
     /// The fixed-step clock of this runner's samples and the last one sent (its time in seconds), for the velocity.
     send_clock: SendClock,
+    /// The NPC teammates the host runs: the host's sends, and a guest's copy of them ([`super::npc_sync`]).
+    npcs: super::npc_sync::NpcSync,
     last_sent: Option<(f64, Sample)>,
     next_heartbeat: Instant,
     heartbeat: Option<Pending<api::HeartbeatReply>>,
@@ -1089,6 +1091,7 @@ impl NetSession {
             remotes: HashMap::new(),
             seq: 0,
             send_clock: SendClock::default(),
+            npcs: Default::default(),
             last_sent: None,
             next_heartbeat: now + first_beat,
             heartbeat: None,
@@ -1186,6 +1189,30 @@ impl NetSession {
 
     /// Guest: sends the room an owner command with the directory's owner ticket (Godot `_owner_command.rpc_id(1, ...)`).
     /// False on the host, or when the message could not be sent. The room checks the ticket with the directory.
+    /// Host: sends the NPCs this host's game runs to every guest (see [`super::npc_sync`]). Nothing for a guest.
+    pub fn publish_npcs(&mut self, npcs: &[crate::game::npc::Npc], origin: (i32, i32)) {
+        if !self.is_host() {
+            return;
+        }
+        let states: Vec<(u32, serde_json::Map<String, serde_json::Value>)> =
+            npcs.iter().map(|n| (n.id, super::npc_sync::wire_state(n, origin))).collect();
+        let messages = self.npcs.host_messages(&states, Instant::now());
+        if messages.is_empty() {
+            return;
+        }
+        let guests: Vec<u32> = self.guests.keys().copied().collect();
+        for message in &messages {
+            for peer in &guests {
+                self.coop.send(*peer, message);
+            }
+        }
+    }
+
+    /// The NPC teammates the host runs, as a guest draws them in its window (`origin`). Empty for the host.
+    pub fn remote_npc_views(&self, origin: (i32, i32)) -> Vec<super::npc_sync::RemoteNpcView> {
+        self.npcs.views(origin, Instant::now())
+    }
+
     pub fn send_owner_command(&mut self, ticket: &str, action: &super::hosted::OwnerAction) -> bool {
         if self.is_host() {
             return false;
@@ -2039,6 +2066,9 @@ impl NetSession {
             }
             // the room refused this runner's owner command
             Message::OwnerRefused { reason } if !self.is_host() => out.push(NetEvent::OwnerRefused(reason)),
+            // the host's NPC teammates: a guest keeps their latest places (the host draws nothing from these)
+            Message::XnpcPlace { id, state } if !self.is_host() => self.npcs.receive_place(id, &state, now),
+            Message::XnpcRemove { id } if !self.is_host() => self.npcs.receive_remove(id),
             Message::Place { packet } if self.is_host() => {
                 if let Some(guest) = self.guests.get_mut(&from) {
                     guest.last_seen = now;

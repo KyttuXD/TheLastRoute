@@ -71,7 +71,12 @@
     { "id": "end_route", "label": "END ROUTE" },
     { "id": "chat_mute", "label": "ROOM MUTE LAST SPEAKER" },
     { "id": "chat_unmute", "label": "ROOM UNMUTE EVERYONE" },
-    { "id": "chat_kick", "label": "KICK LAST SPEAKER" }
+    { "id": "chat_kick", "label": "KICK LAST SPEAKER" },
+    { "id": "public_join_down", "label": "PUBLIC JOIN LIMIT -5 A MINUTE (OWNER)" },
+    { "id": "public_join_up", "label": "PUBLIC JOIN LIMIT +5 A MINUTE (OWNER)" },
+    { "id": "public_timeout_down", "label": "PUBLIC PLAYER TIMEOUT -5 S (OWNER)" },
+    { "id": "public_timeout_up", "label": "PUBLIC PLAYER TIMEOUT +5 S (OWNER)" },
+    { "id": "public_show", "label": "SHOW PUBLIC ROUTE SETTINGS" }
   ],
   "act_player": [
     { "id": "full_lamp", "label": "FULL LAMP" },

@@ -1,0 +1,13 @@
+{
+  "name": "last-route-backend",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "start": "node ../index.js",
+    "test": "node --test *.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

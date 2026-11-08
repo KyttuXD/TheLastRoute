@@ -401,7 +401,15 @@ pub enum OwnerAction {
     Kick(u32),
     /// The room's difficulty; it applies from the next route.
     Difficulty(Difficulty),
+    /// An admin's NPC summon: `count` NPCs (1 to [`MAX_SUMMON_NPCS`]) at the absolute cell (`x`, `y`) on `level`, the
+    /// spot the owner's crosshair named. The room's host runs them, so every player sees them.
+    SpawnNpc { count: u32, smart: i32, x: f32, y: f32, level: i32 },
 }
+
+/// The most NPCs one summon may make (the admin menu's own count is 1 to 4).
+pub const MAX_SUMMON_NPCS: u32 = 8;
+/// How far from its owner a summon may land, in cells: the host refuses a spot further out.
+pub const MAX_SUMMON_DISTANCE: f32 = 40.0;
 
 impl OwnerAction {
     /// The action name on the wire and in the ticket check (Godot's `start`, `kick`, `end`, `difficulty`; `restart` is
@@ -413,6 +421,7 @@ impl OwnerAction {
             OwnerAction::Restart => "restart",
             OwnerAction::Kick(_) => "kick",
             OwnerAction::Difficulty(_) => "difficulty",
+            OwnerAction::SpawnNpc { .. } => "npc",
         }
     }
 
@@ -426,6 +435,13 @@ impl OwnerAction {
             }
             OwnerAction::Difficulty(d) => {
                 m.insert("value".into(), json!(difficulty_index(*d)));
+            }
+            OwnerAction::SpawnNpc { count, smart, x, y, level } => {
+                m.insert("count".into(), json!(count));
+                m.insert("smart".into(), json!(smart));
+                m.insert("x".into(), json!(x));
+                m.insert("y".into(), json!(y));
+                m.insert("level".into(), json!(level));
             }
             _ => {}
         }
@@ -441,6 +457,17 @@ impl OwnerAction {
             "restart" | "reroll" => Some(OwnerAction::Restart),
             "kick" => args.get("peer").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 1).map(OwnerAction::Kick),
             "difficulty" => args.get("value").and_then(difficulty_from_wire).map(OwnerAction::Difficulty),
+            "npc" => {
+                let count = args.get("count").and_then(Value::as_u64)?;
+                let x = args.get("x").and_then(Value::as_f64)? as f32;
+                let y = args.get("y").and_then(Value::as_f64)? as f32;
+                let smart = args.get("smart").and_then(Value::as_i64).unwrap_or(0).clamp(0, 100) as i32;
+                let level = args.get("level").and_then(Value::as_i64)?;
+                if !(1..=u64::from(MAX_SUMMON_NPCS)).contains(&count) || !x.is_finite() || !y.is_finite() {
+                    return None;
+                }
+                Some(OwnerAction::SpawnNpc { count: count as u32, smart, x, y, level: level.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32 })
+            }
             _ => None,
         }
     }
@@ -700,6 +727,23 @@ mod tests {
         for bad in ["", "short", &TICKET[..42], &format!("{TICKET}x"), &format!("{}!", &TICKET[..42])] {
             assert!(parse_ticket(&obj(json!({"ticket": bad, "expiresIn": 5}))).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_npc_summon_reads_back_and_refuses_a_bad_count_or_spot() {
+        let action = OwnerAction::SpawnNpc { count: 2, smart: 40, x: 12.5, y: -3.0, level: 1 };
+        assert_eq!(action.wire_name(), "npc");
+        assert_eq!(OwnerAction::parse("npc", &action.args()), Some(action.clone()));
+        let with = |key: &str, value: Value| {
+            let mut m = action.args();
+            m.insert(key.into(), value);
+            m
+        };
+        assert!(OwnerAction::parse("npc", &with("count", json!(0))).is_none(), "no NPCs is no summon");
+        assert!(OwnerAction::parse("npc", &with("count", json!(MAX_SUMMON_NPCS + 1))).is_none(), "too many is refused");
+        assert!(OwnerAction::parse("npc", &with("x", json!("here"))).is_none(), "a spot must be a number");
+        let smart = OwnerAction::parse("npc", &with("smart", json!(999))).expect("a smart value is clamped, not refused");
+        assert_eq!(smart, OwnerAction::SpawnNpc { count: 2, smart: 100, x: 12.5, y: -3.0, level: 1 });
     }
 
     #[test]

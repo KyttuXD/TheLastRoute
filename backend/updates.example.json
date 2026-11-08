@@ -1,0 +1,50 @@
+{
+  "debug": {
+    "linux": {
+      "version": "0.0.1.0",
+      "revision": "REPLACE_WITH_7_TO_40_CHARACTER_GIT_SHA",
+      "file": "KyttusLab-Linux-Debug.zip",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256",
+      "notes": "Debug multiplayer test build.",
+      "required": true
+    },
+    "phone": {
+      "version": "0.0.1.0",
+      "revision": "REPLACE_WITH_40_CHARACTER_GIT_SHA",
+      "build": 1234,
+      "file": "KyttusLab-Android-Debug.apk",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256",
+      "bytes": 1,
+      "notes": "Android phone test build. build = git rev-list --count of the revision (the Android versionCode).",
+      "required": false
+    },
+    "quest": {
+      "version": "0.0.1.0",
+      "revision": "REPLACE_WITH_40_CHARACTER_GIT_SHA",
+      "build": 1234,
+      "file": "KyttusLab-Quest-Debug.apk",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256",
+      "bytes": 1,
+      "notes": "Meta Quest test build. build = git rev-list --count of the revision (the Android versionCode).",
+      "required": false
+    },
+    "steamvr": {
+      "version": "0.0.1.0",
+      "revision": "REPLACE_WITH_7_TO_40_CHARACTER_GIT_SHA",
+      "file": "KyttusLab-Windows-SteamVR-Debug.zip",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256",
+      "notes": "SteamVR OpenXR test build.",
+      "required": true
+    }
+  },
+  "release": {
+    "windows": {
+      "version": "0.0.1.0",
+      "revision": "REPLACE_WITH_7_TO_40_CHARACTER_GIT_SHA",
+      "file": "KyttusLab-Windows.zip",
+      "sha256": "REPLACE_WITH_64_CHARACTER_SHA256",
+      "notes": "First public release.",
+      "required": false
+    }
+  }
+}
