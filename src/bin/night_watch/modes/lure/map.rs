@@ -418,8 +418,8 @@ pub fn map() -> &'static LureMap {
             cam_corner: Vec::new(),
             slot0: (0.8, 0.6),
             slot1: (-1.0, -0.6),
-            vent0: (0.0, 0.9),
-            vent1: (-1.2, 0.9),
+            vent0: (1.1, 0.9),
+            vent1: (0.0, 0.9),
             rooms: Vec::new(),
             edges: Vec::new(),
             props: Vec::new(),
@@ -493,8 +493,8 @@ mod tests {
         assert!(close(m.stand_position("lobby", 0), lobby + vec3(0.8, 0.0, 0.6)));
         assert!(close(m.stand_position("lobby", 1), lobby + vec3(-1.0, 0.0, -0.6)));
         let v = m.centre_of_sim("ventl");
-        assert!(close(m.stand_position("ventl", 0), v + vec3(0.0, 0.0, 0.9)));
-        assert!(close(m.stand_position("ventr", 1), m.centre_of_sim("ventr") + vec3(-1.2, 0.0, 0.9)));
+        assert!(close(m.stand_position("ventl", 0), v + vec3(1.1, 0.0, 0.9)));
+        assert!(close(m.stand_position("ventr", 1), m.centre_of_sim("ventr") + vec3(0.0, 0.0, 0.9)));
         let (from, to) = m.camera_transform("lobby");
         assert!(close(from, vec3(-11.5, 2.8, -39.5)));
         assert!(close(to, vec3(-8.0 + 8.0 * -0.14, 0.4, -37.5 + 5.0 * 0.12)), "the lobby aims by its override");

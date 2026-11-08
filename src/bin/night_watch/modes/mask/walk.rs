@@ -119,7 +119,8 @@ pub fn target_of(id: &str, sim: &MaskSim, player: Vec3) -> Option<Target> {
                 if v.room.starts_with("duct") {
                     t.duct = side_of_room(&v.room);
                 }
-                t.shaft = v.state == VentState::Duct;
+                // a hunter in a duct camera room crawls (all fours), whatever the sim calls the step
+                t.shaft = v.state == VentState::Duct || v.room.starts_with("duct");
                 t.enabled = v.state == VentState::Away;
                 t
             }

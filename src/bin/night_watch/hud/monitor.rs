@@ -1,6 +1,6 @@
 //! The monitor overlay (port of the `_build_monitor` part of `night_watch_hud.gd`): an opaque dark backdrop, the 16:9
-//! feed inset (22 px left and right, 12 top, 30 bottom), `CAM n  LABEL` above it, a blinking REC, the static flash, the
-//! CLOSE CAMERAS strip with the key guide, and the camera map bottom right.
+//! feed in the left 338x190 frame (the right column holds the clock, the mode panel, the camera map and CLOSE CAMERAS; the
+//! strip under the feed holds the call box and the key guide), `CAM n  LABEL` above it, a blinking REC and the static flash.
 #![allow(dead_code)]
 
 use super::cam_map;
@@ -11,8 +11,10 @@ use crate::ui::text as ut;
 use macroquad::prelude::*;
 
 /// The area the picture may use (the Godot AspectRatioContainer's box), in virtual px.
-pub const AREA: Rect = Rect { x: 22.0, y: 12.0, w: 436.0, h: 228.0 };
+pub const AREA: Rect = Rect { x: 8.0, y: 28.0, w: 338.0, h: 190.0 };
 pub const STATIC_SECONDS: f32 = 0.14;
+/// Top of the key guide, under the call box strip.
+pub const GUIDE_Y: f32 = 256.0;
 
 /// The 16:9 picture centred in AREA (virtual px).
 pub fn picture_rect() -> Rect {
@@ -80,19 +82,19 @@ pub fn draw_monitor(st: &HudState, bindings: &Bindings, gfx: &Gfx, calm: bool, r
     }
     // furniture: room name (centred above the picture), REC (left of the clock)
     let title = ut::glyph(&title_of(st));
-    vtext_center(&title, 240.0, 14.0, 11.0, FEED_INK);
+    let vp = picture_rect();
+    vtext_center(&title, vp.x + vp.w * 0.5, 17.0, 9.0, FEED_INK);
     if (get_time() * 1000.0 / 600.0) as i64 % 2 == 0 {
-        dot(vec2(364.0, 14.0), 3.0, REC_RED);
-        vtext("REC", 370.0, 8.0, 10.0, REC_RED);
+        dot(vec2(366.0, 11.0), 3.0, REC_RED);
+        vtext("REC", 372.0, 5.0, 10.0, REC_RED);
     }
-    // the strip under the picture: CLOSE CAMERAS and the live key guide
+    // the right column: CLOSE CAMERAS under the map; the live key guide in the strip under the feed (below the call box)
     let close = format!("CLOSE CAMERAS  {}", bindings.key_text("nw_monitor").to_uppercase());
     let hot = close_rect().contains(mouse_live());
     button_box(close_rect(), &close, 6.0, hot, false);
     let guide = ut::glyph(&guide_of(st, bindings));
-    let gx = close_rect().x + close_rect().w + 8.0;
-    for (i, l) in ut::wrap(&guide, 458.0 - gx, 5.0).iter().take(2).enumerate() {
-        vtext(l, gx, 248.0 + i as f32 * 7.0, 5.0, DIM);
+    for (i, l) in ut::wrap(&guide, vp.w, 5.0).iter().take(2).enumerate() {
+        vtext(l, vp.x, GUIDE_Y + i as f32 * 7.0, 5.0, DIM);
     }
     cam_map::draw(st, mouse_live(), get_time());
 }

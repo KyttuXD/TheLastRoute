@@ -120,6 +120,8 @@ fn advance(env: &mut crate::Env, run: &mut crate::ShiftRun, input: &InputFrame, 
         run.mode.tour_protect();
         let mut c = sctx!(env, run, input, false);
         run.mode.advance_ms(&mut c, step);
+        // a fault raised by this very step is undone at once, before any frame is drawn
+        run.mode.tour_protect();
         done += step;
         if run.mode.outcome() != Outcome::Running {
             break;

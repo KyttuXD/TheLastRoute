@@ -75,6 +75,8 @@ pub struct LureMode {
     hour_seen: i32,
     end_done: bool,
     msg: Option<(String, f32)>,
+    /// The system the current down line is about: the line goes as soon as that system is up again.
+    msg_sys: Option<String>,
     teleport_pending: bool,
     fx: Mulberry32,
     frame: u32,
@@ -105,6 +107,7 @@ pub fn new_mode(session: &Session) -> LureMode {
         hour_seen: 0,
         end_done: false,
         msg: None,
+        msg_sys: None,
         teleport_pending: false,
         fx: Mulberry32::new(opts.seed ^ 0x6c75_7265),
         frame: 0,
@@ -275,6 +278,7 @@ impl LureMode {
     fn say(&mut self, ctx: &mut ShiftCtx, text: &str) {
         ctx.hud.call_text = text.to_string();
         self.msg = Some((text.to_string(), MESSAGE_S));
+        self.msg_sys = None;
     }
 
     fn use_station(&mut self, ctx: &mut ShiftCtx, id: &str) {
@@ -341,6 +345,7 @@ impl LureMode {
                     let label = t.system(system).map(|s| s.label.clone()).unwrap_or_default();
                     let text = down_line(&label);
                     self.say(ctx, &text);
+                    self.msg_sys = Some(system.clone());
                 }
             }
             SimEvent::Fixed { .. } => {
@@ -571,19 +576,19 @@ impl LureMode {
         let live = !ctx.paused && self.sim.over == Over::None;
         let t = tuning();
         let mut ui = Ui::begin(ctx.input);
-        let x = 332.0;
+        let x = 356.0;
         let rows: Vec<&super::data::SystemInfo> = t
             .systems
             .iter()
             .filter(|s| !s.climate || (if s.id == "fan" { self.sim.has_fan } else { self.sim.has_climate }))
             .collect();
         let height = 14.0 + rows.len() as f32 * 12.0 + if self.sim.has_climate { 10.0 } else { 0.0 };
-        fill_rect(Rect::new(x - 4.0, 31.0, 128.0, height + 4.0), Color::new(0.0, 0.0, 0.0, 0.55));
+        fill_rect(Rect::new(x - 4.0, 38.0, 124.0, height + 4.0), Color::new(0.0, 0.0, 0.0, 0.55));
         // LURE
         let room = self.monitor_room.clone();
         let can_lure = self.sim.online("audio") && self.sim.lure_cool <= 0.0 && !room.starts_with("vent");
         let label = if self.sim.lure_cool > 0.0 { format!("LURE READY IN {}s", (self.sim.lure_cool / 1000.0).ceil() as i32) } else { "LURE HERE  L".to_string() };
-        let lure = ui.button(Rect::new(x, 34.0, 120.0, 11.0), &label, 6.0, ButtonStyle::Normal, can_lure);
+        let lure = ui.button(Rect::new(x, 41.0, 116.0, 11.0), &label, 6.0, ButtonStyle::Normal, can_lure);
         if lure.clicked && live {
             self.do_lure(ctx);
         } else if lure.denied && live {
@@ -591,7 +596,7 @@ impl LureMode {
         }
         let mut reboot: Option<String> = None;
         for (i, s) in rows.iter().enumerate() {
-            let y = 47.0 + i as f32 * 12.0;
+            let y = 54.0 + i as f32 * 12.0;
             ui_text::text(&s.label, x, y + 2.0, 6.0, Color::new(0.9, 0.88, 0.8, 1.0));
             let (txt, col) = match self.sim.state_of(&s.id) {
                 SysState::Ok => ("ONLINE".to_string(), Color::new(0.6, 1.0, 0.7, 1.0)),
@@ -601,9 +606,9 @@ impl LureMode {
                     (format!("REBOOT {left}s"), Color::new(1.0, 0.85, 0.4, 1.0))
                 }
             };
-            ui_text::text(&txt, x + 38.0, y + 2.0, 6.0, col);
+            ui_text::text(&txt, x + 36.0, y + 2.0, 6.0, col);
             let broken = self.sim.state_of(&s.id) == SysState::Broken;
-            let r = ui.button(Rect::new(x + 84.0, y, 36.0, 10.0), &format!("REBOOT {}", s.key), 5.0, ButtonStyle::Normal, broken);
+            let r = ui.button(Rect::new(x + 80.0, y, 36.0, 10.0), &format!("REBOOT {}", s.key), 5.0, ButtonStyle::Normal, broken);
             if r.clicked && live {
                 reboot = Some(s.id.clone());
             } else if r.denied && live {
@@ -614,12 +619,12 @@ impl LureMode {
             self.do_reboot(ctx, &sys);
         }
         if self.sim.has_climate {
-            let y = 47.0 + rows.len() as f32 * 12.0 + 1.0;
+            let y = 54.0 + rows.len() as f32 * 12.0 + 1.0;
             let line = format!("TEMP {} F   COLD {}%  HEAT {}%", self.sim.temp.round() as i32, self.sim.cold as i32, self.sim.heat as i32);
             ui_text::text(&line, x, y, 6.0, Color::new(0.88, 0.69, 0.29, 1.0));
         }
         if !self.sim.online("cams") {
-            ui_text::text_center("SYSTEM ERROR", 240.0, 126.0, 14.0, Color::new(1.0, 0.35, 0.3, 1.0));
+            ui_text::text_center("SYSTEM ERROR", 177.0, 118.0, 14.0, Color::new(1.0, 0.35, 0.3, 1.0));
         }
     }
 }
@@ -775,6 +780,18 @@ impl Mode for LureMode {
         self.frame = self.frame.wrapping_add(1);
         self.finish_if_needed(ctx);
         ctx.hud.cam_flash_s = (ctx.hud.cam_flash_s - dt_s).max(0.0);
+        if let Some(sys) = self.msg_sys.clone() {
+            if self.sim.state_of(&sys) != SysState::Broken {
+                // rebooted (or never really down): the down line must not outlive the fault
+                if let Some((text, _)) = &self.msg {
+                    if ctx.hud.call_text == *text {
+                        ctx.hud.call_text.clear();
+                    }
+                }
+                self.msg = None;
+                self.msg_sys = None;
+            }
+        }
         if let Some((text, left)) = &mut self.msg {
             *left -= dt_s;
             if *left <= 0.0 {
@@ -830,7 +847,9 @@ impl Mode for LureMode {
         let m = map();
         let sim_room = m.map_to_sim(room).unwrap_or(&self.monitor_room).to_string();
         let (pos, target) = m.camera_transform(&sim_room);
-        ctx.gfx.feed.begin(pos, target, Vec3::Y);
+        // the crawlspaces are 3-5 m across: a wide lens keeps a crawling hunter small in the frame
+        let fov = if m.is_vent(&sim_room) { 88.0 } else { 62.0 };
+        ctx.gfx.feed.begin_fov(pos, target, Vec3::Y, fov);
         if self.sim.online("cams") {
             if let Some(h) = &self.hall {
                 let lights = feed_lights(&sim_room);

@@ -75,11 +75,16 @@ impl FeedTarget {
 
     /// Start drawing into the target from a camera at `pos` looking at `target`; clears to near black.
     pub fn begin(&self, pos: Vec3, target: Vec3, up: Vec3) {
+        self.begin_fov(pos, target, up, 62.0);
+    }
+
+    /// `begin` with a chosen vertical field of view in degrees (a tight crawlspace needs a wide one).
+    pub fn begin_fov(&self, pos: Vec3, target: Vec3, up: Vec3, fov_deg: f32) {
         set_camera(&Camera3D {
             position: pos,
             target,
             up,
-            fovy: 62.0f32.to_radians(),
+            fovy: fov_deg.to_radians(),
             aspect: Some(16.0 / 9.0),
             render_target: Some(self.rt.clone()),
             z_near: 0.05,

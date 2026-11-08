@@ -996,16 +996,25 @@ impl Mode for StoryGame {
         if self.state == State::Playing && !ctx.hud.monitor_up {
             self.draw_world_labels(ctx);
         }
-        // Opalie's hearing line on the noise bar (the HUD draws the bar: x 8..78, y 50..54) and the lift's lamp under the night label
+        // Opalie's hearing line on the noise bar (the HUD draws the bar; with the monitor up it is the small one above the feed)
+        // and the lift's lamp under the night label
         let hear = self.sim.tune.hear as f32;
-        fill(Rect::new(8.0 + 70.0 * (hear / 100.0), 48.0, 1.0, 8.0), Color::new(1.0, 0.2, 0.2, 1.0));
+        let (hx, hy, hh, lamp_y) = if ctx.hud.monitor_up {
+            match crate::hud::status::monitor_bar_tracks(ctx.hud).first() {
+                Some((t, _)) => (t.x + t.w * (hear / 100.0), t.y - 2.0, t.h + 4.0, 22.0),
+                None => (-10.0, 0.0, 0.0, 22.0),
+            }
+        } else {
+            (8.0 + 70.0 * (hear / 100.0), 48.0, 8.0, 40.0)
+        };
+        fill(Rect::new(hx, hy, 1.0, hh), Color::new(1.0, 0.2, 0.2, 1.0));
         let lamp = match self.sim.quenelle.state {
             LiftState::Bell => c3([1.0, 0.8, 0.2]),
             LiftState::Open => c3([1.0, 0.3, 0.2]),
             LiftState::Away => c3([0.2, 0.2, 0.2]),
         };
         if self.sim.base_level(Who::Quenelle) > 0 {
-            fill(Rect::new(8.0, 40.0, 10.0, 3.0), lamp);
+            fill(Rect::new(8.0, lamp_y, 10.0, 3.0), lamp);
         }
         // a stare into the feed: a soft static pulse over the picture
         if ctx.hud.monitor_up {

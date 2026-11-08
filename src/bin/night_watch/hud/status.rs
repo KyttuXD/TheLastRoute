@@ -122,10 +122,13 @@ pub fn cameras_rect() -> Rect {
     Rect::new(195.0, 253.0, 90.0, 12.0)
 }
 pub fn close_rect() -> Rect {
-    Rect::new(22.0, 246.0, 96.0, 16.0)
+    Rect::new(356.0, 222.0, 112.0, 16.0)
 }
 
 // ---- Zellia's call box ----
+
+/// With the monitor up the call box sits in the strip under the feed (x 8..346, from y 221), never over the picture.
+pub const MONITOR_CALL: Rect = Rect { x: 8.0, y: 221.0, w: 338.0, h: 32.0 };
 
 pub struct CallLayout {
     pub rect: Rect,
@@ -156,8 +159,8 @@ pub fn call_layout(st: &HudState, bindings: &Bindings, subtitles: bool) -> Optio
     if text.is_empty() || st.zellia_muted || !subtitles {
         return None;
     }
-    let x0 = W * 0.2;
-    let x1 = W * if st.monitor_up { 0.68 } else { 0.8 };
+    let x0 = if st.monitor_up { MONITOR_CALL.x } else { W * 0.2 };
+    let x1 = if st.monitor_up { MONITOR_CALL.x + MONITOR_CALL.w } else { W * 0.8 };
     let w = x1 - x0;
     let mute_label = format!("Mute  {}", bindings.key_text("office_radio"));
     let mute_w = tw(&mute_label, 5.0) + 8.0;
@@ -166,11 +169,11 @@ pub fn call_layout(st: &HudState, bindings: &Bindings, subtitles: bool) -> Optio
     let lines = ut::wrap(&text, text_w, 5.0);
     let step = 7.0;
     // while a call is typing, words arrive one by one: keep room for 3 rows so the box never jumps or clips
-    let reserve = if st.call.open { 3 } else { 1 };
+    let reserve = if st.monitor_up { 2 } else if st.call.open { 3 } else { 1 };
     let rows = lines.len().max(reserve);
     let head = 14.0;
     let h = head + rows as f32 * step + 3.0;
-    let y = H * 0.9 - h;
+    let y = if st.monitor_up { MONITOR_CALL.y } else { H * 0.9 - h };
     Some(CallLayout {
         rect: Rect::new(x0, y, w, h),
         name_pos: vec2(x0 + 6.0, y + 4.0),
@@ -229,9 +232,35 @@ fn night_line(st: &HudState) -> String {
     }
 }
 
+/// The bar tracks while the monitor is up: small bars in the top strip, right-aligned above the feed, the last bar
+/// rightmost. Returns each bar's track and the label's left x, in bar order.
+pub fn monitor_bar_tracks(st: &HudState) -> Vec<(Rect, f32)> {
+    let mut right = super::monitor::AREA.x + super::monitor::AREA.w;
+    let mut out = Vec::new();
+    for (label, _, _) in st.bars.iter().rev() {
+        let track = Rect::new(right - 30.0, 6.0, 30.0, 4.0);
+        let lx = track.x - 3.0 - tw(&ut::glyph(label), 5.0);
+        out.push((track, lx));
+        right = lx - 8.0;
+    }
+    out.reverse();
+    out
+}
+
 /// Everything drawn over the 3D view (and over the monitor): status, clock, buttons, call, note, prompt, crosshair, bars, panels.
 pub fn draw_all(st: &HudState, bindings: &Bindings, subtitles: bool) {
     // status block, top left
+    if st.monitor_up {
+        // the feed owns the middle: the status goes on one line above it, the bars beside it, the panels are the mode's
+        let line = format!("{}    {}    {}", ut::glyph(&power_line(st)), ut::glyph(&usage_line(st)), ut::glyph(&night_line(st)));
+        vtext(&line, 8.0, 3.0, 8.0, INK);
+        for ((label, v, col), (track, lx)) in st.bars.iter().zip(monitor_bar_tracks(st)) {
+            fill(track, Color::new(0.0, 0.0, 0.0, 0.55));
+            fill(Rect::new(track.x, track.y, track.w * v.clamp(0.0, 1.0), track.h), c3(*col));
+            stroke(track, Color::new(0.35, 0.33, 0.27, 1.0), 1.0);
+            vtext(&ut::glyph(label), lx, 5.0, 5.0, c3(*col));
+        }
+    } else {
     vtext(&ut::glyph(&power_line(st)), 8.0, 6.0, 9.0, INK);
     vtext(&ut::glyph(&usage_line(st)), 8.0, 18.0, 9.0, INK);
     vtext(&ut::glyph(&night_line(st)), 8.0, 30.0, 8.0, Color::new(0.80, 0.77, 0.68, 1.0));
@@ -244,6 +273,7 @@ pub fn draw_all(st: &HudState, bindings: &Bindings, subtitles: bool) {
         fill(Rect::new(track.x, track.y, track.w * v.clamp(0.0, 1.0), track.h), c3(*col));
         stroke(track, Color::new(0.35, 0.33, 0.27, 1.0), 1.0);
         y += 15.0;
+    }
     }
     // free text panels
     for p in &st.panels {
@@ -289,8 +319,11 @@ pub fn draw_all(st: &HudState, bindings: &Bindings, subtitles: bool) {
         if *left > 0.0 && !text.is_empty() {
             let col = Color::new(0.85, 0.82, 0.75, 1.0);
             if st.monitor_up {
-                // with the monitor up the middle of the screen is the picture: the toast goes in the strip under it
-                vtext_center(&ut::glyph(text), W * 0.5, H - 9.0, 6.0, col);
+                // with the monitor up the middle is the picture: the toast goes in the right column under CLOSE CAMERAS
+                let cr = close_rect();
+                for (i, l) in ut::wrap(&ut::glyph(text), cr.w, 6.0).iter().take(3).enumerate() {
+                    vtext_center(l, cr.x + cr.w * 0.5, cr.y + cr.h + 4.0 + i as f32 * 8.0, 6.0, col);
+                }
             } else {
                 vtext_center(&ut::glyph(text), W * 0.5, H * 0.5 + 30.0, 8.0, col);
             }

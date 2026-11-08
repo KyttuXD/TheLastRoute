@@ -14,9 +14,9 @@ pub const BTN: Vec2 = Vec2::new(30.0, 13.0);
 pub const PAD: Vec2 = Vec2::new(3.0, 3.0);
 /// How big the panel is drawn (the geometry below stays in 120x92 map pixels): it covers less of the picture.
 pub const SCALE: f32 = 0.82;
-/// Top left of the map on the 480x270 canvas: its bottom right corner sits at (460, 239), just above the strip under the picture
-/// and partly beside the picture, so it hides only the picture's lower right corner.
-pub const MAP_POS: Vec2 = Vec2::new(362.0, 164.0);
+/// Top left of the map on the 480x270 canvas: it sits in the right column (x 362..460, y 140..215) beside the picture,
+/// under the system panel and above CLOSE CAMERAS, so it never covers the feed.
+pub const MAP_POS: Vec2 = Vec2::new(362.0, 140.0);
 
 /// Clear space kept between two buttons, and between the lowest button and the YOU slot.
 pub const GAP: f32 = 3.0;

@@ -9,7 +9,7 @@
 	"camera": {"height": 2.8, "vent_height": 2.2, "inset": 0.5, "target": [0.12, 0.7, 0.12],
 		"corner": {"arcade": [-1,1], "party": [1,1], "prize": [1,1], "storage": [1,-1]},
 		"aim": {"lobby": [-0.14, 0.4, 0.12], "arcade": [0.25, -0.75, -0.286], "party": [-0.258, 0.5, 0.009], "prize": [-0.2, -0.75, -0.4], "storage": [-0.469, -0.5, 0.75], "ventr": [-0.05, 0.6, 0.367]}},
-	"stand": {"slot0": [0.8, 0.6], "slot1": [-1.0, -0.6], "vent0": [0.0, 0.9], "vent1": [-1.2, 0.9]},
+	"stand": {"slot0": [0.8, 0.6], "slot1": [-1.0, -0.6], "vent0": [1.1, 0.9], "vent1": [0.0, 0.9]},
 	"rooms": [
 		{"id": "reception", "sim": "lobby", "rect": [-4, 0, 4, 5], "theme": "reception"},
 		{"id": "studio_a", "sim": "arcade", "rect": [-10, 0, -4, 11], "theme": "studio"},
