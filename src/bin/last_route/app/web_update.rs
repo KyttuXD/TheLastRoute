@@ -45,6 +45,27 @@ pub fn reload() {
     imp::reload()
 }
 
+/// The browser's local zone (packaging/web/index.html, the lr_pointer plugin's `lr_tz_offset_min`): minutes east of
+/// UTC at a Unix time, so daylight time is right for that moment. Used by app/updater.rs `zone_at` for player-facing
+/// times on the web build.
+#[cfg(target_arch = "wasm32")]
+mod tz {
+    extern "C" {
+        fn lr_tz_offset_min(secs: f64) -> i32;
+    }
+
+    pub fn offset_minutes(unix: i64) -> i32 {
+        // SAFETY: a plain function of the page's lr_pointer plugin; it takes a number and returns one.
+        unsafe { lr_tz_offset_min(unix as f64) }
+    }
+}
+
+/// Minutes east of UTC in the browser's zone at a Unix time (web build only).
+#[cfg(target_arch = "wasm32")]
+pub fn tz_offset_minutes(unix: i64) -> i32 {
+    tz::offset_minutes(unix)
+}
+
 /// Where the UPDATING screen is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {

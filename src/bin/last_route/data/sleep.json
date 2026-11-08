@@ -15,6 +15,7 @@
   "jolt_seconds": 1.2,
   "jolt_exposure": 25.0,
   "jolt_noise": 20.0,
+  "jolt_penalty": 5.0,
   "slow_below": 70.0,
   "slow_scale_at_max": 0.8
 }

@@ -11,7 +11,9 @@
 //! How it is read: a world cell maps to a pixel (`scale`, the seed's turn, the spawn pixel). A chunk is the region
 //! that most of its sampled cells belong to (`classify_chunk`), or hollow (solid rock) when too little of it is
 //! region. The mineshaft tunnels (key `T`) are carved into every chunk they pass through, `tunnel_width` cells wide
-//! whatever the scale (`is_tunnel_cell`), and they are what joins the regions. Chunk (0, 0) is always the maze.
+//! whatever the scale (`is_tunnel_cell`), and they are what joins the regions. Chunk (0, 0) is always the maze, and
+//! chunk (1, 0), where the two primary hunters always start (`hunter_spawns`), is never hollow: when its vote would
+//! make it rock it is the maze too.
 //! Only level 0 uses the map. The result depends on the world seed only through `orient_of`.
 
 use crate::content::embedded;
@@ -239,11 +241,23 @@ impl Concept {
         self.settings.legend.get(&key).map(|l| l.region)
     }
 
-    /// What the chunk (cx, cz) is. Chunk (0, 0) is always the maze.
+    /// What the chunk (cx, cz) is: the region most of its samples belong to, or hollow. Chunk (0, 0) is always the
+    /// maze. Chunk (1, 0) holds the two primary hunters (`hunter_spawns`, guaranteed there), so it takes the vote but
+    /// is never hollow: a vote that would make it rock makes it the maze instead.
     pub fn classify_chunk(&self, o: Orient, cx: i32, cz: i32) -> ChunkClass {
+        let maze = ChunkClass::Region(self.region_of_key(b'M').unwrap_or("maze"));
         if cx == 0 && cz == 0 {
-            return ChunkClass::Region(self.region_of_key(b'M').unwrap_or("maze"));
+            return maze;
         }
+        match self.vote_chunk(o, cx, cz) {
+            ChunkClass::Hollow if cx == 1 && cz == 0 => maze,
+            class => class,
+        }
+    }
+
+    /// The plain vote of `classify_chunk`: the region most of the chunk's sampled cells belong to, or hollow when it
+    /// holds less than `min_region_share` of them.
+    fn vote_chunk(&self, o: Orient, cx: i32, cz: i32) -> ChunkClass {
         let mut counts: HashMap<u8, i32> = HashMap::new();
         for i in 0..SAMPLES {
             for j in 0..SAMPLES {
@@ -414,6 +428,28 @@ mod tests {
             assert_eq!(chunk_class(&world, 0, 0), ChunkClass::Region("maze"));
             assert_eq!(region_of_chunk(&world, 0, 0), "maze");
         }
+    }
+
+    /// Every turn of the map: the primary hunter chunk (1, 0) is never hollow, and (0, 0) is the maze.
+    #[test]
+    fn the_primary_hunter_chunk_is_never_hollow() {
+        let c = concept();
+        for swap in [false, true] {
+            for flip_x in [false, true] {
+                for flip_z in [false, true] {
+                    let o = Orient { swap, flip_x, flip_z };
+                    assert_ne!(c.classify_chunk(o, 1, 0), ChunkClass::Hollow, "{o:?}");
+                    assert_eq!(c.classify_chunk(o, 0, 0), ChunkClass::Region("maze"), "{o:?}");
+                    // a region vote is kept: (1, 0) only changes where the vote was rock
+                    if let ChunkClass::Region(r) = c.vote_chunk(o, 1, 0) {
+                        assert_eq!(c.classify_chunk(o, 1, 0), ChunkClass::Region(r), "{o:?}");
+                    }
+                }
+            }
+        }
+        // the rule holds on any map
+        let s = small(1, 0);
+        assert_ne!(s.classify_chunk(Orient::default(), 1, 0), ChunkClass::Hollow);
     }
 
     #[test]

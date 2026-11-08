@@ -893,7 +893,9 @@ pub async fn run(
                     // a rejoin try that got back into the room while the runner kept playing (net/rejoin.rs)
                     let rejoined = intent == NetIntent::Join
                         && !session.is_host()
-                        && rejoin.within_window(get_time())
+                        // awaiting, not within_window: the last try (time or tries used up) may still land, and it is a
+                        // rejoin, not a new join
+                        && rejoin.awaiting()
                         && (playing.is_some() || loading.is_some());
                     if intent == NetIntent::Join && !session.is_host() {
                         rejoin.remember(&code, &backend.account.session_token);
@@ -998,6 +1000,11 @@ pub async fn run(
             Some(JoinProgress::Joined(session)) => {
                 let join = hosted_join.take();
                 let code = session.code.clone();
+                // a guest of the created room may rejoin it after a drop, like a JOIN (net/rejoin.rs)
+                if !session.is_host() {
+                    rejoin.remember(&code, &backend.account.session_token);
+                    rejoin_code = code.clone();
+                }
                 let owned = hosted::is_room_owner(
                     if session.room_owner().is_empty() { join.as_ref().map_or("", |j| j.owner.as_str()) } else { session.room_owner() },
                     backend.signed_in(),
@@ -1086,9 +1093,11 @@ pub async fn run(
             chat_feed.push(lines, lw, ld);
         }
         chat_feed.tick(get_frame_time());
+        // the HUD's interact prompt and the cue subtitles follow the settings (cheap; a change lands on the next frame)
+        apply_runtime_settings(&settings);
 
         // a player who hosts the room sends the NPCs this game runs (their admin summons too) to the guests
-        if let (Some(n), Some(g)) = (net.as_mut(), playing.as_ref()) {
+        if let (Some(n), Some(g)) = (net.as_mut().filter(|n| n.is_host()), playing.as_ref()) {
             n.publish_npcs(&g.npcs, g.window_origin(), &g.downed_npcs.keys().copied().collect());
         }
 
@@ -1108,8 +1117,16 @@ pub async fn run(
             ),
             _ => None,
         };
+        // this runner's own waypoint rides in its sample (absolute cells and metres); none when not playing an Infinite route
+        let own_waypoint = match (playing.as_ref(), loading.is_none()) {
+            (Some(g), true) => own_peer_waypoint(g.inf.as_ref().and_then(|i| i.waypoint)),
+            _ => None,
+        };
         let room_events = match net.as_mut() {
-            Some(n) => n.tick(sample),
+            Some(n) => {
+                n.set_own_waypoint(own_waypoint);
+                n.tick(sample)
+            }
             None => Vec::new(),
         };
         // the room's difficulty: the host sets it and sends it; a guest takes the host's and never sends its own
@@ -1159,7 +1176,9 @@ pub async fn run(
         // a guest's game runs no hunter simulation: the host's frames drive the hunters (game/hunting.rs)
         if let Some(g) = playing.as_mut() {
             // while the public room is being opened again, the hunters stand where the old host last showed them
-            let remote = net.as_ref().map_or(reform.is_some(), |n| !n.is_host());
+            // and while a dropped guest's rejoin window is open it is still a guest: it never takes the hunters over
+            let rejoining = rejoin.seconds_left(get_time()).is_some();
+            let remote = net.as_ref().map_or(reform.is_some() || rejoining, |n| !n.is_host());
             if g.remote_hunters && !remote {
                 // this runner now holds the room: the hunters it was shown become the ones it simulates
                 g.become_host(&w.content);
@@ -1168,8 +1187,12 @@ pub async fn run(
             }
             g.public_route = !remote && net.as_ref().is_some_and(|n| n.is_public_route());
             // the other runners of the room, who could revive this runner if it goes down (game/revive.rs); a guest's
-            // roster leaves its host out, so the host counts too
-            g.room_teammates = net.as_ref().map_or(0, |n| n.roster_peers().len() + usize::from(!n.is_host()));
+            // roster leaves its host out, so the host counts too. While the rejoin window is open the last count stays.
+            g.room_teammates = match net.as_ref() {
+                Some(n) => n.roster_peers().len() + usize::from(!n.is_host()),
+                None if rejoining => g.room_teammates,
+                None => 0,
+            };
         }
         // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
         if loading.is_none() {
@@ -1513,9 +1536,13 @@ pub async fn run(
                 remotes.push(shot_remote(g));
             }
             g.sync_other_hiders(&remotes);
-            let marks = crate::ui::markers::all_markers(g, &remotes);
-            // the quick-chat pings of this route depth, as the maps draw them (ui/map.rs MapExtras). Peer waypoints are not
-            // carried by the room yet, so the maps get none.
+            let mut marks = crate::ui::markers::all_markers(g, &remotes);
+            // the pins and markers dim with the seconds since each teammate's last sample (cosmetic)
+            if let Some(n) = net.as_ref() {
+                crate::ui::markers::with_ages(&mut marks, &n.remote_ages());
+            }
+            // the quick-chat pings of this route depth and the teammates' waypoints (their samples carry them, net/world_sync.rs),
+            // as the maps draw them (ui/map.rs MapExtras)
             {
                 let (ox, oy) = g.window_origin();
                 let pings = chat_feed
@@ -1529,7 +1556,9 @@ pub async fn run(
                         colour: map::teammate_colour(p.peer_id as u32),
                     })
                     .collect();
-                map::set_extras(map::MapExtras { pings, waypoints: Vec::new() });
+                let present: Vec<u32> = remotes.iter().map(|r| r.peer).collect();
+                let waypoints = net.as_ref().map(|n| peer_waypoint_pins(n.peer_waypoints(), &present, (ox, oy))).unwrap_or_default();
+                map::set_extras(map::MapExtras { pings, waypoints });
             }
             // the admin tools follow the server's admin flag for the signed-in account, never the local name
             admin.enabled = (backend.admin || (screenshot.is_some() && env("LR_SHOT_ADMIN").is_some())) && !stress_on;
@@ -1563,7 +1592,16 @@ pub async fn run(
             } else {
                 admin.input(g)
             };
-            if is_key_pressed(KeyCode::Escape) && !in_report && !admin_esc && !stress_on && !update_screen.is_shown() && !chat_box.typing() && !g.emote.is_open() {
+            // a rebind waiting for a key (settings CONTROLS) keeps its Escape: it cancels the rebind, never the pause menu
+            if is_key_pressed(KeyCode::Escape)
+                && !in_report
+                && !admin_esc
+                && !stress_on
+                && !update_screen.is_shown()
+                && !chat_box.typing()
+                && !g.emote.is_open()
+                && crate::app::bindings::capture().is_none()
+            {
                 if pz.open {
                     pause::escape(&mut pz);
                 } else if map_open {
@@ -1904,10 +1942,14 @@ pub async fn run(
                         render_play_with(g, &w.assets, &w.mat, &tg, &remotes, &npcs);
                     }
                     // the teammate overlay (TEAMMATE WAYPOINTS setting) and the chat bubbles over the 3D view, after the
-                    // nametags; no peer waypoints are on the wire yet, so the overlay draws the teammate markers only
+                    // nametags: the teammate markers and, from their samples, chevrons from each teammate toward its waypoint
                     if !hud_hidden {
                         if hud::teammate_overlay_enabled(settings.teammate_waypoints, net.is_some(), pz.open) {
-                            hud::draw_teammate_overlay(g, &w.assets, &tg.scene, &marks, &[]);
+                            let wps = net
+                                .as_ref()
+                                .map(|n| teammate_waypoint_draws(&marks, n.peer_waypoints(), g.window_origin(), g.fac.level))
+                                .unwrap_or_default();
+                            hud::draw_teammate_overlay(g, &w.assets, &tg.scene, &marks, &wps);
                         }
                         crate::ui::chat_box::draw_bubbles(g, &w.assets, &tg.scene, &chat_feed, &marks);
                     }
@@ -1921,13 +1963,21 @@ pub async fn run(
                             crate::ui::emote_wheel::draw(set, g.emote.hover());
                         }
                     }
-                    // co-op chat: T opens the line, Enter sends it to the room, Escape drops it (ui/chat_box.rs)
+                    // co-op chat: the CHAT binding (T by default) opens the line, Enter sends it to the room, Escape drops it
+                    // (ui/chat_box.rs)
                     let chat_allowed = net.is_some() && !pz.open && !stress_on && !in_report && !admin.is_open() && !map_open;
-                    if let Some(sent) = chat_box.update(chat_allowed) {
-                        let (ox, oy) = g.window_origin();
-                        let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
+                    let (ox, oy) = g.window_origin();
+                    let (ax, az) = (g.p.pos.0 as f64 + ox as f64, g.p.pos.1 as f64 + oy as f64);
+                    if let Some(sent) = chat_box.update(chat_allowed, &settings.bindings) {
                         if let Some(n) = net.as_mut() {
                             n.send_chat(&sent, chat_box.channel(), [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
+                        }
+                    }
+                    // QUICK CHAT: the first preset of data/chat.json goes out as a ping where this runner stands (no picker yet)
+                    if chat_allowed && !chat_box.typing() && settings.bindings.pressed("quick_chat") {
+                        let rules = crate::net::chat::ChatRules::load();
+                        if let (Some(preset), Some(n)) = (rules.quick_chat_presets.first(), net.as_mut()) {
+                            n.send_ping(preset, &rules.quick_chat_channel, [ax, az], [ax, g.p.y() as f64, az], g.depth as i64);
                         }
                     }
                     if chat_allowed {
@@ -2059,7 +2109,9 @@ pub async fn run(
                         ) {
                             pause::Out::Abandon => {
                                 // leaving the route saves it first (Godot `_leave_test`: autosave("quit")); a guest never saves
-                                if local_host && quit_may_save(g.runner_downed()) {
+                                // the data's pause_quit trigger (data/progression.json autosave) saves when it is due; else the
+                                // plain quit save still runs
+                                if local_host && quit_may_save(g.runner_downed()) && !g.autosave_on("pause_quit") {
                                     g.autosave("quit");
                                 }
                                 leave = true;
@@ -2435,6 +2487,8 @@ pub async fn run(
         // the FPS LIMIT row would cap the numbers a stress run measures, so a stress run is paced only by
         // --stress-limit (none by default)
         // an unfocused window with PAUSE ON FOCUS LOSS on is held to data/controls.json frame.unfocused_fps (app/frame_cap.rs)
+        // the focus is read from the OS each frame (app/platform.rs); a screenshot or capture run counts as focused
+        frame_cap::set_focused(screenshot.is_some() || capture.is_some() || platform::window_focused());
         let focused = frame_cap::focused();
         pacer.wait(if stress_on {
             stress_cap
@@ -2494,6 +2548,131 @@ fn quit_may_save(downed: bool) -> bool {
 /// True when a new autosave landed and the run is still live, so the in-memory copy must be re-read.
 fn save_needs_reload(seen: u32, count: u32, ended: bool) -> bool {
     !ended && seen != count
+}
+
+/// The settings other modules read from their own state each frame: the INTERACT key the HUD's prompts show
+/// (`PRESS [E]`, ui/hud.rs) and SUBTITLES (audio/tts.rs).
+fn apply_runtime_settings(settings: &Settings) {
+    hud::set_interact_key(&settings.bindings.prompt_key("interact"));
+    crate::audio::tts::set_subtitles(settings.subtitles);
+}
+
+/// The runner's own waypoint as the room carries it: `[x, floor height, z]` in absolute cells and metres, and its level.
+fn own_peer_waypoint(w: Option<crate::game::endless::Waypoint>) -> Option<crate::game::waypoint::PeerWaypoint> {
+    w.map(|w| crate::game::waypoint::PeerWaypoint {
+        pos: [w.at.0, crate::game::level_stack::floor_y_of(w.level), w.at.1],
+        level: w.level,
+    })
+}
+
+/// The teammates' waypoints as map pins, in the window frame (`origin` subtracted), only for runners still in the room.
+fn peer_waypoint_pins(wps: &crate::game::waypoint::Waypoints, present: &[u32], origin: (i32, i32)) -> Vec<map::MapPin> {
+    let (ox, oy) = origin;
+    wps.iter()
+        .filter(|(p, _)| present.contains(p))
+        .map(|(p, w)| map::MapPin { at: (w.pos[0] - ox as f32, w.pos[2] - oy as f32), level: w.level, colour: map::teammate_colour(p) })
+        .collect()
+}
+
+/// The world chevrons of the teammates' waypoints: from each teammate's marker toward its waypoint, both on the shown
+/// `level`, in the 3D view's frame (window cells, height above the shown floor).
+fn teammate_waypoint_draws(
+    marks: &[crate::ui::markers::Marker],
+    wps: &crate::game::waypoint::Waypoints,
+    origin: (i32, i32),
+    level: i32,
+) -> Vec<crate::ui::teammate_markers::WaypointDraw> {
+    use crate::render::stack_actors::actor_dy;
+    let (ox, oy) = origin;
+    marks
+        .iter()
+        .filter_map(|m| {
+            let crate::ui::markers::MarkerId::Peer(p) = m.id else { return None };
+            let w = wps.get(p)?;
+            if m.level != level || w.level != level {
+                return None;
+            }
+            Some(crate::ui::teammate_markers::WaypointDraw {
+                owner: m.name.clone(),
+                from: macroquad::prelude::vec3(m.x, actor_dy(m.abs_y, level), m.y),
+                to: macroquad::prelude::vec3(w.pos[0] - ox as f32, actor_dy(w.pos[1], level), w.pos[2] - oy as f32),
+                colour: m.colour,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod runtime_settings_tests {
+    use super::*;
+
+    #[test]
+    fn the_interact_prompt_names_the_bound_key() {
+        let mut s = Settings::default();
+        s.subtitles = true;
+        s.bindings = bindings::Bindings::from_json(&serde_json::json!({ "interact": ["Y"] }));
+        apply_runtime_settings(&s);
+        assert_eq!(hud::with_interact_key("PRESS [E] TO OPEN"), "PRESS [Y] TO OPEN");
+        s.bindings = bindings::Bindings::default();
+        apply_runtime_settings(&s);
+        assert_eq!(hud::with_interact_key("PRESS [E] TO OPEN"), "PRESS [E] TO OPEN");
+    }
+}
+
+#[cfg(test)]
+mod waypoint_wire_tests {
+    use super::*;
+    use crate::game::waypoint::{PeerWaypoint, Waypoints};
+    use crate::ui::markers::{Marker, MarkerId};
+
+    fn mark(id: MarkerId, level: i32) -> Marker {
+        Marker {
+            id,
+            name: "ANN".into(),
+            x: 1.0,
+            y: 2.0,
+            abs_y: crate::game::level_stack::floor_y_of(level),
+            level,
+            yaw: 0.0,
+            colour: macroquad::prelude::WHITE,
+            is_bot: false,
+            concealed: false,
+            downed: false,
+            age_s: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_own_waypoint_goes_out_in_absolute_cells_on_its_floor() {
+        let w = own_peer_waypoint(Some(crate::game::endless::Waypoint { at: (10.5, 20.5), level: 1 })).unwrap();
+        assert_eq!(w.pos, [10.5, crate::game::level_stack::floor_y_of(1), 20.5]);
+        assert_eq!(w.level, 1);
+        assert!(own_peer_waypoint(None).is_none());
+    }
+
+    #[test]
+    fn map_pins_are_in_the_window_frame_and_only_for_present_peers() {
+        let mut wps = Waypoints::default();
+        wps.set(3, PeerWaypoint { pos: [110.0, 0.0, 220.0], level: 0 });
+        wps.set(4, PeerWaypoint { pos: [0.0, 0.0, 0.0], level: 0 });
+        let pins = peer_waypoint_pins(&wps, &[3], (100, 200));
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].at, (10.0, 20.0));
+        assert_eq!(pins[0].colour, map::teammate_colour(3));
+    }
+
+    #[test]
+    fn world_chevrons_run_from_the_teammate_to_its_waypoint_on_the_same_level_only() {
+        let mut wps = Waypoints::default();
+        wps.set(3, PeerWaypoint { pos: [110.0, 0.0, 220.0], level: 0 });
+        wps.set(5, PeerWaypoint { pos: [110.0, 0.0, 220.0], level: 0 });
+        let marks = vec![mark(MarkerId::Peer(3), 0), mark(MarkerId::Peer(5), 1), mark(MarkerId::Bot(3), 0)];
+        let d = teammate_waypoint_draws(&marks, &wps, (100, 200), 0);
+        assert_eq!(d.len(), 1, "the peer on another level and the bot draw none");
+        assert_eq!(d[0].from, macroquad::prelude::vec3(1.0, 0.0, 2.0));
+        assert_eq!(d[0].to, macroquad::prelude::vec3(10.0, 0.0, 20.0));
+        assert_eq!(d[0].owner, "ANN");
+    }
 }
 
 #[cfg(test)]

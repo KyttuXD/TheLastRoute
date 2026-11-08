@@ -50,10 +50,17 @@ pub const IMPLEMENTED_IDS: [&str; 24] = [
 /// SPECIAL_IDS: always present but dormant, woken by their own rule.
 pub const SPECIAL_IDS: [&str; 2] = ["nyxie", "solyth"];
 
+/// The tiers a hunter document may name (data/hunters/<id>.json "tier").
+pub const TIERS: [&str; 5] = ["easy", "intermediate", "difficult", "void", "special"];
+
 pub fn tier_index(tier: &str) -> usize {
     match tier {
+        "easy" => 0,
         "intermediate" => 1,
         "difficult" => 2,
+        // On purpose: Void hunters and the special (dormant) hunters share the easy index. They are never drawn by
+        // tier weight (the Void incursion and their own wake rules pick them), so the index only has to be in range.
+        "void" | "special" => 0,
         _ => 0,
     }
 }
@@ -219,6 +226,30 @@ mod tests {
 
     fn doc(id: &str, name: &str) -> Value {
         json!({ "schema": "lr.hunter/1", "id": id, "name": name, "speed": 0.9, "chase": 3.0, "sight": 7.0 })
+    }
+
+    #[test]
+    fn tier_index_keeps_its_numeric_mapping() {
+        assert_eq!(tier_index("easy"), 0);
+        assert_eq!(tier_index("intermediate"), 1);
+        assert_eq!(tier_index("difficult"), 2);
+        assert_eq!(tier_index("void"), 0);
+        assert_eq!(tier_index("special"), 0);
+        assert_eq!(tier_index("unknown"), 0);
+    }
+
+    /// Every embedded hunter document names a known tier: a typo would silently fall back to the easy index.
+    #[test]
+    fn every_embedded_hunter_tier_is_known() {
+        let mut checked = 0;
+        for (path, text) in crate::content::embedded::data_under("hunters/") {
+            let v: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let Some(tier) = v.get("tier") else { continue };
+            let tier = tier.as_str().unwrap_or_else(|| panic!("{path}: tier is not a string"));
+            assert!(TIERS.contains(&tier), "{path}: unknown tier {tier:?}");
+            checked += 1;
+        }
+        assert!(checked >= 36, "only {checked} hunter tiers checked");
     }
 
     #[test]

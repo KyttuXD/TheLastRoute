@@ -1491,7 +1491,9 @@ pub fn canonical_account_name(raw: &str) -> String {
     raw.trim().to_uppercase()
 }
 
+/// The account server owns the name rule (^[A-Z0-9_]{3,24}$); this mirrors it for early client checks.
 pub const ACCOUNT_NAME_MIN: usize = 3;
+/// See ACCOUNT_NAME_MIN: the account server (^[A-Z0-9_]{3,24}$) owns the rule.
 pub const ACCOUNT_NAME_MAX: usize = 24;
 
 /// 3-24 characters, A-Z 0-9 and `_` (after upper-casing).

@@ -138,6 +138,35 @@ pub struct Bot {
     down_locked: bool,
     /// Times the bot broke off for a threat on its way to each relay (by goal key); two leave the relay a while.
     relay_flees: HashMap<(u8, i32, i32), i32>,
+    /// Each hunter's recent top moving speed (indexed like g.hunters): a chaser that pauses a frame is not judged slow.
+    recent_speed: Vec<f32>,
+    /// The level the recent speeds were taken on; a new level (or floor) starts them over.
+    speed_level: Option<i32>,
+}
+
+/// A chaser counts as slow (outwalked) below this share of the runner's walk speed.
+const SLOW_CHASER_SHARE: f32 = 0.8;
+/// How long (s) a chaser that was moving at walk speed keeps counting as not slow after it stops.
+const SLOW_CHASER_MEMORY_S: f32 = 0.5;
+/// Decay (m/s per s) of a hunter's recent top speed: a walk-speed peak reaches the slow line in SLOW_CHASER_MEMORY_S.
+const SPEED_MAX_DECAY: f32 = PLAYER_WALK_SPEED * (1.0 - SLOW_CHASER_SHARE) / SLOW_CHASER_MEMORY_S;
+
+/// One frame of the decaying recent max: m = max(speed, m - decay * dt), per hunter. Starts over when `reset` or when
+/// the hunter count changed (the indexes no longer name the same hunters).
+fn decay_recent_speeds(recent: &mut Vec<f32>, speeds: &[f32], dt: f32, reset: bool) {
+    if reset || recent.len() != speeds.len() {
+        recent.clear();
+        recent.extend_from_slice(speeds);
+        return;
+    }
+    for (m, &s) in recent.iter_mut().zip(speeds) {
+        *m = s.max(*m - SPEED_MAX_DECAY * dt);
+    }
+}
+
+/// A chaser slower than the runner walks, judged from its recent top speed rather than one frame.
+fn slow_chaser(recent_max: f32) -> bool {
+    recent_max < PLAYER_WALK_SPEED * SLOW_CHASER_SHARE
 }
 
 fn wrap(a: f32) -> f32 {
@@ -244,6 +273,8 @@ impl Bot {
             downed_since: None,
             down_locked: false,
             relay_flees: HashMap::new(),
+            recent_speed: Vec::new(),
+            speed_level: None,
         }
     }
 
@@ -327,7 +358,7 @@ impl Bot {
         })
     }
 
-    fn threat(g: &Game) -> Option<usize> {
+    fn threat(g: &Game, recent_speed: &[f32]) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
         for (i, h) in g.hunters.iter().enumerate() {
             if !h.active || h.stun > 0.5 || h.gimmick.hidden_from_view() {
@@ -339,7 +370,7 @@ impl Bot {
             let seen = g.fac.has_line_of_sight(h.pos, g.p.pos);
             // a chaser slower than the runner walks (Ferryn's slow stalk, gimmicks/ferryn.rs) is outwalked: only up close
             // is it worth breaking off a goal, or the bot runs from it all floor long and never reaches a relay
-            let slow = h.moving_speed < PLAYER_WALK_SPEED * 0.8;
+            let slow = slow_chaser(recent_speed.get(i).copied().unwrap_or(h.moving_speed));
             let hot = match h.state {
                 State::Chase if slow => d < 4.5,
                 State::Chase => d < 20.0 && (seen || d < 9.0),
@@ -658,6 +689,9 @@ impl Bot {
         let moved = pdist(g.p.pos, self.last_pos);
         let center = g.inf.as_ref().map(|i| i.center);
         let level = g.inf.as_ref().map(|i| i.level).unwrap_or(1 - g.depth);
+        let speeds: Vec<f32> = g.hunters.iter().map(|h| h.moving_speed).collect();
+        decay_recent_speeds(&mut self.recent_speed, &speeds, dt, self.speed_level != Some(level));
+        self.speed_level = Some(level);
         if center != self.window_center || Some(level) != self.last_level {
             // the window recentred (or a new floor): window cells moved under us
             if self.last_level.is_some() && Some(level) != self.last_level {
@@ -765,7 +799,7 @@ impl Bot {
             c.shop_choice = Some(9);
             return c;
         }
-        let threat = Bot::threat(g);
+        let threat = Bot::threat(g, &self.recent_speed);
         // 2. hidden: stay while a threat is near, leave after 3 s clear
         if let Some(spot) = g.p.hidden {
             self.stats.hidden_frames += 1;
@@ -1192,5 +1226,55 @@ impl Bot {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_walk_speed_chaser_that_pauses_a_frame_is_not_slow() {
+        let mut m = Vec::new();
+        decay_recent_speeds(&mut m, &[PLAYER_WALK_SPEED], 1.0 / 60.0, true);
+        decay_recent_speeds(&mut m, &[0.0], 1.0 / 60.0, false);
+        assert!(!slow_chaser(m[0]), "one still frame must not make a walking chaser slow");
+    }
+
+    #[test]
+    fn the_recent_max_fades_to_slow_in_about_half_a_second() {
+        let dt = 1.0 / 60.0;
+        let mut m = Vec::new();
+        decay_recent_speeds(&mut m, &[PLAYER_WALK_SPEED], dt, true);
+        let mut t = 0.0;
+        while !slow_chaser(m[0]) {
+            decay_recent_speeds(&mut m, &[0.0], dt, false);
+            t += dt;
+            assert!(t < 2.0);
+        }
+        assert!((t - SLOW_CHASER_MEMORY_S).abs() < 0.05, "faded after {t} s");
+    }
+
+    #[test]
+    fn a_steady_slow_stalker_stays_slow() {
+        let mut m = Vec::new();
+        let s = PLAYER_WALK_SPEED * 0.5;
+        decay_recent_speeds(&mut m, &[s], 0.1, true);
+        for _ in 0..20 {
+            decay_recent_speeds(&mut m, &[s], 0.1, false);
+        }
+        assert!(slow_chaser(m[0]));
+        assert!(!slow_chaser(PLAYER_WALK_SPEED * SLOW_CHASER_SHARE));
+    }
+
+    #[test]
+    fn a_level_change_or_new_hunter_count_starts_over() {
+        let mut m = Vec::new();
+        decay_recent_speeds(&mut m, &[PLAYER_WALK_SPEED * 2.0], 0.1, true);
+        decay_recent_speeds(&mut m, &[0.0], 0.1, true);
+        assert_eq!(m, vec![0.0]);
+        decay_recent_speeds(&mut m, &[PLAYER_WALK_SPEED * 2.0], 0.1, false);
+        decay_recent_speeds(&mut m, &[1.0, 0.5], 0.1, false);
+        assert_eq!(m, vec![1.0, 0.5]);
     }
 }

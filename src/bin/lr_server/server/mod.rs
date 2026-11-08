@@ -796,6 +796,12 @@ impl LastRouteServer {
         for (_, route) in state.dir.public_routes.iter_mut() {
             route.tick();
         }
+        // the save write-rate map drops accounts with no write left in the window (taken after the state lock is released)
+        let saves = state.game_saves.clone();
+        drop(state);
+        if let Ok(mut s) = saves.lock() {
+            s.prune_writes();
+        };
     }
 
     pub fn maintenance_interval_ms(&self) -> i64 {

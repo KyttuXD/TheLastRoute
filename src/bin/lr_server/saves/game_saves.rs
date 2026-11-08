@@ -12,12 +12,17 @@
 //! updatedAt (unix seconds, the client's saved_at) is older than the stored one is refused with 409 and the stored time,
 //! so a stale offline copy can never overwrite a newer run. Bodies are capped (SAVE_MAX_BYTES, enforced by the router
 //! before parsing) and writes rate-limited per account.
+//!
+//! With a website upstream the network calls run without the store's lock: the router asks the store for an
+//! `UpstreamStep` under the lock (allow-list, body shape, rate limit and a reserved write time), releases it, and runs
+//! the website calls; PUTs of one session, game and slot are serialized by a per-key lock so newest-wins holds.
 
 use crate::upstream::Upstream;
 use crate::util::{self, js_number, num, sha256_hex, stringify, truthy, Clock, Reply, SessionLookup};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 pub const SAVE_MAX_BYTES: usize = 64 * 1024;
 /// Keep the pre-revision slot intact; beta world revisions use distinct slots.
@@ -87,8 +92,78 @@ pub struct GameSaves {
     write_limit: usize,
     write_window_ms: i64,
     upstream: Option<Upstream>,
-    /// username -> recent write times
+    /// username (local files) or sha256(token) (website) -> recent write times
     writes: HashMap<String, Vec<i64>>,
+    /// (sha256(token), game, slot) -> the lock that serializes website PUTs of that slot. Read and written only while
+    /// the store's own lock is held; the Arc is cloned out and locked after that lock is released.
+    put_locks: HashMap<String, Arc<Mutex<()>>>,
+}
+
+/// What a save request does once the store's lock is released.
+pub enum UpstreamStep<T> {
+    /// No website: the store answers from its files, under its lock.
+    Local,
+    /// Already answered (unknown slot, bad body, rate limited).
+    Answered(Reply),
+    /// Go to the website with this, without the store's lock.
+    Ready(T),
+}
+
+/// A website PUT that passed the checks under the store's lock and holds a reserved write time.
+pub struct UpstreamPut {
+    upstream: Upstream,
+    /// The rate-limit key (sha256 of the session token).
+    rate_key: String,
+    /// The write time reserved in the rate window; released again when the save is not written.
+    reserved_at: i64,
+    /// The upload's time in game seconds.
+    requested: f64,
+    /// Serializes PUTs of the same session, game and slot.
+    slot_lock: Arc<Mutex<()>>,
+}
+
+/// The end of a website PUT.
+pub struct UpstreamPutOutcome {
+    pub reply: Reply,
+    /// The save was refused (newest wins) or the stored save could not be read: the reserved write time goes back.
+    pub release: bool,
+}
+
+impl UpstreamPut {
+    /// Load, newest-wins and save on the website, under the per-slot lock only. Superseded run-world slots are pruned
+    /// after that lock is released.
+    pub fn run(&self, token: &str, game_id: &str, slot: &str, body: &Value) -> UpstreamPutOutcome {
+        let held = self.slot_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (status, stored) =
+            self.upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
+        if status != 200 || stored.get("ok") != Some(&json!(true)) {
+            return UpstreamPutOutcome { reply: (status, stored), release: true };
+        }
+        let stored_at = stored_client_seconds(&stored);
+        if let Some(reply) = newest_wins_reply(game_id, slot, stored_at, self.requested) {
+            return UpstreamPutOutcome { reply, release: true };
+        }
+        let data = body.get("data").cloned().unwrap_or(Value::Null);
+        let (status, saved) = self
+            .upstream
+            .call("/api/v1/saves/save", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot, "data": data }));
+        drop(held);
+        if status != 200 || saved.get("ok") != Some(&json!(true)) {
+            return UpstreamPutOutcome { reply: (status, saved), release: false };
+        }
+        prune_older_revisions(&self.upstream, token, game_id, slot);
+        let updated_at = if saved.get("savedAt").is_some() { saved_seconds(saved.get("savedAt")) } else { self.requested };
+        UpstreamPutOutcome { reply: (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(updated_at) })), release: false }
+    }
+}
+
+/// GET through the website, run without the store's lock (the slot was checked under it).
+pub fn upstream_get(upstream: &Upstream, token: &str, game_id: &str, slot: &str) -> Reply {
+    let (status, website) = upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
+    if status != 200 || website.get("ok") != Some(&json!(true)) {
+        return (status, website);
+    }
+    (200, loaded_save(game_id, slot, &website))
 }
 
 fn unknown_save() -> Reply {
@@ -126,7 +201,24 @@ fn saved_seconds(saved_at: Option<&Value>) -> f64 {
     (util::number_or(saved_at, 0.0) / 1000.0).floor()
 }
 
-/// The newest-wins answer to a PUT against the website's stored time (both in game seconds): an upload older than the
+/// The client's own stamp inside a stored run (`data.saved_at`, unix seconds), when it is a positive number.
+fn client_stamp(data: Option<&Value>) -> Option<f64> {
+    let stamp = js_number(data?.get("saved_at"));
+    (stamp.is_finite() && stamp > 0.0).then(|| stamp.floor())
+}
+
+/// The time newest-wins compares an upload with, in the client's clock: the stored run's `saved_at`, falling back to
+/// the website's `savedAt` only when the run has none. A cleared slot (data null or missing) is 0, so any upload wins.
+/// The website stamps its own clock on every save, so comparing the client's `updatedAt` with `savedAt` would mix two
+/// clocks and refuse a newer run whenever the website's clock is ahead.
+fn stored_client_seconds(website: &Value) -> f64 {
+    match website.get("data") {
+        None | Some(Value::Null) => 0.0,
+        data => client_stamp(data).unwrap_or_else(|| saved_seconds(website.get("savedAt"))),
+    }
+}
+
+/// The newest-wins answer to a PUT against the stored time (both in game seconds): an upload older than the
 /// stored save is not written and answers 200 with the stored time. None when the upload may be written.
 fn newest_wins_reply(game_id: &str, slot: &str, stored_at: f64, requested: f64) -> Option<Reply> {
     if stored_at <= requested {
@@ -135,12 +227,14 @@ fn newest_wins_reply(game_id: &str, slot: &str, stored_at: f64, requested: f64) 
     Some((200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(stored_at) })))
 }
 
-/// The game's shape for a slot the website returned from `/api/v1/saves/load`.
+/// The game's shape for a slot the website returned from `/api/v1/saves/load`. `updatedAt` is the run's own
+/// `saved_at` (the stamp newest-wins compares), or the website's `savedAt` when the run has none.
 fn loaded_save(game_id: &str, slot: &str, website: &Value) -> Value {
+    let updated_at = client_stamp(website.get("data")).unwrap_or_else(|| saved_seconds(website.get("savedAt")));
     json!({
         "ok": true, "gameId": game_id, "slot": slot,
         "data": website.get("data").cloned().unwrap_or(Value::Null),
-        "updatedAt": num(saved_seconds(website.get("savedAt"))),
+        "updatedAt": num(updated_at),
     })
 }
 
@@ -212,6 +306,7 @@ impl GameSaves {
             write_window_ms: opts.write_window_ms,
             upstream: opts.upstream,
             writes: HashMap::new(),
+            put_locks: HashMap::new(),
         }
     }
 
@@ -227,6 +322,87 @@ impl GameSaves {
         }
         self.writes.remove(username);
         std::fs::remove_file(self.path(username)).is_ok()
+    }
+
+    /// Moves a renamed account's cloud saves to its new name (`<from>.json` -> `<to>.json`) with its write times. A
+    /// `<to>.json` already there is a stale orphan (no live account held that name) and is removed first, never merged.
+    /// Nothing happens with an upstream (the website owns the saves), with saves off, for an unchanged name, or for a
+    /// name that is not an account file. A failed move is logged and never fails the rename.
+    pub fn rename_account(&mut self, from: &str, to: &str) {
+        if !self.enabled || self.upstream.is_some() || from == to || !username_file(from) || !username_file(to) {
+            return;
+        }
+        if let Some(times) = self.writes.remove(from) {
+            self.writes.insert(to.to_string(), times);
+        }
+        let (source, target) = (self.path(from), self.path(to));
+        if !source.exists() {
+            return;
+        }
+        if target.exists() {
+            if let Err(error) = std::fs::remove_file(&target) {
+                util::log_warn(&format!("[saves] could not remove the stale save file of {to}: {error}"));
+            }
+        }
+        match std::fs::rename(&source, &target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => util::log_warn(&format!("[saves] could not move the saves of {from} to {to}: {error}")),
+        }
+    }
+
+    /// Drops the rate-limit entries with no write left inside the window, and the per-slot PUT locks nobody holds.
+    pub fn prune_writes(&mut self) {
+        let now = self.now();
+        let window = self.write_window_ms;
+        self.writes.retain(|_, times| {
+            times.retain(|at| now - at < window);
+            !times.is_empty()
+        });
+        self.put_locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+
+    /// The website to read a slot from, checked under the store's lock; the call itself runs after it is released.
+    pub fn begin_upstream_get(&self, game_id: &str, slot: &str) -> UpstreamStep<Upstream> {
+        let Some(upstream) = &self.upstream else { return UpstreamStep::Local };
+        if !self.slot_allowed(game_id, slot) {
+            return UpstreamStep::Answered(unknown_save());
+        }
+        UpstreamStep::Ready(upstream.clone())
+    }
+
+    /// The checks of a website PUT, under the store's lock: allow-list, body shape and rate limit. A write time is
+    /// reserved in the rate window now (so concurrent PUTs count) and given back with `release_write` when the save is
+    /// not written.
+    pub fn begin_upstream_put(&mut self, token: &str, game_id: &str, slot: &str, body: &Value) -> UpstreamStep<UpstreamPut> {
+        let Some(upstream) = self.upstream.clone() else { return UpstreamStep::Local };
+        if !self.slot_allowed(game_id, slot) {
+            return UpstreamStep::Answered(unknown_save());
+        }
+        if !well_formed_save(body) {
+            return UpstreamStep::Answered(bad_save());
+        }
+        let now = self.now();
+        let rate_key = sha256_hex(token.as_bytes());
+        let mut recent = self.recent_writes(&rate_key, now);
+        if recent.len() >= self.write_limit {
+            return UpstreamStep::Answered(save_rate_limited());
+        }
+        recent.push(now);
+        self.writes.insert(rate_key.clone(), recent);
+        let slot_lock = self.put_locks.entry(format!("{rate_key}\n{game_id}\n{slot}")).or_default().clone();
+        UpstreamStep::Ready(UpstreamPut { upstream, rate_key, reserved_at: now, requested: updated_at_of(body, now), slot_lock })
+    }
+
+    /// Gives back the write time a website PUT reserved (the save was refused or the stored one could not be read).
+    pub fn release_write(&mut self, put: &UpstreamPut) {
+        let Some(times) = self.writes.get_mut(&put.rate_key) else { return };
+        if let Some(index) = times.iter().position(|at| *at == put.reserved_at) {
+            times.remove(index);
+        }
+        if times.is_empty() {
+            self.writes.remove(&put.rate_key);
+        }
     }
 
     #[allow(dead_code)]
@@ -300,17 +476,12 @@ impl GameSaves {
     }
 
     /// GET /api/v1/saves/:gameId/:slot. `token` = the `x-session-token` header (`String(header || "")`).
+    /// With an upstream this holds `&self` across the website call; the router uses `begin_upstream_get` instead.
     pub fn get(&self, accounts: &dyn SessionLookup, token: &str, game_id: &str, slot: &str) -> Reply {
-        if let Some(upstream) = &self.upstream {
-            if !self.slot_allowed(game_id, slot) {
-                return unknown_save();
-            }
-            let (status, website) =
-                upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
-            if status != 200 || website.get("ok") != Some(&json!(true)) {
-                return (status, website);
-            }
-            return (200, loaded_save(game_id, slot, &website));
+        match self.begin_upstream_get(game_id, slot) {
+            UpstreamStep::Local => {}
+            UpstreamStep::Answered(reply) => return reply,
+            UpstreamStep::Ready(upstream) => return upstream_get(&upstream, token, game_id, slot),
         }
         let username = match self.guard(accounts, token, game_id, slot) {
             Ok(username) => username,
@@ -323,49 +494,22 @@ impl GameSaves {
         (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "data": data, "updatedAt": num(updated_at) }))
     }
 
-    /// A PUT through the website. The stored `savedAt` is read first: an upload older than it is answered 200 with the
-    /// stored time and not written (newest wins), because the website stamps its own time on every save.
-    fn put_upstream(&mut self, upstream: &Upstream, token: &str, game_id: &str, slot: &str, body: &Value) -> Reply {
-        if !self.slot_allowed(game_id, slot) {
-            return unknown_save();
-        }
-        if !well_formed_save(body) {
-            return bad_save();
-        }
-        let now = self.now();
-        let key = sha256_hex(token.as_bytes());
-        let mut recent = self.recent_writes(&key, now);
-        if recent.len() >= self.write_limit {
-            return save_rate_limited();
-        }
-        let requested = updated_at_of(body, now);
-        let (status, stored) =
-            upstream.call("/api/v1/saves/load", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot }));
-        if status != 200 || stored.get("ok") != Some(&json!(true)) {
-            return (status, stored);
-        }
-        let stored_at = saved_seconds(stored.get("savedAt"));
-        if let Some(reply) = newest_wins_reply(game_id, slot, stored_at, requested) {
-            return reply;
-        }
-        recent.push(now);
-        self.writes.insert(key, recent);
-        let data = body.get("data").cloned().unwrap_or(Value::Null);
-        let (status, saved) = upstream
-            .call("/api/v1/saves/save", &json!({ "sessionToken": token, "gameId": game_id, "slotId": slot, "data": data }));
-        if status != 200 || saved.get("ok") != Some(&json!(true)) {
-            return (status, saved);
-        }
-        prune_older_revisions(upstream, token, game_id, slot);
-        let updated_at = if saved.get("savedAt").is_some() { saved_seconds(saved.get("savedAt")) } else { requested };
-        (200, json!({ "ok": true, "gameId": game_id, "slot": slot, "updatedAt": num(updated_at) }))
-    }
-
     /// PUT /api/v1/saves/:gameId/:slot. `body` = the parsed JSON body `{data, updatedAt}` (the router answers 413 for
     /// bodies over SAVE_MAX_BYTES and 400 BAD_SAVE "INVALID JSON BODY" for unparsable ones before calling this).
+    /// With an upstream the stored run's own `saved_at` is read first and an older upload is answered 200 with that time
+    /// and not written (newest wins). This holds `&mut self` across the website calls; the router runs the same steps
+    /// (`begin_upstream_put`, `UpstreamPut::run`, `release_write`) without the store's lock.
     pub fn put(&mut self, accounts: &dyn SessionLookup, token: &str, game_id: &str, slot: &str, body: &Value) -> Reply {
-        if let Some(upstream) = self.upstream.clone() {
-            return self.put_upstream(&upstream, token, game_id, slot, body);
+        match self.begin_upstream_put(token, game_id, slot, body) {
+            UpstreamStep::Local => {}
+            UpstreamStep::Answered(reply) => return reply,
+            UpstreamStep::Ready(put) => {
+                let outcome = put.run(token, game_id, slot, body);
+                if outcome.release {
+                    self.release_write(&put);
+                }
+                return outcome.reply;
+            }
         }
         let username = match self.guard(accounts, token, game_id, slot) {
             Ok(username) => username,
@@ -680,6 +824,94 @@ mod tests {
         assert_eq!(superseded_run_worlds(&slots, "run-world-3"), vec!["run-world-1".to_string()]);
         assert!(superseded_run_worlds(&slots, "run-world-2").is_empty());
         assert!(superseded_run_worlds(&slots, "run").is_empty());
+    }
+
+    #[test]
+    fn renaming_an_account_moves_its_saves_and_replaces_a_stale_orphan() {
+        let mut server = fixture();
+        let ada = server.sign_up("ADA_SAVER");
+        assert_eq!(server.put(PATH, &ada, json!({ "data": run(-7), "updatedAt": 100 })).0, 200);
+        let dir = server.root.join("saves");
+        std::fs::write(dir.join("BEA_SAVER.json"), r#"{"games":{"last-route-godot":{"run":{"data":{"stale":true},"updatedAt":999}}}}"#).unwrap();
+        server.saves.rename_account("ADA_SAVER", "BEA_SAVER");
+        assert!(!dir.join("ADA_SAVER.json").exists(), "the old name keeps no saves");
+        let moved: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("BEA_SAVER.json")).unwrap()).unwrap();
+        assert_eq!(moved["games"]["last-route-godot"]["run"]["data"], run(-7), "the orphan was replaced, not merged");
+        assert!(server.saves.writes.contains_key("BEA_SAVER") && !server.saves.writes.contains_key("ADA_SAVER"));
+        // no file to move, the same name, a name that is not an account file: nothing happens and nothing fails
+        server.saves.rename_account("NOBODY_HERE", "SOMEONE");
+        server.saves.rename_account("BEA_SAVER", "BEA_SAVER");
+        server.saves.rename_account("BEA_SAVER", "../ESCAPE");
+        assert!(dir.join("BEA_SAVER.json").exists() && !dir.join("SOMEONE.json").exists());
+    }
+
+    #[test]
+    fn rename_is_a_no_op_with_an_upstream_or_without_saves() {
+        let upstream = crate::upstream::Upstream::parse("http://127.0.0.1:9").unwrap();
+        let mut saves = GameSaves::new(GameSavesOptions { upstream: Some(upstream), ..Default::default() });
+        saves.writes.insert("ADA".into(), vec![1]);
+        saves.rename_account("ADA", "BEA");
+        assert!(saves.writes.contains_key("ADA"), "the website owns renamed saves");
+        let mut off = fixture_with(false, None);
+        off.saves.rename_account("ADA", "BEA");
+    }
+
+    #[test]
+    fn upstream_newest_wins_compares_the_client_stamp_not_the_website_clock() {
+        use crate::upstream::test_website::fake_website;
+        // The website's clock (savedAt, ms) is far ahead of every client stamp.
+        let (upstream, seen) = fake_website(vec![
+            r#"{"ok":true,"data":{"saved_at":100},"savedAt":9999999000000}"#,
+            r#"{"ok":true,"savedAt":9999999000000}"#,
+            r#"{"ok":true,"data":{"saved_at":300},"savedAt":9999999000000}"#,
+            r#"{"ok":true,"data":null,"savedAt":9999999000000}"#,
+            r#"{"ok":true}"#,
+        ]);
+        let mut saves = GameSaves::new(GameSavesOptions { upstream: Some(upstream), ..Default::default() });
+        let accounts = AccountService::new(AccountServiceOptions::default());
+        let newer = saves.put(&accounts, "token", "last-route-rust", "run", &json!({ "data": run(-1), "updatedAt": 200 }));
+        assert_eq!(newer.0, 200, "a later client stamp is written although the website clock is ahead");
+        let older = saves.put(&accounts, "token", "last-route-rust", "run", &json!({ "data": run(-2), "updatedAt": 250 }));
+        assert_eq!(older, (200, json!({ "ok": true, "gameId": "last-route-rust", "slot": "run", "updatedAt": 300 })), "an earlier one is refused");
+        let after_clear = saves.put(&accounts, "token", "last-route-rust", "run", &json!({ "data": run(-3), "updatedAt": 5 }));
+        assert_eq!((after_clear.0, after_clear.1["updatedAt"].clone()), (200, json!(5)), "a cleared slot takes any upload");
+        let paths: Vec<String> = seen.join().unwrap().into_iter().map(|(path, _)| path).collect();
+        assert_eq!(paths, ["/api/v1/saves/load", "/api/v1/saves/save", "/api/v1/saves/load", "/api/v1/saves/load", "/api/v1/saves/save"]);
+        // the refused upload gave its reserved write time back: two writes are counted
+        assert_eq!(saves.writes.get(&sha256_hex(b"token")).map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn a_loaded_website_save_reports_the_client_stamp() {
+        let loaded = loaded_save("last-route-rust", "run", &json!({ "ok": true, "data": { "saved_at": 42.7 }, "savedAt": 9_000_000 }));
+        assert_eq!(loaded["updatedAt"].as_f64(), Some(42.0));
+        let unstamped = loaded_save("last-route-rust", "run", &json!({ "ok": true, "data": { "saved_at": 0 }, "savedAt": 9_000 }));
+        assert_eq!(unstamped["updatedAt"].as_f64(), Some(9.0), "no client stamp falls back to the website time");
+        assert_eq!(stored_client_seconds(&json!({ "ok": true, "data": null, "savedAt": 9_000 })), 0.0);
+        assert_eq!(stored_client_seconds(&json!({ "ok": true, "savedAt": 9_000 })), 0.0);
+    }
+
+    #[test]
+    fn prune_writes_drops_accounts_with_no_write_inside_the_window() {
+        let time = Arc::new(std::sync::atomic::AtomicI64::new(1_000_000));
+        let clock_time = time.clone();
+        let now: Clock = Arc::new(move || clock_time.load(std::sync::atomic::Ordering::SeqCst));
+        let mut saves = GameSaves::new(GameSavesOptions { now, write_window_ms: 60_000, ..Default::default() });
+        saves.writes.insert("OLD".into(), vec![900_000]);
+        saves.writes.insert("MIXED".into(), vec![900_000, 990_000]);
+        saves.writes.insert("FRESH".into(), vec![999_000]);
+        let held = Arc::new(Mutex::new(()));
+        saves.put_locks.insert("held".into(), held.clone());
+        saves.put_locks.insert("idle".into(), Arc::new(Mutex::new(())));
+        saves.prune_writes();
+        assert!(!saves.writes.contains_key("OLD"));
+        assert_eq!(saves.writes["MIXED"], vec![990_000]);
+        assert!(saves.writes.contains_key("FRESH"));
+        assert!(saves.put_locks.contains_key("held") && !saves.put_locks.contains_key("idle"));
+        time.store(2_000_000, std::sync::atomic::Ordering::SeqCst);
+        saves.prune_writes();
+        assert!(saves.writes.is_empty(), "the map shrinks once the window passes");
+        drop(held);
     }
 
     #[test]

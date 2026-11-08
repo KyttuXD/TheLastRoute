@@ -28,6 +28,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 
+/// The asset key of an interactable's model, built at compile time: `item_path!("relay")` is
+/// "interactables/relay.bbmodel" (assets/interactables/<name>.bbmodel). Exported so the view model names its keys alike.
+#[macro_export]
+macro_rules! item_path {
+    ($n:literal) => {
+        concat!("interactables/", $n, ".bbmodel")
+    };
+}
+
 /// Frames drawn, for the far hunters' pose LOD (render/hunter_cache.rs `pose_due`).
 static HUNTER_FRAME: AtomicU64 = AtomicU64::new(0);
 
@@ -293,23 +302,24 @@ pub fn grab_fill(held: bool, camera: Option<(Vec3, Vec3, Vec3)>) -> Option<Lamp>
     })
 }
 
-/// An interactable's model: assets/interactables/<name>.bbmodel.
-pub fn item_model<'a>(a: &'a Assets, name: &str) -> Option<&'a PropModel> {
-    a.models.get(&format!("interactables/{name}.bbmodel"))
+/// An interactable's model by its full asset key (`item_path!("relay")`, or `item_file(item)`): no string is built.
+pub fn item_model<'a>(a: &'a Assets, path: &str) -> Option<&'a PropModel> {
+    a.models.get(path)
 }
 
-/// The pickup model of an inventory item (route_interactable_3d.gd TOOL_PICKUP_MODELS).
+/// The asset key of an inventory item's pickup model (route_interactable_3d.gd TOOL_PICKUP_MODELS): the lockpick set and
+/// the revive kit have their own models.
 pub fn item_file(item: Item) -> &'static str {
     match item {
-        Item::Flashlight => "flashlight_item",
-        Item::Taser => "taser_item",
-        Item::Crowbar => "crowbar",
-        Item::Axe => "rescue_axe",
-        Item::Battery => "battery",
-        Item::Stim => "stim_pack",
-        Item::MusicBox => "music_box",
-        Item::Lockpick => "crowbar",
-        Item::ReviveKit => "stim_pack",
+        Item::Flashlight => item_path!("flashlight_item"),
+        Item::Taser => item_path!("taser_item"),
+        Item::Crowbar => item_path!("crowbar"),
+        Item::Axe => item_path!("rescue_axe"),
+        Item::Battery => item_path!("battery"),
+        Item::Stim => item_path!("stim_pack"),
+        Item::MusicBox => item_path!("music_box"),
+        Item::Lockpick => item_path!("lockpick_set"),
+        Item::ReviveKit => item_path!("revive_kit"),
     }
 }
 
@@ -465,7 +475,7 @@ pub fn draw_scene(
                 2.0,
             );
         }
-        match item_model(a, "safe_zone") {
+        match item_model(a, item_path!("safe_zone")) {
             Some(m) => draw_static(m, at(sx, 0.0, sy, 0.0), WHITE),
             // lit (mode 0), so the safe zone's checkpoint light falls on its pad
             None => b.cube(vec3(sx, 0.05, sy), vec3(0.8, 0.1, 0.8), 0.0, SAFE, 0.0),
@@ -477,7 +487,7 @@ pub fn draw_scene(
         if taken {
             continue;
         }
-        match item_model(a, "relay") {
+        match item_model(a, item_path!("relay")) {
             Some(m) => draw_static(m, at(x, ground(x, y), y, 0.0), WHITE),
             None => b.cube(
                 vec3(x, ground(x, y) + 0.32, y),
@@ -507,7 +517,7 @@ pub fn draw_scene(
     for (i, c) in f.batteries.iter().enumerate() {
         if !g.batteries_taken[i] {
             let (x, y) = c.center();
-            match item_model(a, "battery") {
+            match item_model(a, item_path!("battery")) {
                 Some(m) => draw_static(m, at(x, ground(x, y), y, i as f32), WHITE),
                 None => battery_shape(&mut b, vec3(x, ground(x, y), y), i as f32),
             }
@@ -536,7 +546,7 @@ pub fn draw_scene(
         if !g.coins_taken[i] {
             let (x, y) = c.center();
             let bob = (t * 2.0 + i as f32).sin() * 0.03;
-            match item_model(a, "coin") {
+            match item_model(a, item_path!("coin")) {
                 Some(m) => m.draw(at(x, ground(x, y) + 0.05 + bob, y, t * 2.0 + i as f32), WHITE),
                 None => b.cube(
                     vec3(x, ground(x, y) + 0.12 + bob, y),
@@ -552,7 +562,7 @@ pub fn draw_scene(
     // the hider stands in, so hiding never removes it (`locker_draw_list`)
     for d in locker_draw_list(g, t) {
         let LockerDraw { centre: (cx, cy), yaw, burnt, swing, shake, .. } = d;
-        match item_model(a, "hiding_spot") {
+        match item_model(a, item_path!("hiding_spot")) {
             Some(m) => {
                 if locker_fully_fogged(light.eye, cx, cy, locker_reach_cached(m), locker_cull().margin_m, light.cull_fog_far()) {
                     continue;
@@ -584,7 +594,7 @@ pub fn draw_scene(
         let (x, y) = l.switch_cell.center();
         let on = g.lights_on.get(i).copied().unwrap_or(true);
         // facility_view_3d.gd: the switch sits .9 up and .34 back from its cell centre
-        match item_model(a, "wall_light_switch") {
+        match item_model(a, item_path!("wall_light_switch")) {
             Some(m) => draw_static(
                 m,
                 at(x, 0.9, y - 0.34, 0.0),
@@ -621,7 +631,7 @@ pub fn draw_scene(
         // the grate faces into the room from its wall
         let yaw = (-(wall.0 as f32)).atan2(-(wall.1 as f32));
         let active = g.p.in_vent && i == g.p.vent_entry;
-        match item_model(a, "vent") {
+        match item_model(a, item_path!("vent")) {
             Some(m) => draw_static(
                 m,
                 at(x + wall.0 as f32 * 0.42, 0.0, y + wall.1 as f32 * 0.42, yaw),
@@ -649,7 +659,7 @@ pub fn draw_scene(
         } else {
             Color::new(0.75, 0.16, 0.2, 1.0)
         };
-        let top = match item_model(a, "lift") {
+        let top = match item_model(a, item_path!("lift")) {
             Some(m) => {
                 draw_static(m, at(x, 0.0, y, 0.0), WHITE);
                 m.max.y
@@ -840,8 +850,12 @@ pub fn draw_scene(
                     Gimmick::Xivvy(x) if !held => x.sway_offset(h.facing),
                     _ => (0.0, 0.0),
                 },
-                // Loxelle's charge, and Nyxie's / Solyth's leap: the charge clip plays for both (hunter_view_3d.gd 1752)
-                charging: matches!(&h.gimmick, Gimmick::Loxelle(l) if l.holds_position()) || hunter_act::leaping(&h.gimmick),
+                // Loxelle's charge, and Nyxie's / Solyth's leap: the charge clip plays for both (hunter_view_3d.gd 1752); a
+                // hard-ability leap reports "pounce" (a guest's copy reads it from the host's frame), so it shows too
+                charging: charging_now(
+                    matches!(&h.gimmick, Gimmick::Loxelle(l) if l.holds_position()) || hunter_act::leaping(&h.gimmick),
+                    h.mechanic(),
+                ),
                 look_target,
                 path_ahead: Some(&|d| h.path_look_ahead(d)),
                 chase_style: &h.def.chase_style,
@@ -985,7 +999,8 @@ pub fn draw_scene(
         facing: n.facing,
         stride: n.stride,
         walking: n.walking,
-        y: 0.0,
+        // the host's feet height, so a guest draws a bot on a stair or an upper floor where the host has it
+        y: crate::render::stack_actors::actor_dy(n.h, g.fac.level),
         climbing: false,
         falling: false,
         crouch: n.crouch,
@@ -1028,11 +1043,29 @@ pub fn draw_scene(
     // cone and hearing circle, and with DEBUG VIEW NAV the blocked cells around it
     crate::ui::admin::hunter_view::with_frame(|hv| {
         if let Some(s) = hv.view.as_ref() {
-            let floor_y = g.hunters.get(s.index).map_or(0.0, |h| crate::render::stack_actors::actor_dy(h.y, g.fac.level));
-            let stats = crate::ui::admin::hunter_view::stats_for(&g.fac, s);
-            super::hunter_view_overlay::draw(&g.fac, s, stats.as_ref(), hv.paths, hv.nav, floor_y);
+            let h = g.hunters.get(s.index);
+            let floor_y = h.map_or(0.0, |h| crate::render::stack_actors::actor_dy(h.y, g.fac.level));
+            // the hunter's own floor grid (the active one or a resident storey); the A* stats run only with DEBUG VIEW NAV
+            let fac = h.and_then(|h| hunter_grid(g, h.level));
+            let nav = hv.nav && fac.is_some();
+            let stats = if nav { fac.and_then(|f| crate::ui::admin::hunter_view::stats_for(f, s)) } else { None };
+            super::hunter_view_overlay::draw(fac.unwrap_or(&g.fac), s, stats.as_ref(), hv.paths, nav, floor_y);
         }
     });
+}
+
+/// The grid of `level` for the HUNTER VIEW overlay: the active floor, else the Infinite stack's resident storey; None when
+/// neither is loaded (the overlay then draws no blocked cells and runs no path search).
+fn hunter_grid(g: &Game, level: i32) -> Option<&crate::world::Facility> {
+    g.inf
+        .as_ref()
+        .and_then(|i| i.stack.fac_for(&g.fac, level))
+        .or((level == g.fac.level).then_some(&g.fac))
+}
+
+/// Whether a hunter plays the charge clip: its gimmick charges or leaps, or its mechanic is a hard-ability "pounce".
+fn charging_now(gimmick_charging: bool, mechanic: Option<&str>) -> bool {
+    gimmick_charging || mechanic == Some("pounce")
 }
 
 /// Whether a storey's falls and inferno glow are in this frame, found once per frame.
@@ -1886,6 +1919,39 @@ mod tests {
         };
         assert_eq!(locker_reach_cached(&m), locker_reach(&m));
         assert_eq!(locker_reach_cached(&m), locker_reach(&m), "the second read hits the cache");
+    }
+
+    #[test]
+    fn item_files_are_full_asset_keys_and_the_kits_have_their_own_models() {
+        assert_eq!(item_path!("relay"), "interactables/relay.bbmodel");
+        assert_eq!(item_file(Item::Lockpick), "interactables/lockpick_set.bbmodel");
+        assert_eq!(item_file(Item::ReviveKit), "interactables/revive_kit.bbmodel");
+        assert_eq!(item_file(Item::Crowbar), "interactables/crowbar.bbmodel");
+        assert_eq!(item_file(Item::Stim), "interactables/stim_pack.bbmodel");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/last_route/assets");
+        for item in [Item::Flashlight, Item::Taser, Item::Crowbar, Item::Axe, Item::Battery, Item::Stim, Item::MusicBox, Item::Lockpick, Item::ReviveKit] {
+            assert!(dir.join(item_file(item)).is_file(), "{item:?}: {} is shipped", item_file(item));
+        }
+    }
+
+    #[test]
+    fn a_hard_leap_plays_the_charge_clip() {
+        assert!(charging_now(false, Some("pounce")));
+        assert!(charging_now(true, None));
+        assert!(!charging_now(false, Some("climb")));
+        assert!(!charging_now(false, None));
+    }
+
+    #[test]
+    fn the_hunter_view_reads_the_hunters_own_floor() {
+        let g = locker_game();
+        let here = hunter_grid(&g, g.fac.level).expect("the active floor");
+        assert!(std::ptr::eq(here, &g.fac), "a hunter on the runner's floor reads the active grid");
+        let far = g.fac.level + 40;
+        assert!(hunter_grid(&g, far).is_none(), "a floor that is not loaded has no grid (no path search, no blocked cells)");
+        if let Some(r) = g.inf.as_ref().and_then(|i| i.stack.residents.iter().find(|r| r.level != g.fac.level)) {
+            assert!(std::ptr::eq(hunter_grid(&g, r.level).unwrap(), &r.fac), "a resident storey reads its own grid");
+        }
     }
 
     fn locker_game() -> Game {

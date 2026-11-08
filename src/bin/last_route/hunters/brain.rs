@@ -827,6 +827,10 @@ impl Brain {
         // a stun cuts the mechanic animation short: it does not come back when she gets up
         if s > 0.0 {
             self.cue = None;
+            // a stun ends a hard leap where it is: it never resumes along the old line once the hunter is free
+            if let Some(h) = self.hard.as_mut() {
+                h.interrupt_leap();
+            }
         }
         if s > self.stun {
             self.stun_heavy = heavy;
@@ -910,6 +914,10 @@ impl Brain {
         }
         if matches!(self.walk.as_ref().map(|w| w.kind), Some(EdgeKind::Ladder)) {
             return Some("climb");
+        }
+        // a hard-ability leap (hunters/hard_abilities.rs) shows the pounce pose; the frame carries it to the guests
+        if self.hard.as_ref().is_some_and(|h| h.leaping) {
+            return Some("pounce");
         }
         self.cue().or_else(|| self.gimmick.mechanic(self)).or_else(|| self.net_mech.map(|m| m.0))
     }
@@ -1378,7 +1386,7 @@ impl Brain {
             self.direct_visible = false;
             if self.state == State::Chase {
                 self.lost_sight = 0.0;
-            } else if self.idle_life.turning() || self.begin_head_turn(target.pos) {
+            } else if (self.state == State::Idle && self.idle_life.turning()) || self.begin_head_turn(target.pos) {
                 // turning to the noise first; the Idle branch of update_movement sends it to investigate
             } else {
                 self.state = State::Investigate;
@@ -1461,8 +1469,9 @@ impl Brain {
             self.end_activity();
             self.poi = None;
         }
-        // a chase, investigation, search or peek ends a head turn at once
-        if matches!(self.state, State::Chase | State::Investigate | State::Search | State::Peek) {
+        // a head turn lives only in an Idle pause: any other state (chase, investigation, search, peek, and a wander
+        // the director or a gimmick set) ends it at once, so a stale turn never makes the hunter deaf to the next noise
+        if self.state != State::Idle {
             self.idle_life.cancel();
         }
         if self.walk.is_some() {
@@ -2500,7 +2509,11 @@ impl Brain {
         if let Gimmick::VoidBlack(v) = g {
             h.note_watched(v.watched, dt);
         }
-        if !h.leaping && !holds {
+        // Nyxie and Solyth pounce through their own gimmick (gimmicks/nyxie.rs pounce_frame) where its data applies
+        // (Nightmare): the shared roster must not give them a second, independent pounce there. Elsewhere (Solyth on
+        // Hard) the hard ability is their only pounce.
+        let gimmick_pounces = matches!(g, Gimmick::Nyxie(_) | Gimmick::Solyth(_)) && super::gimmicks::nyxie::pounce().applies(h.diff);
+        if !h.leaping && !holds && !gimmick_pounces {
             let near_link = chasing && {
                 let clear = rules().leap.link_clearance;
                 self.walk.is_some()
@@ -4850,5 +4863,222 @@ mod activity_tests {
         c.last_known = Some(there.stand);
         run(&mut c, &f, &far(), 1.0 / 60.0);
         assert!(!c.idle_life.turning());
+    }
+
+    #[test]
+    fn a_stale_head_turn_does_not_make_a_wanderer_deaf() {
+        let f = fac();
+        let pois = points_of_interest(&f, Rules::get());
+        let here = pois.iter().find(|p| p.kind == PoiKind::RoomCentre).unwrap();
+        let idle = IdleRules::get();
+        let mut b = wanderer(&f, here.stand);
+        b.state = State::Idle;
+        b.idle_timer = 5.0;
+        assert!(b.idle_life.begin_turn(idle, "steady", 0.0, 1.0));
+        // something other than a chase (the director, a gimmick) sets a wander mid-turn
+        b.state = State::Wander;
+        run(&mut b, &f, &far(), 1.0 / 60.0);
+        assert!(!b.idle_life.turning(), "a turn outside an Idle pause is dropped");
+        // a noise it hears and cannot see: in line of sight, beyond its (shrunk) sight, well inside its hearing
+        b.def.sight = 0.05;
+        let eye = b.sight_eye();
+        let spot = (3..=6)
+            .flat_map(|d| {
+                let d = d as f32;
+                [(d, 0.0), (-d, 0.0), (0.0, d), (0.0, -d)]
+            })
+            .map(|(dx, dy)| (b.pos.0 + dx, b.pos.1 + dy))
+            .find(|&p| f.body_fits(p.0, p.1, HUNTER_RADIUS) && f.has_line_of_sight(eye, p))
+            .expect("open ground in sight of a room centre");
+        let noise = Target { pos: spot, facing: (1.0, 0.0), noise: 40.0, flashlight_on: false, ..Default::default() };
+        let mut heard = false;
+        // it may turn its head to the noise first (a fresh turn), then it goes to look
+        for _ in 0..((idle.head_turn_time.1 + 0.6) * 60.0) as i32 {
+            run(&mut b, &f, &noise, 1.0 / 60.0);
+            if b.state == State::Investigate {
+                assert!(!b.idle_life.turning());
+                heard = true;
+                break;
+            }
+        }
+        assert!(heard, "the noise is investigated, not ignored (state {:?})", b.state);
+    }
+
+    // -- hard abilities (hunters/hard_abilities.rs) -----------------------------------------------------------------
+
+    use crate::hunters::gimmicks::nyxie;
+    use crate::hunters::hard_abilities::{self, Ability, Budget, HardAbilities, PounceCtx};
+
+    /// A hunter spot and a runner spot three cells east of it on open ground: in sight, the straight sweep clear and
+    /// no link near either end, so every pounce gate but the hunter's own and the budget passes.
+    fn pounce_lane(f: &Facility) -> ((f32, f32), (f32, f32)) {
+        let probe = Brain::new(aki(), (0.0, 0.0), "LANE", Difficulty::Hard);
+        let clear = hard_abilities::rules().leap.link_clearance + 0.5;
+        for y in 1..f.rows - 1 {
+            for x in 1..f.cols - 4 {
+                let h = Cell::new(x, y).center();
+                let t = (h.0 + 3.0, h.1);
+                let near_link = f.stairs.iter().any(|s| {
+                    let c = s.cell.center();
+                    dist(c, h) <= clear || dist(c, t) <= clear
+                });
+                if !near_link
+                    && f.body_fits(h.0, h.1, HUNTER_RADIUS)
+                    && f.body_fits(t.0, t.1, HUNTER_RADIUS)
+                    && f.has_line_of_sight(h, t)
+                    && probe.clear_sweep(f, h, t)
+                {
+                    return (h, t);
+                }
+            }
+        }
+        panic!("the generated floor has a three-cell straight");
+    }
+
+    /// A host brain of `id` on `diff`, chasing a runner it sees at `runner`.
+    fn hard_hunter(f: &Facility, id: &str, diff: Difficulty, at: (f32, f32), runner: (f32, f32)) -> Brain {
+        let mut b = Brain::new(aki(), at, "HARD", diff);
+        b.def.id = id.into();
+        b.hard = HardAbilities::new(diff, id);
+        assert!(b.hard.is_some(), "{id} has a hard ability on {diff:?}");
+        b.active = true;
+        b.set_level(f.level);
+        b.state = State::Chase;
+        b.last_known = Some(runner);
+        b.direct_visible = true;
+        b
+    }
+
+    /// The runner in the dark (Nyxie's gate) and warm (Solyth's gate).
+    fn dark_runner(p: (f32, f32)) -> Target {
+        Target { pos: p, facing: (1.0, 0.0), flashlight_on: false, temperature: 70.0, ..Default::default() }
+    }
+
+    /// Forces a hard pounce at `t` (roll 0, every gate open) and returns the leap direction.
+    fn force_pounce(b: &mut Brain, h: (f32, f32), t: (f32, f32)) -> (f32, f32) {
+        let ctx = PounceCtx {
+            hunter: h,
+            target: t,
+            runner: 0,
+            chasing: true,
+            visible: true,
+            stunned: false,
+            target_protected: false,
+            near_link: false,
+            sweep_clear: true,
+            flashlight_on: false,
+            temperature: 70.0,
+            hunter_in_room: false,
+            roll: 0.0,
+            dt: 1.0,
+            now: 0.0,
+        };
+        let hard = b.hard.as_mut().unwrap();
+        assert!(hard.try_pounce(&ctx, &mut Budget::default()));
+        hard.leap_dir
+    }
+
+    // The frames below use dt 3 so rate * dt is above 1 and the pounce roll always passes.
+    const SURE_DT: f32 = 3.0;
+
+    #[test]
+    fn nightmare_nyxie_and_solyth_pounce_only_through_their_gimmick() {
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let runner = dark_runner(t);
+        assert!(nyxie::pounce().applies(Difficulty::Nightmare));
+        for id in ["nyxie", "solyth"] {
+            assert!(hard_abilities::rules().has(Ability::Pounce, Difficulty::Nightmare, id), "the shared roster still lists {id}");
+            let mut b = hard_hunter(&f, id, Difficulty::Nightmare, h, t);
+            let g = Gimmick::for_id(id, Difficulty::Nightmare);
+            for _ in 0..20 {
+                b.pos = h;
+                b.stun = 0.0;
+                b.state = State::Chase;
+                b.direct_visible = true;
+                b.hard_frame(SURE_DT, &f, &runner, &g, false);
+                let hard = b.hard.as_ref().unwrap();
+                assert!(!hard.leaping && hard.leap_seq == 0, "{id} got a second, hard-ability pounce on Nightmare");
+            }
+        }
+        // the same lane and frame do launch the hard pounce of a hunter with no gimmick pounce
+        let mut control = hard_hunter(&f, "haelith", Difficulty::Nightmare, h, t);
+        control.hard_frame(SURE_DT, &f, &runner, &Gimmick::for_id("aki", Difficulty::Nightmare), false);
+        assert_eq!(control.hard.as_ref().unwrap().leap_seq, 1, "the lane is a pounce lane");
+    }
+
+    #[test]
+    fn hard_solyth_keeps_her_hard_pounce() {
+        assert!(!nyxie::pounce().applies(Difficulty::Hard), "the gimmick pounce is Nightmare only");
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let mut b = hard_hunter(&f, "solyth", Difficulty::Hard, h, t);
+        b.hard_frame(SURE_DT, &f, &dark_runner(t), &Gimmick::for_id("solyth", Difficulty::Hard), false);
+        assert_eq!(b.hard.as_ref().unwrap().leap_seq, 1, "Hard Solyth starts a hard pounce");
+    }
+
+    #[test]
+    fn a_stun_ends_a_hard_leap_for_good() {
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let mut b = hard_hunter(&f, "haelith", Difficulty::Hard, h, t);
+        let dir = force_pounce(&mut b, h, t);
+        b.apply_stun(1.0, false);
+        let hard = b.hard.as_ref().unwrap();
+        assert!(!hard.leaping, "the stun ends the leap");
+        assert!(hard.pounce_cooldown() > 0.0, "and starts the pounce cooldown");
+        // stand it in a long Idle pause, far from any runner, and let the stun run out
+        b.state = State::Idle;
+        b.idle_timer = 30.0;
+        b.direct_visible = false;
+        let start = b.pos;
+        run(&mut b, &f, &far(), 1.5);
+        assert_eq!(b.stun, 0.0);
+        let along = (b.pos.0 - start.0) * dir.0 + (b.pos.1 - start.1) * dir.1;
+        assert!(along.abs() < 0.3, "no jump along the old leap line once free: {along}");
+        assert!(!b.hard.as_ref().unwrap().leaping);
+    }
+
+    #[test]
+    fn a_hard_leap_shows_the_pounce_mechanic() {
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let mut b = hard_hunter(&f, "haelith", Difficulty::Hard, h, t);
+        assert_ne!(b.mechanic(), Some("pounce"));
+        force_pounce(&mut b, h, t);
+        assert_eq!(b.mechanic(), Some("pounce"), "the host frame carries the leap to the guests");
+        b.hard.as_mut().unwrap().cancel();
+        assert_ne!(b.mechanic(), Some("pounce"));
+    }
+
+    #[test]
+    fn host_brains_sharing_one_budget_space_their_pounces() {
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let runner = dark_runner(t);
+        let g = Gimmick::for_id("aki", Difficulty::Hard);
+        let gap = hard_abilities::rules().budget(Difficulty::Hard);
+        assert!(gap.is_finite() && gap > SURE_DT, "the Hard party gap is longer than one test frame: {gap}");
+        let shared = Arc::new(std::sync::Mutex::new(Budget::default()));
+        let mut a = hard_hunter(&f, "haelith", Difficulty::Hard, h, t);
+        let mut b = hard_hunter(&f, "xivvy", Difficulty::Hard, h, t);
+        for x in [&mut a, &mut b] {
+            x.hard_budget = Arc::clone(&shared);
+            x.hard_clock = 100.0;
+        }
+        a.hard_frame(SURE_DT, &f, &runner, &g, false);
+        assert_eq!(a.hard.as_ref().unwrap().leap_seq, 1, "the first hunter pounces");
+        let fired = a.hard_clock;
+        // every frame of the second hunter that lands inside the gap is refused
+        while b.hard_clock + SURE_DT - fired < gap {
+            b.pos = h;
+            b.hard_frame(SURE_DT, &f, &runner, &g, false);
+            assert_eq!(b.hard.as_ref().unwrap().leap_seq, 0, "inside the party gap at {}", b.hard_clock);
+        }
+        // a fresh budget (a new floor) allows a pounce again
+        b.hard_budget = Arc::new(std::sync::Mutex::new(Budget::default()));
+        b.pos = h;
+        b.hard_frame(SURE_DT, &f, &runner, &g, false);
+        assert_eq!(b.hard.as_ref().unwrap().leap_seq, 1, "a fresh budget allows a pounce");
     }
 }

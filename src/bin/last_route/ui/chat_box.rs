@@ -1,4 +1,5 @@
-//! The co-op chat box: the open key (data/chat.json `open_key`, T) opens a one-line input at the bottom left, Enter
+//! The co-op chat box: the CHAT binding (data/controls.json `chat`, T by default, rebindable in CONTROLS) opens a one-line
+//! input at the bottom left, Enter
 //! sends it to the room, Escape closes it. While it is open [`ChatBox::typing`] is true and `app` takes no movement or
 //! action keys. The feed above it shows the sender's name in their colour, fading in the last seconds of a line's
 //! life, and every recent line while the box is open.
@@ -125,14 +126,15 @@ impl ChatBox {
     }
 
     /// One frame of keyboard. `allowed` is false while something else owns the keyboard (a menu, the map, the admin
-    /// overlay); the box then closes. Returns the line to send when Enter was pressed on a non-empty line.
-    pub fn update(&mut self, allowed: bool) -> Option<String> {
+    /// overlay); the box then closes. The box opens on the player's CHAT binding (`bind`, settings CONTROLS). Returns the
+    /// line to send when Enter was pressed on a non-empty line.
+    pub fn update(&mut self, allowed: bool, bind: &crate::app::bindings::Bindings) -> Option<String> {
         if !allowed {
             self.close();
             return None;
         }
         if !self.typing() {
-            if is_key_pressed(open_key_code(&ChatRules::load().open_key)) {
+            if bind.pressed("chat") {
                 // the key press itself arrives as a character: drop it
                 while get_char_pressed().is_some() {}
                 self.open();
@@ -309,7 +311,7 @@ mod tests {
         assert_eq!(b.text(), Some(""));
         // not allowed (a menu took the keyboard): update closes it
         let mut b = typed("x");
-        assert_eq!(b.update(false), None);
+        assert_eq!(b.update(false, &crate::app::bindings::Bindings::default()), None);
         assert!(!b.typing());
     }
 
@@ -326,5 +328,13 @@ mod tests {
         assert_ne!((name_color(2, &palette).r, name_color(2, &palette).g), (name_color(3, &palette).r, name_color(3, &palette).g));
         let _ = name_color(-5, &palette);
         let _ = name_color(1, &[]);
+    }
+
+    #[test]
+    fn the_box_opens_on_the_chat_binding_and_a_rebind_moves_it() {
+        let b = crate::app::bindings::Bindings::default();
+        assert!(b.keys("chat").iter().any(|k| k == "T"), "CHAT starts on T (data/controls.json)");
+        let moved = crate::app::bindings::Bindings::from_json(&serde_json::json!({ "chat": ["Y"] }));
+        assert_eq!(moved.keys("chat"), vec!["Y".to_string()], "the rebound key is the one update reads");
     }
 }

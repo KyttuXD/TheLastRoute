@@ -38,6 +38,37 @@ pub fn is_metal() -> bool {
     }
 }
 
+/// Whether this process's window has the keyboard focus (PAUSE ON FOCUS LOSS, app/frame_cap.rs). On Windows: the
+/// foreground window belongs to this process. Elsewhere (the web build, macOS, Linux) it is always true.
+pub fn window_focused() -> bool {
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetForegroundWindow() -> *mut core::ffi::c_void;
+            fn GetWindowThreadProcessId(window: *mut core::ffi::c_void, pid: *mut u32) -> u32;
+        }
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcessId() -> u32;
+        }
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.is_null() {
+                // no foreground window (a lock screen, a desktop switch): not this game's
+                return false;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg, &mut pid);
+            pid == GetCurrentProcessId()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// The design size of the game window: 1280x720.
 const DESIGN_SIZE: (i32, i32) = (1280, 720);
 
@@ -124,5 +155,17 @@ pub fn window_size(fixed: bool) -> (i32, i32) {
             ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32)
         }
         _ => DESIGN_SIZE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_focus_query_answers_without_a_window() {
+        // a test run has no game window: the call must not crash; off Windows it is always focused
+        let f = super::window_focused();
+        if !cfg!(windows) {
+            assert!(f);
+        }
     }
 }

@@ -328,7 +328,7 @@ impl UpdaterText {
             UpdateStatus::UpToDate(b) => fill("up_to_date", *b, 0, ""),
             UpdateStatus::Downloading { build, got, total } => fill("downloading", *build, percent(*got, *total), ""),
             UpdateStatus::Installing => fill("installing", 0, 0, ""),
-            UpdateStatus::Failed(why) => fill("failed", 0, 0, why),
+            UpdateStatus::Failed(why) => fill("failed", 0, 0, &why.to_uppercase()),
             UpdateStatus::Updated(b) => fill("updated", *b, 0, ""),
         };
         let text = match (status, checked) {
@@ -754,15 +754,30 @@ pub fn time_rules() -> &'static crate::shared::local_time::TimeRules {
     RULES.get_or_init(|| crate::shared::local_time::TimeRules::parse(include_str!("../data/app/time.json")).expect("time.json parses"))
 }
 
-/// The zone times are shown in, resolved once per run (the computer's zone, else the data's fallback).
+/// The zone times are shown in, resolved once per run (the computer's zone, else the data's fallback). On the web
+/// build the computer's zone is not read here: see `zone_at`.
 pub fn time_zone() -> &'static crate::shared::local_time::Zone {
     static ZONE: OnceLock<crate::shared::local_time::Zone> = OnceLock::new();
     ZONE.get_or_init(|| time_rules().resolve())
 }
 
+/// The zone to show one Unix time in. Native: `time_zone`. Web, in local mode: the browser's offset at that moment
+/// (the page's `lr_tz_offset_min` import, app/web_update.rs), printed as `UTC+hh:mm`; a fixed zone in the data
+/// still wins.
+pub fn zone_at(unix: i64) -> crate::shared::local_time::Zone {
+    #[cfg(target_arch = "wasm32")]
+    {
+        if time_rules().zone == crate::shared::local_time::ZoneMode::Local {
+            return crate::shared::local_time::zone_from_offset_minutes(super::web_update::tz_offset_minutes(unix));
+        }
+    }
+    let _ = unix;
+    time_zone().clone()
+}
+
 /// `NOV 8, 2026 3:42 PM EST` for a Unix time.
 pub fn format_time(unix: i64) -> String {
-    time_rules().format(unix, time_zone())
+    time_rules().format(unix, &zone_at(unix))
 }
 
 /// The same for an ISO UTC time such as GitHub's `2026-01-02T03:04:05Z`; None when the text is not one.
@@ -772,7 +787,10 @@ pub fn format_iso(iso: &str) -> Option<String> {
 
 /// "LAST CHECKED: NOV 8, 2026 3:42 PM EST" for the time of the last update check (None: never checked).
 pub fn checked_line(unix: Option<i64>) -> String {
-    time_rules().checked_line(unix, time_zone())
+    match unix {
+        Some(t) => time_rules().checked_line(Some(t), &zone_at(t)),
+        None => time_rules().checked_line(None, time_zone()),
+    }
 }
 
 /// The current time as a Unix time (UTC), for stamping a check.
@@ -893,20 +911,42 @@ mod tests {
         assert_eq!(t.line(&UpdateStatus::Checking).as_deref(), Some("C?"));
         assert_eq!(t.line(&UpdateStatus::UpToDate(3)).as_deref(), Some("U3"));
         assert_eq!(t.line(&UpdateStatus::Downloading { build: 8, got: 1, total: 4 }).as_deref(), Some("D 8 25"));
-        assert_eq!(t.line(&UpdateStatus::Failed("x".into())).as_deref(), Some("F x"));
+        assert_eq!(t.line(&UpdateStatus::Failed("x".into())).as_deref(), Some("F X"), "the reason is shown upper case");
         assert_eq!(t.line_fade_ms, 10.0);
         assert_eq!(t.line_at(&UpdateStatus::UpToDate(3), Some(1_700_000_000)).as_deref(), Some("U3"), "no suffix in the data, none shown");
         let std = UpdaterText::standard();
         let done = std.line_at(&UpdateStatus::UpToDate(4), Some(1_700_000_000)).unwrap();
         assert!(done.ends_with(&checked_line(Some(1_700_000_000))), "{done}");
         assert!(done.contains(" AM ") || done.contains(" PM "), "a 12-hour time: {done}");
-        assert_eq!(std.line_at(&UpdateStatus::UpToDate(4), None).as_deref(), Some("Up to date (build 4)"), "never checked: no time");
+        assert_eq!(std.line_at(&UpdateStatus::UpToDate(4), None).as_deref(), Some("UP TO DATE (BUILD 4)"), "never checked: no time");
         assert!(!std.line_at(&UpdateStatus::Checking, Some(1_700_000_000)).unwrap().contains("CHECKED"), "only a finished check shows it");
-        assert_eq!(std.line(&UpdateStatus::Checking).as_deref(), Some("Checking for updates"));
-        assert_eq!(std.line(&UpdateStatus::Updated(9)).as_deref(), Some("Updated to build 9"));
+        assert_eq!(std.line(&UpdateStatus::Checking).as_deref(), Some("CHECKING FOR UPDATES"));
+        assert_eq!(std.line(&UpdateStatus::Updated(9)).as_deref(), Some("UPDATED TO BUILD 9"));
         assert_eq!(
             std.line(&UpdateStatus::Downloading { build: 9, got: 42, total: 100 }).as_deref(),
-            Some("Downloading build 9: 42%")
+            Some("DOWNLOADING BUILD 9: 42%")
         );
+        assert_eq!(std.line_at(&UpdateStatus::Failed("timed out".into()), None).as_deref(), Some("UPDATE FAILED: TIMED OUT"));
+        assert_eq!(std.line(&UpdateStatus::Installing).as_deref(), Some("INSTALLING"));
+    }
+
+    #[test]
+    fn every_shown_updater_string_is_upper_case() {
+        let std = UpdaterText::standard();
+        for key in ["checking", "downloading", "installing", "up_to_date", "updated", "failed"] {
+            let text = std.string(key);
+            assert!(!text.is_empty(), "{key} is in the data");
+            let without = text.replace("{build}", "").replace("{percent}", "").replace("{reason}", "");
+            assert_eq!(without, without.to_uppercase(), "{key}: {text}");
+        }
+        assert!(std.strings.get("no_key").is_none(), "the unused no_key string is gone");
+    }
+
+    #[test]
+    fn a_shown_time_uses_the_zone_for_that_moment() {
+        // native: the resolved zone, so format_time and checked_line agree with the rules
+        let t = 1_762_634_520;
+        assert_eq!(format_time(t), time_rules().format(t, time_zone()));
+        assert_eq!(checked_line(Some(t)), time_rules().checked_line(Some(t), time_zone()));
     }
 }

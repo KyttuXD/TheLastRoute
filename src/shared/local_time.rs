@@ -3,10 +3,11 @@
 //! through here.
 //!
 //! The zone comes from the computer (Windows: GetTimeZoneInformation; macOS and Linux: the `TZ` variable or
-//! `/etc/localtime`, a TZif file with its POSIX footer rule). When the computer's zone cannot be read (the web
-//! build, a bare container) the fallback zone applies: US Eastern, EST/EDT with the US rule (second Sunday of March
-//! 2:00 to first Sunday of November 2:00). The words, zone mode, fallback, clock and the zone table are
-//! `data/app/time.json` (`TimeRules`). No dependency beyond `serde_json`.
+//! `/etc/localtime`, a TZif file with its POSIX footer rule). The web build reads nothing here: the game asks the
+//! browser for its offset at each shown time and builds a zone with `zone_from_offset_minutes`. When the computer's
+//! zone cannot be read (a bare container) the fallback zone applies: US Eastern, EST/EDT with the US rule (second
+//! Sunday of March 2:00 to first Sunday of November 2:00). The words, zone mode, fallback, clock, the zone table and the
+//! Windows zone-name abbreviations are `data/app/time.json` (`TimeRules`). No dependency beyond `serde_json`.
 #![allow(dead_code)]
 
 use serde_json::Value;
@@ -44,6 +45,8 @@ pub struct TimeRules {
     pub checked: String,
     pub never: String,
     zones: BTreeMap<String, String>,
+    /// Windows zone names to abbreviations ("Eastern Standard Time" to "EST"); a name not listed shows as its offset.
+    pub windows_abbr: BTreeMap<String, String>,
 }
 
 impl TimeRules {
@@ -73,6 +76,13 @@ impl TimeRules {
             parse_posix(rule).ok_or(format!("time.json zone {name} has a bad rule"))?;
             zones.insert(name.clone(), rule.to_string());
         }
+        let mut windows_abbr = BTreeMap::new();
+        if let Some(map) = v.get("windows_abbr") {
+            for (name, abbr) in map.as_object().ok_or("time.json windows_abbr is not a map")? {
+                let abbr = abbr.as_str().ok_or(format!("time.json windows_abbr {name} is not text"))?;
+                windows_abbr.insert(name.clone(), abbr.to_string());
+            }
+        }
         Ok(TimeRules {
             zone,
             fallback: s("fallback")?,
@@ -84,6 +94,7 @@ impl TimeRules {
             checked: s("checked")?,
             never: s("never")?,
             zones,
+            windows_abbr,
         })
     }
 
@@ -106,7 +117,7 @@ impl TimeRules {
 
     /// The zone to show times in, reading the computer when the mode is local.
     pub fn resolve(&self) -> Zone {
-        let local = if self.zone == ZoneMode::Local { detect_local() } else { None };
+        let local = if self.zone == ZoneMode::Local { detect_local(&self.windows_abbr) } else { None };
         self.resolve_with(local)
     }
 
@@ -154,6 +165,12 @@ fn offset_text(off: i32) -> String {
 pub enum Zone {
     Posix(Posix),
     Tzif(Tzif),
+}
+
+/// A fixed offset (minutes east of UTC) with no name, so it prints as `UTC+hh:mm`: the web build's zone for one
+/// moment, from the browser's offset at that time.
+pub fn zone_from_offset_minutes(east_min: i32) -> Zone {
+    Zone::Posix(Posix { std_abbr: String::new(), std_off: east_min * 60, dst: None })
 }
 
 impl Zone {
@@ -484,18 +501,19 @@ pub fn parse_tzif(d: &[u8]) -> Option<Tzif> {
 
 // ---------------------------------------------------------------- the computer's zone
 
-/// The computer's zone, or None when it cannot be read.
-pub fn detect_local() -> Option<Zone> {
-    detect_os()
+/// The computer's zone, or None when it cannot be read. `abbrs` names Windows zones (`TimeRules::windows_abbr`).
+pub fn detect_local(abbrs: &BTreeMap<String, String>) -> Option<Zone> {
+    detect_os(abbrs)
 }
 
+/// The web build reads no zone here (the game asks the browser per time, app/updater.rs `zone_at`).
 #[cfg(target_arch = "wasm32")]
-fn detect_os() -> Option<Zone> {
+fn detect_os(_abbrs: &BTreeMap<String, String>) -> Option<Zone> {
     None
 }
 
 #[cfg(all(unix, not(target_arch = "wasm32")))]
-fn detect_os() -> Option<Zone> {
+fn detect_os(_abbrs: &BTreeMap<String, String>) -> Option<Zone> {
     if let Ok(tz) = std::env::var("TZ") {
         let tz = tz.trim().trim_start_matches(':').to_string();
         if !tz.is_empty() {
@@ -523,7 +541,7 @@ fn zone_from_tz_var(tz: &str) -> Option<Zone> {
 }
 
 #[cfg(windows)]
-fn detect_os() -> Option<Zone> {
+fn detect_os(abbrs: &BTreeMap<String, String>) -> Option<Zone> {
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     struct SysTime {
@@ -573,17 +591,18 @@ fn detect_os() -> Option<Zone> {
         &name(&t.daylight_name),
         switch(&t.daylight_date),
         switch(&t.standard_date),
+        abbrs,
     )))
 }
 
 #[cfg(not(any(windows, unix, target_arch = "wasm32")))]
-fn detect_os() -> Option<Zone> {
+fn detect_os(_abbrs: &BTreeMap<String, String>) -> Option<Zone> {
     None
 }
 
 /// A Windows zone as a POSIX rule. Biases are minutes west of UTC as Windows reports them; each switch is
 /// (month, week 1-5, weekday 0 = Sunday, seconds into the day), month 0 meaning no daylight time. `dst_start` is
-/// the Windows "daylight date" and `dst_end` its "standard date".
+/// the Windows "daylight date" and `dst_end` its "standard date". `abbrs` maps zone names to abbreviations.
 pub fn posix_from_windows(
     bias: i32,
     std_bias: i32,
@@ -592,30 +611,22 @@ pub fn posix_from_windows(
     dst_name: &str,
     dst_start: (u32, u32, u32, i32),
     dst_end: (u32, u32, u32, i32),
+    abbrs: &BTreeMap<String, String>,
 ) -> Posix {
     let std_off = -(bias + std_bias) * 60;
-    let std_abbr = windows_abbr(std_name, std_off);
+    let std_abbr = windows_abbr(std_name, std_off, abbrs);
     if dst_start.0 == 0 || dst_end.0 == 0 {
         return Posix { std_abbr, std_off, dst: None };
     }
     let off = -(bias + dst_bias) * 60;
     let rule = |(month, week, wday, secs): (u32, u32, u32, i32)| Rule { month, week: week.clamp(1, 5), wday: wday.min(6), secs };
-    Posix { std_abbr, std_off, dst: Some(PosixDst { abbr: windows_abbr(dst_name, off), off, start: rule(dst_start), end: rule(dst_end) }) }
+    Posix { std_abbr, std_off, dst: Some(PosixDst { abbr: windows_abbr(dst_name, off, abbrs), off, start: rule(dst_start), end: rule(dst_end) }) }
 }
 
-/// "Eastern Standard Time" becomes "EST". A name that is not plain words (another language, "GMT Standard Time")
-/// becomes the offset, `UTC-05:00`.
-fn windows_abbr(name: &str, off: i32) -> String {
-    let words: Vec<&str> = name.split_whitespace().collect();
-    let plain = !name.is_empty() && name.is_ascii() && words.len() >= 2 && words.last() == Some(&"Time");
-    let is_dst_or_std = words.len() >= 2 && matches!(words[words.len() - 2], "Standard" | "Daylight");
-    if plain && is_dst_or_std && !name.starts_with("GMT") {
-        let a: String = words.iter().filter_map(|w| w.chars().next()).map(|c| c.to_ascii_uppercase()).collect();
-        if a.len() <= 4 {
-            return a;
-        }
-    }
-    offset_text(off)
+/// A Windows zone name as the player reads it: the data's abbreviation ("Eastern Standard Time" is "EST"), else the
+/// offset, `UTC+01:00` (no made-up initials for zones the data does not list).
+fn windows_abbr(name: &str, off: i32, abbrs: &BTreeMap<String, String>) -> String {
+    abbrs.get(name).cloned().unwrap_or_else(|| offset_text(off))
 }
 
 // ---------------------------------------------------------------- tests
@@ -759,12 +770,73 @@ mod tests {
     fn a_windows_zone_becomes_the_same_rule_as_eastern() {
         // Eastern Standard Time as Windows reports it: bias 300, daylight bias -60,
         // daylight date = second Sunday of March 2:00, standard date = first Sunday of November 2:00
-        let p = posix_from_windows(300, 0, -60, "Eastern Standard Time", "Eastern Daylight Time", (3, 2, 0, 7_200), (11, 1, 0, 7_200));
+        let abbrs = rules().windows_abbr;
+        let p = posix_from_windows(300, 0, -60, "Eastern Standard Time", "Eastern Daylight Time", (3, 2, 0, 7_200), (11, 1, 0, 7_200), &abbrs);
         assert_eq!(p, parse_posix(EASTERN_POSIX).unwrap());
-        let none = posix_from_windows(0, 0, -60, "GMT Standard Time", "GMT Daylight Time", (0, 0, 0, 0), (0, 0, 0, 0));
+        let none = posix_from_windows(0, 0, -60, "GMT Standard Time", "GMT Daylight Time", (0, 0, 0, 0), (0, 0, 0, 0), &abbrs);
         assert_eq!((none.std_abbr.as_str(), none.dst.is_none()), ("UTC+00:00", true));
-        assert_eq!(windows_abbr("Pacific Daylight Time", -25_200), "PDT");
-        assert_eq!(windows_abbr("Mitteleuropäische Zeit", 3_600), "UTC+01:00");
+        assert_eq!(windows_abbr("Pacific Daylight Time", -25_200, &abbrs), "PDT");
+        assert_eq!(windows_abbr("Mitteleuropäische Zeit", 3_600, &abbrs), "UTC+01:00");
+    }
+
+    #[test]
+    fn windows_names_outside_the_data_show_their_offset_not_made_up_initials() {
+        let abbrs = rules().windows_abbr;
+        assert_eq!(windows_abbr("W. Europe Standard Time", 3_600, &abbrs), "UTC+01:00");
+        assert_eq!(windows_abbr("W. Europe Daylight Time", 7_200, &abbrs), "UTC+02:00");
+        assert_eq!(windows_abbr("China Standard Time", 8 * 3_600, &abbrs), "UTC+08:00");
+        assert_eq!(windows_abbr("Tokyo Standard Time", 9 * 3_600, &abbrs), "UTC+09:00");
+        assert_eq!(windows_abbr("India Standard Time", 19_800, &abbrs), "UTC+05:30");
+        assert_eq!(windows_abbr("Pacific Daylight Time", -25_200, &abbrs), "PDT");
+        assert_eq!(windows_abbr("Alaskan Standard Time", -32_400, &abbrs), "AKST");
+        assert_eq!(windows_abbr("Hawaiian Standard Time", -36_000, &abbrs), "HST");
+        assert_eq!(windows_abbr("Atlantic Daylight Time", -10_800, &abbrs), "ADT");
+        // the whole US/Canada table is in the data
+        for name in ["Eastern", "Central", "Mountain", "Pacific", "Alaskan", "Atlantic"] {
+            for kind in ["Standard", "Daylight"] {
+                assert!(abbrs.contains_key(&format!("{name} {kind} Time")), "{name} {kind} Time");
+            }
+        }
+        assert!(abbrs.contains_key("Hawaiian Standard Time"));
+        // a Windows zone with no listed name prints as its offset through the whole format, daylight time included
+        let p = posix_from_windows(-60, 0, -60, "W. Europe Standard Time", "W. Europe Daylight Time", (3, 5, 0, 7_200), (10, 5, 0, 10_800), &abbrs);
+        let r = rules();
+        assert_eq!(r.format(at("2026-01-15T12:00:00Z"), &Zone::Posix(p.clone())), "JAN 15, 2026 1:00 PM UTC+01:00");
+        assert_eq!(r.format(at("2026-07-15T12:00:00Z"), &Zone::Posix(p)), "JUL 15, 2026 2:00 PM UTC+02:00");
+        // with no table at all, offsets, never initials
+        assert_eq!(windows_abbr("Eastern Standard Time", -18_000, &BTreeMap::new()), "UTC-05:00");
+    }
+
+    #[test]
+    fn the_windows_abbreviations_are_read_from_the_data() {
+        let src = include_str!("../bin/last_route/data/app/time.json");
+        assert!(src.contains(r#""Eastern Standard Time": "EST""#));
+        let r = TimeRules::parse(&src.replace(r#""Eastern Standard Time": "EST""#, r#""Eastern Standard Time": "ET""#)).unwrap();
+        assert_eq!(r.windows_abbr.get("Eastern Standard Time").map(String::as_str), Some("ET"));
+        let bad = src.replace(r#""Eastern Standard Time": "EST""#, r#""Eastern Standard Time": 5"#);
+        assert!(TimeRules::parse(&bad).is_err(), "a non-text abbreviation is an error");
+    }
+
+    #[test]
+    fn a_browser_offset_becomes_a_fixed_unnamed_zone() {
+        let r = rules();
+        let t = at("2026-11-08T20:42:00Z");
+        let z = zone_from_offset_minutes(60);
+        assert_eq!(z.at(t), (3_600, String::new()));
+        assert_eq!(r.format(t, &z), "NOV 8, 2026 9:42 PM UTC+01:00");
+        let z = zone_from_offset_minutes(-300);
+        assert_eq!(z.at(t), (-18_000, String::new()));
+        assert_eq!(r.format(t, &z), "NOV 8, 2026 3:42 PM UTC-05:00");
+        let z = zone_from_offset_minutes(330);
+        assert_eq!(z.at(t), (19_800, String::new()));
+        assert_eq!(r.format(t, &z), "NOV 9, 2026 2:12 AM UTC+05:30");
+        let z = zone_from_offset_minutes(0);
+        assert_eq!(z.at(t), (0, String::new()));
+        assert_eq!(r.format(t, &z), "NOV 8, 2026 8:42 PM UTC+00:00");
+        match zone_from_offset_minutes(60) {
+            Zone::Posix(p) => assert!(p.std_abbr.is_empty() && p.dst.is_none()),
+            Zone::Tzif(_) => panic!("a fixed offset is a POSIX zone"),
+        }
     }
 
     #[test]

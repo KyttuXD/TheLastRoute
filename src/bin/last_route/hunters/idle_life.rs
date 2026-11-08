@@ -306,7 +306,7 @@ impl IdleState {
         }
     }
 
-    /// A chase, investigation, search or peek took over: drop the turn at once.
+    /// The brain left its Idle pause (a chase, investigation, search, peek, or a wander set by the director or a gimmick): drop the turn at once, so a stale turn never makes it deaf to the next noise.
     pub fn cancel(&mut self) {
         self.turn = None;
     }

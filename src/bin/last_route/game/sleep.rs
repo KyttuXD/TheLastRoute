@@ -30,6 +30,8 @@ pub struct SleepCfg {
     pub jolt_seconds: f32,
     pub jolt_exposure: f32,
     pub jolt_noise: f32,
+    /// Drowsiness a jolt takes off the sleeper (it wakes shaken, not rested).
+    pub jolt_penalty: f32,
     pub slow_below: f32,
     pub slow_scale_at_max: f32,
 }
@@ -62,6 +64,7 @@ pub fn parse(text: &str) -> Result<SleepCfg, String> {
         jolt_seconds: n(&v, "jolt_seconds")?,
         jolt_exposure: n(&v, "jolt_exposure")?,
         jolt_noise: n(&v, "jolt_noise")?,
+        jolt_penalty: n(&v, "jolt_penalty")?,
         slow_below: n(&v, "slow_below")?,
         slow_scale_at_max: n(&v, "slow_scale_at_max")?,
     };
@@ -146,7 +149,7 @@ impl Sleep {
         let near = hunter_dist.is_some_and(|d| d.is_finite() && d <= radius);
         if near || (chased && c.disturb_chase_always) {
             self.sleeping = false;
-            *drowsiness = (*drowsiness - c.wake_at).max(0.0).min(*drowsiness);
+            *drowsiness = (*drowsiness - c.jolt_penalty).max(0.0);
             return Some(Jolt { exposure: c.jolt_exposure, noise: c.jolt_noise, frozen_seconds: c.jolt_seconds });
         }
         if *drowsiness <= c.wake_at {
@@ -196,6 +199,25 @@ mod tests {
         assert!(!s.sleeping());
         assert_eq!(jolt.exposure, c.jolt_exposure);
         assert!(jolt.frozen_seconds > 0.0);
+    }
+
+    #[test]
+    fn a_jolt_takes_the_data_penalty_off_the_drowsiness() {
+        let c = sleep_cfg();
+        assert_eq!(c.jolt_penalty, c.wake_at, "the shipped penalty keeps the old behaviour");
+        let mut tuned = c.clone();
+        tuned.jolt_penalty = 12.0;
+        let mut s = Sleep::default();
+        let mut d = 50.0;
+        assert!(s.toggle_sleep(d, &tuned));
+        assert!(s.step(&mut d, Some(0.0), false, false, &tuned).is_some());
+        assert!((d - 38.0).abs() < 1e-5, "50 - 12 = {d}");
+        // never below 0
+        let mut d = 3.0;
+        s.sleeping = true;
+        assert!(s.step(&mut d, Some(0.0), false, false, &tuned).is_some());
+        assert_eq!(d, 0.0);
+        assert!(parse(&TEXT.replace("\"jolt_penalty\": 5.0,", "")).is_err(), "the penalty is required data");
     }
 
     #[test]

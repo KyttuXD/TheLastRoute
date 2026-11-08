@@ -16,7 +16,7 @@
     "battery": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.23 },
     "stim_pack": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.18 },
     "music_box": { "scale": 0.34, "upright": false, "tilt_deg": 0.0, "grip": 0.20 },
-    "lockpick": { "scale": 0.58, "upright": true, "tilt_deg": -52.0, "grip": 0.17 },
-    "revive_kit": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.18 }
+    "lockpick": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.12 },
+    "revive_kit": { "scale": 0.40, "upright": false, "tilt_deg": 0.0, "grip": 0.31 }
   }
 }

@@ -18,8 +18,15 @@ pub const MAX_PLAYERS: usize = 16;
 pub const MAX_ROOMS: usize = 512;
 pub const HIDE_PHASE_MS: i64 = 30_000;
 pub const ITEM_LIMIT: usize = 96;
+/// Most item records a room keeps for one depth. A standard floor has 5 relays and 7 batteries plus its props; an
+/// Infinite chunk adds 3 relays and 4 batteries plus props, so this holds hundreds of chunks. Claims for new keys past
+/// it are ignored; existing keys still update. A depth advance clears the map.
+pub const ITEM_TOTAL_LIMIT: usize = 4096;
 pub const DISCOVERY_LIMIT: usize = 512;
 pub const DISCOVERY_TOTAL_LIMIT: usize = 30_000;
+/// Discovery cap for endless (Infinite) rooms: far above a standard map, but bounded so memory cannot grow forever.
+/// Matches DISCOVERY_ENDLESS_LIMIT in backend/room_service.mjs.
+pub const DISCOVERY_ENDLESS_LIMIT: usize = 250_000;
 
 const PERSONAS: [&str; 27] = [
     "none", "aki", "briselle", "ceryth", "dovelle", "elise", "ferryn", "glyra", "haelith", "ilyra", "javelle", "kathy",
@@ -549,6 +556,11 @@ fn has_own(map: &Map<String, Value>, key: &str) -> bool {
 }
 
 fn apply_item_claim(items: &mut Map<String, Value>, claim: Option<&Value>) {
+    apply_item_claim_within(items, claim, ITEM_TOTAL_LIMIT);
+}
+
+/// apply_item_claim with the total-records cap passed in (tests use a small one).
+pub(super) fn apply_item_claim_within(items: &mut Map<String, Value>, claim: Option<&Value>, limit: usize) {
     let claim = match claim {
         Some(value @ Value::Object(_)) => value,
         _ => return,
@@ -570,6 +582,9 @@ fn apply_item_claim(items: &mut Map<String, Value>, claim: Option<&Value>) {
         _ => &empty,
     };
     let key = format!("{kind}:{id}");
+    if !items.contains_key(&key) && items.len() >= limit {
+        return;
+    }
     let mut record = match items.get(&key) {
         Some(Value::Object(existing)) => existing.clone(),
         _ => {
@@ -609,6 +624,32 @@ fn apply_item_claim(items: &mut Map<String, Value>, claim: Option<&Value>) {
         }
     }
     items.insert(key, Value::Object(record));
+}
+
+/// Total discovered cells a room keeps: DISCOVERY_ENDLESS_LIMIT for endless maps, DISCOVERY_TOTAL_LIMIT otherwise.
+pub(super) fn discovery_cap(settings: &Map<String, Value>) -> usize {
+    if settings.get("mapScale") == Some(&json!("endless")) {
+        DISCOVERY_ENDLESS_LIMIT
+    } else {
+        DISCOVERY_TOTAL_LIMIT
+    }
+}
+
+/// Adds up to DISCOVERY_LIMIT new cells from one update; cells past `max` total are ignored.
+pub(super) fn claim_discovery_cells(
+    discovered: &mut HashSet<String>,
+    list: &mut Vec<String>,
+    cells: &[Value],
+    max: usize,
+) {
+    for cell in cells.iter().take(DISCOVERY_LIMIT) {
+        if let Value::String(cell) = cell {
+            if js_len(cell) <= 12 && discovered.len() < max && !discovered.contains(cell) {
+                discovered.insert(cell.clone());
+                list.push(cell.clone());
+            }
+        }
+    }
 }
 
 /// `record.field || 0` for the numbers this module stores.
@@ -965,17 +1006,9 @@ impl RoomService {
                 }
             }
         }
-        let max_discovery =
-            if room.settings.get("mapScale") == Some(&json!("endless")) { usize::MAX } else { DISCOVERY_TOTAL_LIMIT };
+        let max_discovery = discovery_cap(&room.settings);
         if let Some(Value::Array(cells)) = field(body, "discoveryClaims") {
-            for cell in cells.iter().take(DISCOVERY_LIMIT) {
-                if let Value::String(cell) = cell {
-                    if js_len(cell) <= 12 && room.discovered.len() < max_discovery && !room.discovered.contains(cell) {
-                        room.discovered.insert(cell.clone());
-                        room.discovered_list.push(cell.clone());
-                    }
-                }
-            }
+            claim_discovery_cells(&mut room.discovered, &mut room.discovered_list, cells, max_discovery);
         }
         if current_id == room.host_player_id && room.round.phase == "seeking" {
             let seeker = room.round.seeker_spawn_index;

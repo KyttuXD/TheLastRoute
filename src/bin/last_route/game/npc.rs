@@ -3325,7 +3325,7 @@ impl Game {
     }
 
     /// After a window recentre: every bot of the active level whose position is now on the window floor is set down on
-    /// the nearest dry open cell; a bot still outside keeps its coarse position (it travels in `update_npcs_with`).
+    /// the nearest dry open cell; a bot still outside keeps its coarse position (it travels in `update_npcs_in`).
     /// Returns how many were moved.
     pub(super) fn npc_rejoin_window(&mut self) -> usize {
         let mut placed = 0;
@@ -3344,17 +3344,28 @@ impl Game {
         placed
     }
 
-    /// The per-frame tick with the embedded tuning (see `update_npcs_with`).
+    /// Test tick with the embedded tuning and the test content (see `update_npcs_in`).
+    #[cfg(test)]
     pub(super) fn update_npcs(&mut self, dt: f32) {
         self.update_npcs_with(dt, Tuning::get());
+    }
+
+    /// Test tick with a given tuning: the content is loaded once per test thread, never per frame.
+    #[cfg(test)]
+    pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
+        thread_local! {
+            static TEST_CONTENT: &'static crate::content::Content = Box::leak(Box::new(crate::content::Content::load()));
+        }
+        let content = TEST_CONTENT.with(|c| *c);
+        self.update_npcs_in(dt, t, content);
     }
 
     /// The per-frame tick: an NPC on a resident level tries its intents in order (data `intents`): it hides or runs
     /// from a chasing hunter, goes on a relay or locker errand, or follows the runner. A run NPC not yet joined waits
     /// until the runner is close and in sight. A bot on another resident level follows over the flights and ladders; a bot on a non-resident level is set down on the runner's level.
     /// Bots are re-placed beside the runner only by a floor rebuild (`start_floor_sim`), never by a level change.
-    /// `t` is the tuning, so the tests can vary one value of the data.
-    pub(super) fn update_npcs_with(&mut self, dt: f32, t: &Tuning) {
+    /// `t` is the tuning, so the tests can vary one value of the data; `content` is the frame's content (relay claims).
+    pub(super) fn update_npcs_in(&mut self, dt: f32, t: &Tuning, content: &crate::content::Content) {
         // The host runs the bots and sends their places (net/npc_sync.rs `_xnpc_place`); a guest only draws the host's
         // copies, so it never moves a bot of its own list or changes its life (returning, its clocks, follow_only) here.
         if self.npcs.is_empty() || self.remote_hunters {
@@ -3466,6 +3477,12 @@ impl Game {
             };
             // a bot on a flight or ladder finishes the edge before it thinks about anything else
             if n.walk.is_some() {
+                // the head eases back to the body on the edge (liven does not run here), so it never freezes mid-glance
+                let k = 1.0 - (-t.lively.rate * dt).exp();
+                n.life.head_yaw -= n.life.head_yaw * k;
+                n.life.head_pitch -= n.life.head_pitch * k;
+                n.life.gaze = None;
+                n.life.gaze_left = 0.0;
                 advance_edge(n, dt);
                 continue;
             }
@@ -3533,7 +3550,7 @@ impl Game {
         }
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
-        self.npc_claims();
+        self.npc_claims(content);
         self.npc_catches();
     }
 
@@ -3621,7 +3638,7 @@ impl Game {
 
     /// Applies what the bots reached this frame, through the same functions as the player's interact (`claim_relay`,
     /// `take_battery`, `take_pickup`). A claim on a level the bot has left is dropped.
-    fn npc_claims(&mut self) {
+    fn npc_claims(&mut self, content: &crate::content::Content) {
         let active = self.fac.level;
         let claims: Vec<(u32, Claim)> = self
             .npcs
@@ -3635,7 +3652,7 @@ impl Game {
             let actor = super::interact::Actor::Npc(id);
             match claim {
                 Claim::Relay(i) => {
-                    self.claim_relay(i, actor, &crate::content::Content::load());
+                    self.claim_relay(i, actor, content);
                 }
                 Claim::Battery(i) => {
                     self.take_battery(i, actor);
@@ -5809,6 +5826,22 @@ mod level_tests {
         assert!(on_floor, "it stands on one of the two floors, not mid-air: y {}", n.y);
         // it does not loop: it still arrives
         assert!(run(&mut c, CAP_SECONDS, arrived).is_some(), "after the give-up the bot still reaches the runner");
+    }
+
+    #[test]
+    fn a_bots_head_eases_back_on_a_flight() {
+        let Some(mut c) = any_switchback() else { return };
+        let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
+        assert!(started.is_some(), "the bot reached the flight");
+        assert!(Tuning::get().lively.rate > 0.0, "the data turns the head");
+        c.g.npcs[0].life.head_yaw = 1.0;
+        c.g.npcs[0].life.head_pitch = 0.5;
+        c.g.npcs[0].life.gaze_left = 2.0;
+        tick(&mut c);
+        let n = &c.g.npcs[0];
+        assert!(n.life.head_yaw.abs() < 1.0, "the head turns back on the edge: {}", n.life.head_yaw);
+        assert!(n.life.head_pitch.abs() < 0.5, "the pitch eases too: {}", n.life.head_pitch);
+        assert!(n.life.gaze.is_none() && n.life.gaze_left == 0.0, "no gaze is held on the edge");
     }
 
     #[test]

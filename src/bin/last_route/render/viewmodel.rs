@@ -5,6 +5,7 @@
 use super::anim::held::{self, HeldId, HeldState, Motion};
 use super::anim::hide;
 use super::builder::Builder;
+use crate::item_path;
 use super::scene::{camera_from_view, flickered, item_file, item_model, lighting_from_view, view, BATTERY};
 use super::shader;
 use crate::shared::assets::Assets;
@@ -26,8 +27,9 @@ fn held_id(item: Item) -> HeldId {
         Item::Battery => HeldId::Battery,
         Item::Stim => HeldId::StimPack,
         Item::MusicBox => HeldId::MusicBox,
-        Item::Lockpick => HeldId::Crowbar,
-        Item::ReviveKit => HeldId::StimPack,
+        // posed from their data rows (fp_hands::item_pose via held::pose), no swing
+        Item::Lockpick => HeldId::Lockpick,
+        Item::ReviveKit => HeldId::ReviveKit,
     }
 }
 
@@ -273,7 +275,7 @@ fn draw_held_item(g: &Game, a: &Assets, item: Item, (eye, fwd, right, up): (Vec3
     }
     // the lens glows while the flashlight is on
     if shown == Item::Flashlight && g.p.beam_lit() {
-        if let Some(m) = item_model(a, "flashlight_item") {
+        if let Some(m) = item_model(a, item_path!("flashlight_item")) {
             let tip = xf.transform_point3(vec3(0.0, m.max.y, 0.0));
             let mut b = Builder::new(Some(a.white.clone()));
             b.cube_basis(
@@ -291,6 +293,18 @@ fn draw_held_item(g: &Game, a: &Assets, item: Item, (eye, fwd, right, up): (Vec3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lockpick_and_the_revive_kit_hold_their_own_poses() {
+        assert_eq!(held_id(Item::Lockpick), HeldId::Lockpick);
+        assert_eq!(held_id(Item::ReviveKit), HeldId::ReviveKit);
+        let lp = crate::render::fp_hands::item_pose("lockpick").expect("row");
+        let p = held::pose(held_id(Item::Lockpick));
+        assert_eq!((p.view, p.scale, p.yaw, p.pitch), (lp.view, lp.scale, lp.yaw, lp.pitch));
+        let rk = crate::render::fp_hands::item_pose("revive_kit").expect("row");
+        let p = held::pose(held_id(Item::ReviveKit));
+        assert_eq!((p.view, p.scale, p.yaw, p.pitch), (rk.view, rk.scale, rk.yaw, rk.pitch));
+    }
 
     #[test]
     fn the_layer_holds_the_item_unless_hidden_caught_or_climbing() {

@@ -100,13 +100,15 @@ pub enum Actor {
 
 impl Game {
     /// One automatic save of the run (Godot `autosave`, infinite_route_test.gd): a relay, a newly active checkpoint or
-    /// a level change (the stairs and the lift) or leaving the route. A finished run never saves (Godot
-    /// `_save_write_denial`: THE RUN HAS ENDED), so a death still clears the save. Returns true when it saved.
+    /// a level change (the stairs and the lift) or leaving the route. It keeps the body's position
+    /// (`save_checkpoint_with_position`, gated by data/progression.json `autosave.store_position`). A finished run never
+    /// saves (Godot `_save_write_denial`: THE RUN HAS ENDED), so a death still clears the save, and a guest never saves:
+    /// the run and its checkpoint belong to the host (`guest_gate::is_display_only`). Returns true when it saved.
     pub fn autosave(&mut self, reason: &'static str) -> bool {
-        if self.report.is_some() {
+        if self.report.is_some() || super::guest_gate::is_display_only(self) {
             return false;
         }
-        self.save_checkpoint();
+        self.save_checkpoint_with_position();
         self.last_autosave = reason;
         self.autosave_count = self.autosave_count.wrapping_add(1);
         self.last_save_time = self.time;
@@ -115,9 +117,12 @@ impl Game {
 
     /// The data-driven autosave triggers (data/progression.json `autosave`: "boundary", "pause_quit", "pickup",
     /// "safe_room"): saves with the body's position when `trigger` is listed and due (an `always` trigger, or
-    /// `min_interval_s` since the last save). True when it saved.
+    /// `min_interval_s` since the last save). A finished run and a guest never save (as [`Self::autosave`]). True when it
+    /// saved.
     pub fn autosave_on(&mut self, trigger: &'static str) -> bool {
-        if self.report.is_some() || !crate::game::progression::Autosave::load().due(trigger, self.time - self.last_save_time) {
+        if self.report.is_some()
+            || super::guest_gate::is_display_only(self)
+            || !crate::game::progression::Autosave::load().due(trigger, self.time - self.last_save_time) {
             return false;
         }
         self.save_checkpoint_with_position();
@@ -395,7 +400,7 @@ impl Game {
                 self.p.lamp = MAX_LAMP_CHARGE;
                 self.p.exhausted = false;
                 crate::audio::sound::recharge(20.0);
-                self.say("Safe zone: lamp and stamina restored.");
+                self.say("SAFE ZONE // LAMP AND STAMINA RESTORED");
             }
             Focus::Ladder(i) => {
                 // only a ladder is interacted with; a flight is walked
@@ -406,14 +411,14 @@ impl Game {
             Focus::Lift => {
                 if !self.lift_is_open() {
                     crate::audio::sound::interaction_fail();
-                    self.say("The service lift has no route signal.");
+                    self.say("SERVICE LIFT // NO ROUTE SIGNAL");
                     return;
                 }
                 self.depth += 1;
                 self.start_floor_sim(content, catalog);
                 self.autosave("level");
                 let d = self.depth;
-                self.say(&format!("Descending to depth {d}..."));
+                self.say(&format!("DESCENDING TO DEPTH {d}"));
             }
             Focus::LightSwitch(i) => {
                 self.lights_on[i] = !self.lights_on[i];
@@ -711,7 +716,7 @@ impl Game {
     fn use_vent(&mut self, i: usize) {
         let n = self.fix.vents.len();
         if n == 0 {
-            self.say("The grate won't budge.");
+            self.say("THE GRATE WON'T BUDGE");
             return;
         }
         if !self.p.in_vent {
@@ -1666,5 +1671,37 @@ mod relay_claim_tests {
         guest.remote_hunters = true;
         assert!(guest.claim_relay(0, Actor::Player, &content));
         assert!(heard(&guest).is_empty(), "a guest records no noise for the host's hunters");
+    }
+
+    #[test]
+    fn a_guest_never_autosaves_but_a_host_does() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let make = |remote: bool| {
+            let mut g = Game::new_sim(Difficulty::Standard, 4242, &content, &catalog);
+            g.remote_hunters = remote;
+            let at = g.p.pos;
+            g.pickups.push(crate::game::FloorPickup { pos: at, item: crate::game::items::Item::Stim, n: 1, taken: false });
+            g
+        };
+        let (mut guest, mut host) = (make(true), make(false));
+        let (guest_before, host_before) = (guest.autosave_count, host.autosave_count);
+        // a guest still claims what it stands on (the host decides the run); only the save is skipped
+        assert!(guest.claim_relay(0, Actor::Player, &content));
+        let last = guest.pickups.len() - 1;
+        assert!(guest.take_pickup(last, Actor::Player));
+        assert_eq!(guest.autosave_count, guest_before, "a guest never writes a checkpoint");
+        assert_eq!(guest.last_autosave, "");
+        assert!(!guest.autosave("quit"), "a guest's direct save is refused too");
+        assert!(!guest.autosave_on("pause_quit"), "an always trigger is refused for a guest");
+        assert_eq!(guest.autosave_count, guest_before);
+        // the host saves the relay, and the pickup once the rate limit has run out
+        assert!(host.claim_relay(0, Actor::Player, &content));
+        assert_eq!(host.autosave_count, host_before + 1, "the host's relay saves the run");
+        assert_eq!(host.last_autosave, "relay");
+        host.time = host.last_save_time + crate::game::progression::Autosave::load().min_interval_s;
+        let last = host.pickups.len() - 1;
+        assert!(host.take_pickup(last, Actor::Player));
+        assert_eq!(host.autosave_count, host_before + 2, "the host's pickup saves the run");
+        assert_eq!(host.last_autosave, "pickup");
     }
 }

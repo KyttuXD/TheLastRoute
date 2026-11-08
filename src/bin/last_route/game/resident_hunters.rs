@@ -75,6 +75,12 @@ pub struct ResidentHunters {
     by_level: BTreeMap<i32, Vec<Slot>>,
     pub(super) nav_key: Option<NavKey>,
     dry: Option<Arc<WaterField>>,
+    /// Host only: each level's shared hard-ability party budget and its floor clock (hunters/hard_abilities.rs). Every
+    /// brain on a level holds the same budget, so the party gap and the pounce guard count the whole floor. The list is
+    /// reset with the rest of this struct every floor (Game::start_floor_sim), so a party lasts one floor of one run.
+    hard_party: BTreeMap<i32, (Arc<std::sync::Mutex<crate::hunters::hard_abilities::Budget>>, f32)>,
+    /// The dt the party clocks were last advanced by: [`Self::hard_party`] hands out the clock from before that advance.
+    hard_party_dt: f32,
 }
 
 impl ResidentHunters {
@@ -82,6 +88,23 @@ impl ResidentHunters {
     /// chunk was read for, so a pipe flood or sewer water never reaches a hunter on another storey.
     pub fn dry_field(&mut self) -> Arc<WaterField> {
         self.dry.get_or_insert_with(|| Arc::new(WaterField::from_depths(&[], &[]))).clone()
+    }
+
+    /// Advances every level's party clock by `dt`, once per host frame (game/hunting.rs update_hunters).
+    pub(super) fn advance_hard_party(&mut self, dt: f32) {
+        for (_, clock) in self.hard_party.values_mut() {
+            *clock += dt;
+        }
+        self.hard_party_dt = dt;
+    }
+
+    /// The shared party budget of `level` and its clock from before this frame's advance (created on demand): every
+    /// brain on the level is given both, and its own hard frame then adds this frame's dt.
+    pub(super) fn hard_party(&mut self, level: i32) -> (Arc<std::sync::Mutex<crate::hunters::hard_abilities::Budget>>, f32) {
+        let dt = self.hard_party_dt;
+        // a level first seen mid-frame starts at 0 before this frame's advance
+        let (arc, clock) = self.hard_party.entry(level).or_insert_with(|| (Default::default(), dt));
+        (Arc::clone(arc), *clock - dt)
     }
 
     /// The levels that have a list, ascending.
@@ -826,6 +849,14 @@ pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
     entry
 }
 
+/// Gives brain `b` the level's shared hard-ability budget (kept when it already holds it) and the party clock.
+pub(super) fn share_hard_party(b: &mut Brain, party: &Arc<std::sync::Mutex<crate::hunters::hard_abilities::Budget>>, clock: f32) {
+    if !Arc::ptr_eq(&b.hard_budget, party) {
+        b.hard_budget = Arc::clone(party);
+    }
+    b.hard_clock = clock;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Simulating the resident floors
 // ---------------------------------------------------------------------------------------------------------------------
@@ -861,6 +892,11 @@ impl Game {
             let slots = std::mem::take(self.resident_hunters.list_mut(level));
             let count = slots.len();
             let (ids, mut brains) = split(slots);
+            // the level's hard-ability party: one budget and one clock for every brain on it
+            let (party, clock) = self.resident_hunters.hard_party(level);
+            for b in &mut brains {
+                share_hard_party(b, &party, clock);
+            }
             if let Some((fac, fix)) = self.level_parts(level) {
                 let dists: Vec<f32> = brains.iter().map(|b| pdist(b.pos, runner.pos)).collect();
                 // the music boxes still on this floor: the runner's floor reads Game.pickups (where collection is
@@ -971,6 +1007,46 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hard_party_is_one_budget_per_level_with_one_clock() {
+        let mut r = ResidentHunters::default();
+        r.advance_hard_party(0.5);
+        let (a, c) = r.hard_party(2);
+        assert_eq!(c, 0.0, "a level first seen mid-frame starts at 0");
+        let (b, c2) = r.hard_party(2);
+        assert!(Arc::ptr_eq(&a, &b) && c2 == 0.0, "every brain on the level is handed the same budget and clock");
+        let (other, _) = r.hard_party(-1);
+        assert!(!Arc::ptr_eq(&a, &other), "another level has its own party");
+        r.advance_hard_party(0.25);
+        let (b2, c3) = r.hard_party(2);
+        assert!(Arc::ptr_eq(&a, &b2));
+        assert_eq!(c3, 0.5, "the clock handed out is the one from before this frame's advance");
+        // a new floor resets the struct (Game::start_floor_sim), and with it the party
+        r = ResidentHunters::default();
+        let (fresh, c4) = r.hard_party(2);
+        assert!(!Arc::ptr_eq(&a, &fresh) && c4 == 0.0);
+    }
+
+    #[test]
+    fn sharing_the_hard_party_hands_every_brain_the_same_budget_and_clock() {
+        use crate::config::Difficulty;
+        let content = Content::load();
+        let mut x = Brain::new(content.hunters[0].clone(), (5.5, 5.5), "X", Difficulty::Standard);
+        let mut y = Brain::new(content.hunters[0].clone(), (7.5, 5.5), "Y", Difficulty::Standard);
+        x.hard_clock = 9.0;
+        let mut r = ResidentHunters::default();
+        r.advance_hard_party(0.1);
+        r.advance_hard_party(0.2);
+        let (party, clock) = r.hard_party(0);
+        share_hard_party(&mut x, &party, clock);
+        share_hard_party(&mut y, &party, clock);
+        assert!(Arc::ptr_eq(&x.hard_budget, &y.hard_budget) && Arc::ptr_eq(&x.hard_budget, &party));
+        assert_eq!((x.hard_clock, y.hard_clock), (clock, clock));
+        let held = Arc::clone(&x.hard_budget);
+        share_hard_party(&mut x, &party, clock);
+        assert!(Arc::ptr_eq(&x.hard_budget, &held), "a brain already in the party keeps its budget");
+    }
 
     #[test]
     fn the_cap_keeps_the_nearest_hunters_in_list_order() {

@@ -1271,9 +1271,14 @@ impl NetSession {
         if !self.is_host() {
             return;
         }
-        let states: Vec<(u32, serde_json::Map<String, serde_json::Value>)> =
-            npcs.iter().map(|n| (n.id, super::npc_sync::wire_state_with(n, origin, downed.contains(&n.id)))).collect();
-        let messages = self.npcs.host_messages(&states, Instant::now());
+        let now = Instant::now();
+        // removes go out every frame (ids only); the bots' wire states are built only when a round of places is due
+        let mut messages = self.npcs.host_removes(npcs.iter().map(|n| n.id));
+        if self.npcs.due(now) {
+            let states: Vec<(u32, serde_json::Map<String, serde_json::Value>)> =
+                npcs.iter().map(|n| (n.id, super::npc_sync::wire_state_with(n, origin, downed.contains(&n.id)))).collect();
+            messages.extend(self.npcs.host_places(states, now));
+        }
         if messages.is_empty() {
             return;
         }
@@ -1717,6 +1722,19 @@ impl NetSession {
     /// line is empty or could not be sent.
     pub fn send_chat(&mut self, text: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64) -> bool {
         let Some(message) = super::chat::submit(text, channel, at, world, depth) else { return false };
+        self.send_submission(message)
+    }
+
+    /// Sends a quick-chat preset (one of `ChatRules::quick_chat_presets`) as a map ping: the preset text, marked as a
+    /// ping, at the poster's map place and floor. Goes the same way as [`NetSession::send_chat`] (a guest submits it to
+    /// the host, which moderates it: one ping per 2 s). False when the preset is empty or could not be sent.
+    pub fn send_ping(&mut self, preset: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64) -> bool {
+        let Some(message) = super::chat::submit_with(preset, channel, at, world, depth, preset, true) else { return false };
+        self.send_submission(message)
+    }
+
+    /// A guest submits a chat message to the host; the host sanitizes it as its own line and delivers it.
+    fn send_submission(&mut self, message: Message) -> bool {
         if !self.is_host() {
             return self.coop.send(HOST_PEER_ID, &message);
         }
@@ -4037,6 +4055,26 @@ mod owner_route_tests {
         p.insert("text".into(), json!("run"));
         guest.on_message(HOST_PEER_ID, Message::ChatPayload { peer_id: 1, display_name: "HOST".into(), payload: p }, now, &mut out);
         assert_eq!(guest.take_chat_lines()[0].text, "run");
+    }
+
+    #[test]
+    fn a_quick_chat_ping_is_sent_as_a_ping_that_the_feed_shows_on_the_map() {
+        let mut host = offline_session(true, "HOST");
+        assert!(host.send_ping("OVER HERE", "team", [12.0, 34.0], [12.0, 0.0, 34.0], -1));
+        let lines = host.take_chat_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].ping, "the line is marked as a ping");
+        assert_eq!((lines[0].text.as_str(), lines[0].preset.as_str()), ("OVER HERE", "OVER HERE"));
+        assert_eq!(lines[0].payload().get("ping"), Some(&json!(true)));
+        let mut feed = crate::net::chat::ChatFeed::default();
+        feed.push(lines, [0.0; 3], -1);
+        let pings = feed.pings();
+        assert_eq!(pings.len(), 1);
+        assert_eq!((pings[0].at, pings[0].depth), ([12.0, 34.0], -1));
+        assert!(!host.send_ping("  ", "team", [0.0; 2], [0.0; 3], 0), "an empty preset is not sent");
+        // a plain chat line is still not a ping
+        assert!(host.send_chat("hello", "team", [0.0; 2], [0.0; 3], 0));
+        assert!(!host.take_chat_lines()[0].ping);
     }
 
     #[test]

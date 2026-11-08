@@ -1,4 +1,4 @@
-//! NPC teammates over the room. The room's host runs the NPCs (its game simulates them, `Game::update_npcs`); every
+//! NPC teammates over the room. The room's host runs the NPCs (its game simulates them, `Game::update_npcs_in`); every
 //! guest only draws them. The host sends each NPC's place on the STATE channel (`_xnpc_place`, 20 Hz while any NPC is
 //! there) and a remove on EVENTS (`_xnpc_remove`) when one goes. A guest keeps the latest place of each NPC and stops
 //! drawing one that has gone quiet for [`NPC_STALE`], so a dropped remove or a lost link cannot leave a ghost behind.
@@ -50,6 +50,8 @@ pub struct RemoteNpcView {
     pub name: String,
     pub at: (f32, f32),
     pub level: i32,
+    /// Absolute feet height (the floor the bot stands on), so a guest draws it at the host's height.
+    pub h: f32,
     pub facing: f32,
     pub stride: f32,
     pub walking: bool,
@@ -115,22 +117,36 @@ fn flag(state: &Map<String, Value>, key: &str) -> bool {
 }
 
 impl NpcSync {
-    /// Host: the messages for this tick, from each NPC's id and wire state ([`wire_state`]). Places go out when a send is
-    /// due (every [`NPC_SEND_EVERY`]), for every NPC; a remove goes out at once for each NPC the last places named that
-    /// is gone now.
-    pub fn host_messages(&mut self, npcs: &[(u32, Map<String, Value>)], now: Instant) -> Vec<Message> {
-        let mut out = Vec::new();
-        let now_ids: BTreeSet<u32> = npcs.iter().map(|(id, _)| *id).collect();
-        for gone in self.sent.difference(&now_ids).copied().collect::<Vec<u32>>() {
-            out.push(Message::XnpcRemove { id: i64::from(gone) });
-        }
+    /// Host: whether a round of places is due (every [`NPC_SEND_EVERY`]). The host builds the wire states only then.
+    pub fn due(&self, now: Instant) -> bool {
+        self.last_send.is_none_or(|t| now.duration_since(t) >= NPC_SEND_EVERY)
+    }
+
+    /// Host: a remove for each NPC the last call named that is gone now (sent every frame, due or not), from the ids of the
+    /// NPCs there now; remembers those ids for the next call.
+    pub fn host_removes(&mut self, ids: impl IntoIterator<Item = u32>) -> Vec<Message> {
+        let now_ids: BTreeSet<u32> = ids.into_iter().collect();
+        let out = self.sent.difference(&now_ids).map(|gone| Message::XnpcRemove { id: i64::from(*gone) }).collect();
         self.sent = now_ids;
-        let due = self.last_send.is_none_or(|t| now.duration_since(t) >= NPC_SEND_EVERY);
-        if due && !npcs.is_empty() {
-            self.last_send = Some(now);
-            for (id, state) in npcs {
-                out.push(Message::XnpcPlace { id: i64::from(*id), state: state.clone() });
-            }
+        out
+    }
+
+    /// Host: one place per NPC when a send is due ([`NpcSync::due`]) and any NPC is there; nothing otherwise. The states
+    /// are moved into the messages, not copied.
+    pub fn host_places(&mut self, npcs: Vec<(u32, Map<String, Value>)>, now: Instant) -> Vec<Message> {
+        if npcs.is_empty() || !self.due(now) {
+            return Vec::new();
+        }
+        self.last_send = Some(now);
+        npcs.into_iter().map(|(id, state)| Message::XnpcPlace { id: i64::from(id), state }).collect()
+    }
+
+    /// Host: the messages for this tick, from each NPC's id and wire state ([`wire_state`]): the removes
+    /// ([`NpcSync::host_removes`]) first, then the places when due ([`NpcSync::host_places`]).
+    pub fn host_messages(&mut self, npcs: &[(u32, Map<String, Value>)], now: Instant) -> Vec<Message> {
+        let mut out = self.host_removes(npcs.iter().map(|(id, _)| *id));
+        if self.due(now) {
+            out.extend(self.host_places(npcs.to_vec(), now));
         }
         out
     }
@@ -174,7 +190,7 @@ impl NpcSync {
             .map(|n| {
                 let (x, y) = super::world_sync::to_window((n.x, n.y), origin);
                 super::runner_figure::set_bot_look(&n.name, n.look.0, n.look.1);
-                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed, crouch: n.crouch, emote: n.emote.clone(), emote_seq: n.emote_seq, look: n.look }
+                RemoteNpcView { name: n.name.clone(), at: (x, y), level: n.level, h: n.h, facing: n.yaw, stride: n.stride, walking: n.walking, fleeing: n.fleeing, downed: n.downed, crouch: n.crouch, emote: n.emote.clone(), emote_seq: n.emote_seq, look: n.look }
             })
             .collect()
     }
@@ -201,13 +217,16 @@ mod tests {
     fn a_place_is_turned_into_each_viewers_own_window() {
         let t0 = Instant::now();
         let mut guest = NpcSync::default();
-        guest.receive_place(7, &state(120.0, 80.0, 0), t0);
+        let mut st = state(120.0, 80.0, 0);
+        st.insert("h".into(), serde_json::json!(3.5));
+        guest.receive_place(7, &st, t0);
         // a viewer whose window starts at (100, 50) sees the NPC at (20, 30) in its window
         let views = guest.views((100, 50), t0);
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].at, (20.0, 30.0));
         assert_eq!(views[0].name, "R-04821");
         assert!(views[0].walking);
+        assert_eq!(views[0].h, 3.5, "a guest draws the bot at the host's floor height");
     }
 
     #[test]
@@ -329,5 +348,35 @@ mod tests {
         let gone = host.host_messages(&[one.clone()], t0 + NPC_SEND_EVERY);
         assert!(matches!(gone.first(), Some(Message::XnpcRemove { id: 2 })), "the vanished NPC is removed");
         assert_eq!(gone.iter().filter(|m| matches!(m, Message::XnpcPlace { .. })).count(), 1);
+    }
+
+    #[test]
+    fn a_remove_goes_out_on_a_frame_when_no_places_are_due() {
+        let mut host = NpcSync::default();
+        let t0 = Instant::now();
+        let one = (1u32, state(1.0, 1.0, 0));
+        let two = (2u32, state(2.0, 2.0, 0));
+        assert_eq!(host.host_messages(&[one.clone(), two.clone()], t0).len(), 2);
+        let soon = t0 + Duration::from_millis(10);
+        assert!(!host.due(soon), "places are not due yet");
+        let gone = host.host_messages(&[one.clone()], soon);
+        assert_eq!(gone.len(), 1, "only the remove, no places");
+        assert!(matches!(gone[0], Message::XnpcRemove { id: 2 }));
+        assert!(host.host_messages(&[one.clone()], soon).is_empty(), "the remove goes out once");
+        assert!(host.due(t0 + NPC_SEND_EVERY));
+    }
+
+    #[test]
+    fn removes_and_places_split_send_ids_only_and_places_when_due() {
+        let mut host = NpcSync::default();
+        let t0 = Instant::now();
+        assert!(host.host_removes([1u32, 2]).is_empty(), "nothing was named before");
+        let places = host.host_places(vec![(1, state(1.0, 1.0, 0)), (2, state(2.0, 2.0, 0))], t0);
+        assert_eq!(places.len(), 2);
+        assert!(host.host_places(vec![(1, state(1.0, 1.0, 0))], t0 + Duration::from_millis(10)).is_empty(), "not due");
+        let removes = host.host_removes([1u32]);
+        assert!(matches!(removes.as_slice(), [Message::XnpcRemove { id: 2 }]));
+        assert!(host.host_places(Vec::new(), t0 + NPC_SEND_EVERY).is_empty(), "no NPCs, no places");
+        assert!(host.due(t0 + NPC_SEND_EVERY), "an empty round does not count as a send");
     }
 }

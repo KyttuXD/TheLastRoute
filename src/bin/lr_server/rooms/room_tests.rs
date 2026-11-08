@@ -3,9 +3,13 @@
 
 use super::admin_rooms::JoinContext;
 use super::reserved_rooms::{ReservedRooms, ReservedRoomsOptions};
-use super::room_service::{RoomService, RoomServiceOptions, HOST_LEFT_REASON};
+use super::room_service::{
+    apply_item_claim_within, claim_discovery_cells, discovery_cap, RoomService, RoomServiceOptions,
+    DISCOVERY_ENDLESS_LIMIT, DISCOVERY_LIMIT, DISCOVERY_TOTAL_LIMIT, HOST_LEFT_REASON, ITEM_LIMIT, ITEM_TOTAL_LIMIT,
+};
+use std::collections::HashSet;
 use crate::util::{manual_clock, ManualClock};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 struct Clocked {
     service: RoomService,
@@ -309,4 +313,110 @@ fn a_room_closed_by_its_host_does_not_wait_for_held_slots() {
     assert_eq!(left.1["closed"], true);
     assert_eq!(s.sweep_empty(), 0);
     assert!(s.list_rooms().is_empty());
+}
+
+fn battery_claim(n: usize, depth: i64) -> Value {
+    json!({ "kind": "battery", "id": format!("b{n}"), "depth": depth, "changes": { "collected": true } })
+}
+
+#[test]
+fn item_records_stop_at_the_total_limit_but_existing_keys_still_update_and_a_new_depth_clears_them() {
+    // Infinite chunks stream 3 relays and 4 batteries each, plus props: the cap must hold hundreds of chunks.
+    assert!(ITEM_TOTAL_LIMIT >= 512 * 7, "the item cap is too tight for a long Infinite depth");
+    let mut c = service(0);
+    let s = &mut c.service;
+    let host = join(s, "ITEMS", "host", "Ann");
+    let base = auth("ITEMS", "host", &host);
+    // The first record is a prop so a later claim can change it.
+    let prop = json!({ "kind": "prop", "id": "p0", "depth": 0, "changes": {} });
+    let (status, _) = s.update_room(&with(base.clone(), json!({ "itemClaims": [prop] })));
+    assert_eq!(status, 200);
+    let mut next = 0;
+    while s.rooms["ITEMS"].items.len() < ITEM_TOTAL_LIMIT {
+        let claims: Vec<Value> = (next..next + ITEM_LIMIT).map(|n| battery_claim(n, 0)).collect();
+        next += ITEM_LIMIT;
+        assert_eq!(s.update_room(&with(base.clone(), json!({ "itemClaims": claims }))).0, 200);
+    }
+    assert_eq!(s.rooms["ITEMS"].items.len(), ITEM_TOTAL_LIMIT);
+    // New keys past the cap are ignored.
+    let extra: Vec<Value> = (next..next + ITEM_LIMIT).map(|n| battery_claim(n, 0)).collect();
+    s.update_room(&with(base.clone(), json!({ "itemClaims": extra })));
+    assert_eq!(s.rooms["ITEMS"].items.len(), ITEM_TOTAL_LIMIT);
+    assert!(!s.rooms["ITEMS"].items.contains_key(&format!("battery:b{next}")));
+    // An existing key still updates at the cap.
+    let open = json!({ "kind": "prop", "id": "p0", "depth": 0, "changes": { "interactionState": "OPEN" } });
+    s.update_room(&with(base.clone(), json!({ "itemClaims": [open] })));
+    assert_eq!(s.rooms["ITEMS"].items["prop:p0"]["interactionState"], "OPEN");
+    assert_eq!(s.rooms["ITEMS"].items.len(), ITEM_TOTAL_LIMIT);
+    // A depth advance clears the map, so claims on the new depth land again.
+    s.update_room(&with(base.clone(), json!({ "claimDepth": 1, "itemClaims": [battery_claim(0, 1)] })));
+    assert_eq!(s.rooms["ITEMS"].active_depth, 1);
+    assert_eq!(s.rooms["ITEMS"].items.len(), 1);
+    assert!(s.rooms["ITEMS"].items.contains_key("battery:b0"));
+}
+
+#[test]
+fn the_item_cap_helper_ignores_new_keys_at_its_limit() {
+    let mut items = Map::new();
+    for n in 0..5 {
+        apply_item_claim_within(&mut items, Some(&battery_claim(n, 0)), 3);
+    }
+    assert_eq!(items.len(), 3);
+    assert!(items.contains_key("battery:b2") && !items.contains_key("battery:b3"));
+    let relay = json!({ "kind": "relay", "id": "b0", "changes": { "sabotaged": true } });
+    apply_item_claim_within(&mut items, Some(&relay), 3);
+    assert_eq!(items.len(), 3, "a new kind:id is a new key and is refused at the cap");
+}
+
+#[test]
+fn endless_discovery_is_capped_at_its_own_limit() {
+    let mut settings = Map::new();
+    settings.insert("mapScale".into(), json!("standard"));
+    assert_eq!(discovery_cap(&settings), DISCOVERY_TOTAL_LIMIT);
+    settings.insert("mapScale".into(), json!("endless"));
+    assert_eq!(discovery_cap(&settings), DISCOVERY_ENDLESS_LIMIT);
+    assert!(DISCOVERY_ENDLESS_LIMIT > DISCOVERY_TOTAL_LIMIT && DISCOVERY_ENDLESS_LIMIT < usize::MAX);
+
+    // The helper with a test-sized cap: claims past it are ignored, repeats never count.
+    let (mut seen, mut list) = (HashSet::new(), Vec::new());
+    let cells: Vec<Value> = (0..10).map(|n| json!(format!("C{n}"))).collect();
+    claim_discovery_cells(&mut seen, &mut list, &cells, 4);
+    assert_eq!(list, vec!["C0", "C1", "C2", "C3"]);
+    claim_discovery_cells(&mut seen, &mut list, &cells, 4);
+    assert_eq!(seen.len(), 4);
+    let many: Vec<Value> = (0..DISCOVERY_LIMIT + 20).map(|n| json!(format!("M{n}"))).collect();
+    let (mut seen, mut list) = (HashSet::new(), Vec::new());
+    claim_discovery_cells(&mut seen, &mut list, &many, usize::MAX);
+    assert_eq!(list.len(), DISCOVERY_LIMIT, "one update still adds at most DISCOVERY_LIMIT cells");
+}
+
+#[test]
+fn an_endless_room_stops_discovering_at_the_limit_and_a_depth_advance_resets_it() {
+    let mut c = service(0);
+    let s = &mut c.service;
+    let host = join(s, "ENDLS", "host", "Ann");
+    let base = auth("ENDLS", "host", &host);
+    {
+        let room = s.rooms.get_mut("ENDLS").unwrap();
+        room.settings.insert("mapScale".into(), json!("endless"));
+        // Fill to two short of the cap directly; sending 250k cells through updates would only slow the test.
+        for n in 0..DISCOVERY_ENDLESS_LIMIT - 2 {
+            let cell = format!("F{n}");
+            room.discovered.insert(cell.clone());
+            room.discovered_list.push(cell);
+        }
+    }
+    let epoch = s.rooms["ENDLS"].discovered_epoch;
+    let cursor = json!({ "discoveryEpoch": epoch, "discoverySince": DISCOVERY_ENDLESS_LIMIT });
+    let claims = json!({ "discoveryClaims": ["N1", "N2", "N3", "N4", "N5"] });
+    let (status, payload) = s.update_room(&with(with(base.clone(), cursor.clone()), claims));
+    assert_eq!(status, 200, "{payload}");
+    assert_eq!(s.rooms["ENDLS"].discovered.len(), DISCOVERY_ENDLESS_LIMIT);
+    assert!(s.rooms["ENDLS"].discovered.contains("N2") && !s.rooms["ENDLS"].discovered.contains("N3"));
+    s.update_room(&with(with(base.clone(), cursor), json!({ "discoveryClaims": ["N6"] })));
+    assert_eq!(s.rooms["ENDLS"].discovered.len(), DISCOVERY_ENDLESS_LIMIT, "claims past the cap are ignored");
+    // A depth advance clears discovery, so the next depth's cells land again.
+    s.update_room(&with(base.clone(), json!({ "claimDepth": 1, "discoveryClaims": ["D1"] })));
+    assert_eq!(s.rooms["ENDLS"].discovered_epoch, epoch + 1);
+    assert_eq!(s.rooms["ENDLS"].discovered_list, vec!["D1".to_string()]);
 }

@@ -1069,12 +1069,13 @@ mod tests {
         assert!(mid > 0.4 && mid < 0.6, "{mid}");
         assert_eq!(update_line_alpha(true, t.line_hold_ms + t.line_fade_ms, t.line_hold_ms, t.line_fade_ms), 0.0);
         assert!(t.line(&UpdateStatus::LocalBuild).is_none(), "a local build shows nothing");
-        assert_eq!(t.line(&UpdateStatus::Installing).as_deref(), Some("Installing"));
-        assert_eq!(t.line_at(&UpdateStatus::UpToDate(12), None).as_deref(), Some("Up to date (build 12)"));
+        assert_eq!(t.line(&UpdateStatus::Installing).as_deref(), Some("INSTALLING"));
+        assert_eq!(t.line_at(&UpdateStatus::UpToDate(12), None).as_deref(), Some("UP TO DATE (BUILD 12)"));
         // a finished check says when it ran, in the player's zone on a 12-hour clock
         let checked = t.line_at(&UpdateStatus::UpToDate(12), Some(1_762_634_520)).unwrap();
-        assert!(checked.starts_with("Up to date (build 12) // LAST CHECKED: NOV "), "{checked}");
+        assert!(checked.starts_with("UP TO DATE (BUILD 12) // LAST CHECKED: NOV "), "{checked}");
         assert!(checked.contains(" AM ") || checked.contains(" PM "), "{checked}");
+        assert_eq!(checked, checked.to_uppercase(), "the whole boot line is upper case: {checked}");
     }
 
     #[test]

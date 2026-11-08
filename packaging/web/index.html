@@ -35,6 +35,8 @@ miniquad_add_plugin({
     importObject.env.lr_pointer_locked = function () {
       return document.pointerLockElement === document.getElementById("glcanvas") ? 1 : 0;
     };
+    // The player's zone for shown times (app/web_update.rs tz_offset_minutes): minutes east of UTC at a Unix time.
+    importObject.env.lr_tz_offset_min = function (secs) { return -new Date(Number(secs) * 1000).getTimezoneOffset(); };
     // -1 when nothing is stored; the byte length otherwise, copied only when it fits in cap (the game then reads it again)
     importObject.env.lr_storage_get = function (keyPtr, keyLen, dstPtr, cap) {
       try {

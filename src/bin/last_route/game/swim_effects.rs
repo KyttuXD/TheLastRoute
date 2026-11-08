@@ -366,7 +366,7 @@ impl Game {
         if stun > 0.0 {
             self.say(&format!("{} {:.1}s", swim::HARD_LANDING_MESSAGE, stun));
         } else {
-            self.say("You hit the floor hard.");
+            self.say("YOU HIT THE FLOOR HARD");
         }
     }
 
@@ -812,7 +812,7 @@ mod tests {
         // under 8.25 m/s: hurt (stamina, noise) but not stunned, and no stun message
         let (s, m) = hit(8.0);
         assert_eq!(s, 0.0);
-        assert_eq!(m, "You hit the floor hard.");
+        assert_eq!(m, "YOU HIT THE FLOOR HARD");
         // at the threshold: 0.4 s; at 14 m/s: 1.4 s; past it the stun stops growing
         let (s, m) = hit(8.25);
         assert!((s - 0.4).abs() < 1e-4, "{s}");

@@ -158,7 +158,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
             &lay.rooms,
             &[],
             lay.region_props.as_deref().unwrap_or(&[]),
-            is_safe_chunk(seed, k.cx, k.cy),
+            is_live_safe_chunk(seed, k.cx, k.cy),
             &avoid,
             door_clearance::rules().relocate_radius,
             &blocked,
@@ -439,11 +439,19 @@ pub fn is_safe_chunk(world: &str, cx: i32, cy: i32) -> bool {
     rng.next_float() < DangerProfile::for_level(0).safe_room_chance()
 }
 
+/// `is_safe_chunk` as the live level 0 lays it out: a hollow chunk of the concept map (solid rock with only the
+/// tunnels cut through, `layout::chunk_layout`) never holds a safe room, as `layout::Gen::hollow` keeps the room out
+/// of it. Under the Godot region draw (`layout::with_godot_regions`) no chunk is hollow, so this is the pure roll.
+pub fn is_live_safe_chunk(world: &str, cx: i32, cy: i32) -> bool {
+    is_safe_chunk(world, cx, cy)
+        && (layout::godot_regions() || super::concept_map::chunk_class(world, cx, cy) != super::concept_map::ChunkClass::Hollow)
+}
+
 /// The safe room of a level-0 chunk as the Godot `safe_room_data` dictionary (streamed_route_generator.gd:1416),
-/// or `None` for another level and for a chunk that is not safe. `breach_pressure` is `lerpf(0.55, 1.65, danger)`
-/// snapped to 0.01 (1.08 on level 0).
+/// or `None` for another level and for a chunk that is not safe (`is_live_safe_chunk`: a hollow chunk never is).
+/// `breach_pressure` is `lerpf(0.55, 1.65, danger)` snapped to 0.01 (1.08 on level 0).
 pub fn safe_room(world: &str, k: ChunkKey) -> Option<SafeRoom> {
-    if k.level != 0 || !is_safe_chunk(world, k.cx, k.cy) {
+    if k.level != 0 || !is_live_safe_chunk(world, k.cx, k.cy) {
         return None;
     }
     let pressure = DangerProfile::for_level(k.level).breach_pressure();
@@ -767,15 +775,47 @@ mod tests {
 
     #[test]
     fn safe_rooms_match_the_goldens() {
-        for (world, safe) in SAFE_GOLDENS {
-            for cx in -3..=3 {
-                for cy in -3..=3 {
-                    let want = safe.contains(&(cx, cy));
-                    assert_eq!(is_safe_chunk(world, cx, cy), want, "{world} {cx},{cy}: safe room");
-                    assert_eq!(safe_room(world, ChunkKey { cx, cy, level: 0 }).is_some(), want, "{world} {cx},{cy}");
+        // the goldens are the Godot region draw: no chunk is hollow there
+        layout::with_godot_regions(|| {
+            for (world, safe) in SAFE_GOLDENS {
+                for cx in -3..=3 {
+                    for cy in -3..=3 {
+                        let want = safe.contains(&(cx, cy));
+                        assert_eq!(is_safe_chunk(world, cx, cy), want, "{world} {cx},{cy}: safe room");
+                        assert_eq!(is_live_safe_chunk(world, cx, cy), want, "{world} {cx},{cy}: live safe room");
+                        assert_eq!(safe_room(world, ChunkKey { cx, cy, level: 0 }).is_some(), want, "{world} {cx},{cy}");
+                    }
+                }
+            }
+        });
+    }
+
+    /// A hollow chunk of the concept map is rock with only a tunnel through it: the pure Godot roll may call it safe,
+    /// but the live safe room (and the layout) never puts a room there.
+    #[test]
+    fn a_hollow_chunk_never_holds_a_safe_room() {
+        use super::super::concept_map::{chunk_class, ChunkClass};
+        let mut hollow_rolls = 0;
+        for i in 0..40 {
+            let world = format!("{}", 5100 + i * 13);
+            for cx in -12..=12 {
+                for cy in -12..=12 {
+                    if chunk_class(&world, cx, cy) != ChunkClass::Hollow {
+                        continue;
+                    }
+                    assert!(!is_live_safe_chunk(&world, cx, cy), "{world} {cx},{cy}");
+                    assert!(safe_room(&world, ChunkKey { cx, cy, level: 0 }).is_none(), "{world} {cx},{cy}");
+                    if is_safe_chunk(&world, cx, cy) {
+                        hollow_rolls += 1;
+                        // the Godot draw keeps the pure roll
+                        assert!(layout::with_godot_regions(|| is_live_safe_chunk(&world, cx, cy)));
+                    }
                 }
             }
         }
+        assert!(hollow_rolls > 0, "no hollow chunk rolled a safe room in the sample");
+        // the spawn chunk is never hollow and always safe
+        assert!(is_live_safe_chunk("5100", 0, 0));
     }
 
     #[test]

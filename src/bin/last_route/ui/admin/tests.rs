@@ -825,3 +825,36 @@ fn the_moderation_queue_approves_and_dismisses_flags() {
     assert_eq!(q.flags.len(), 1);
     assert_eq!(ModQueue::row(&q.flags[0]), "RUNNER // SPAM // B");
 }
+
+/// Each hunter's id, stun and active flag, to see that nothing changed.
+fn hunter_marks(g: &Game) -> Vec<(String, f32, bool)> {
+    g.hunters.iter().map(|h| (h.def.id.clone(), h.stun, h.active)).collect()
+}
+
+#[test]
+fn a_room_guest_admin_never_changes_the_hunters() {
+    let (mut g, content) = game();
+    let list = hunter_list(&content);
+    let mut a = Admin::new();
+    a.run_cmd(Cmd::Hunter(0, 0, 0), &mut g, &content, &list);
+    assert!(!g.hunters.is_empty(), "solo: the summon works");
+    let before = hunter_marks(&g);
+    a.in_room = true;
+    for op in 0..3 {
+        a.run_cmd(Cmd::Hunter(0, op, 0), &mut g, &content, &list);
+        assert_eq!(hunter_marks(&g), before, "hunter op {op} on a guest");
+        assert_eq!(g.message, super::actions::HUNTERS_ON_HOST);
+    }
+    for row in 0..menu().act_hunters.len() {
+        a.run_cmd(Cmd::Run("act_hunters", row), &mut g, &content, &list);
+        assert_eq!(hunter_marks(&g), before, "all-hunters row {row} on a guest");
+    }
+    // the emote report only reads them
+    a.run_cmd(Cmd::Hunter(0, 3, 0), &mut g, &content, &list);
+    assert!(g.message.starts_with("HUNTER EMOTE"), "{}", g.message);
+    // a host-driven game marks its hunters remote too
+    a.in_room = false;
+    g.remote_hunters = true;
+    a.run_cmd(Cmd::Run("act_hunters", 0), &mut g, &content, &list);
+    assert_eq!(hunter_marks(&g), before);
+}

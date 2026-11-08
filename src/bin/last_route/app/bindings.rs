@@ -215,8 +215,16 @@ pub struct Bindings {
 }
 
 impl Bindings {
+    /// The action's keys as the player has them, borrowed (the per-frame input checks call this, so no copy).
+    fn keys_ref<'a>(&'a self, r: &'a Rules, id: &str) -> &'a [String] {
+        match self.over.get(id) {
+            Some(k) => k.as_slice(),
+            None => r.action(id).map_or(&[][..], |a| a.keys.as_slice()),
+        }
+    }
+
     pub fn keys_in(&self, r: &Rules, id: &str) -> Vec<String> {
-        self.over.get(id).cloned().or_else(|| r.action(id).map(|a| a.keys.clone())).unwrap_or_default()
+        self.keys_ref(r, id).to_vec()
     }
 
     pub fn keys(&self, id: &str) -> Vec<String> {
@@ -247,7 +255,7 @@ impl Bindings {
 
     /// The other action that holds `key`, if any.
     fn holder(&self, r: &Rules, id: &str, key: &str) -> Option<String> {
-        r.actions.iter().find(|a| a.id != id && self.keys_in(r, &a.id).iter().any(|k| k == key)).map(|a| a.id.clone())
+        r.actions.iter().find(|a| a.id != id && self.keys_ref(r, &a.id).iter().any(|k| k == key)).map(|a| a.id.clone())
     }
 
     /// CHANGE: the action gets only `key`; an action that held `key` takes this action's old first key in its place.
@@ -303,8 +311,37 @@ impl Bindings {
         self.add_in(rules(), id, key)
     }
 
+    /// RESET: the action takes its default keys back. An action that holds one of them now gives it up; one left with
+    /// no key takes this action's old first key (as CHANGE swaps), or goes back to its own defaults when that key is
+    /// one of the defaults being taken back. No key ends up on two actions.
+    pub fn reset_in(&mut self, r: &Rules, id: &str) {
+        let old_first = self.keys_ref(r, id).first().cloned();
+        if self.over.remove(id).is_none() {
+            return;
+        }
+        let Some(a) = r.action(id) else { return };
+        for key in &a.keys {
+            let Some(other) = self.holder(r, id, key) else { continue };
+            if r.action(&other).is_some_and(|o| o.fixed) {
+                continue; // a fixed action keeps its defaults, and no two actions share a default key
+            }
+            let mut theirs = self.keys_in(r, &other);
+            theirs.retain(|k| k != key);
+            if theirs.is_empty() {
+                if let Some(give) = old_first.as_ref().filter(|k| !a.keys.contains(k)) {
+                    theirs.push(give.clone());
+                }
+            }
+            if theirs.is_empty() {
+                self.reset_in(r, &other);
+            } else {
+                self.store(r, &other, theirs);
+            }
+        }
+    }
+
     pub fn reset(&mut self, id: &str) {
-        self.over.remove(id);
+        self.reset_in(rules(), id);
     }
 
     pub fn reset_all(&mut self) {
@@ -320,27 +357,40 @@ impl Bindings {
         serde_json::to_value(&self.over).unwrap_or_default()
     }
 
-    /// Reads the saved form. Unknown and fixed actions, unknown or reserved keys are dropped, and an action whose key an
-    /// earlier action already holds goes back to its default, so a hand-edited file cannot leave a key doing two things.
+    /// Reads the saved form. Unknown and fixed actions, unknown or reserved keys are dropped. The saved actions are read
+    /// together (the rest at their defaults), then any saved action that shares a key with another action goes back to
+    /// its default, repeated until none does, so a saved swap loads as it was and a hand-edited file cannot leave a key
+    /// doing two things.
     pub fn from_json_in(r: &Rules, v: &serde_json::Value) -> Bindings {
         let mut b = Bindings::default();
         let Some(map) = v.as_object() else { return b };
-        for (i, a) in r.actions.iter().enumerate().filter(|(_, a)| !a.fixed) {
+        for a in r.actions.iter().filter(|a| !a.fixed) {
             let Some(list) = map.get(&a.id) else { continue };
-            let keys: Vec<String> = strings(list)
-                .into_iter()
-                .filter(|k| (key_code(k).is_some() || mouse_index(k).is_some()) && !r.reserved.contains(k))
-                .take(r.max_keys)
-                .collect();
-            if keys.is_empty() {
-                continue;
+            let mut keys: Vec<String> = vec![];
+            for k in strings(list) {
+                if (key_code(&k).is_some() || mouse_index(&k).is_some()) && !r.reserved.contains(&k) && !keys.contains(&k) {
+                    keys.push(k);
+                }
             }
-            let clash = keys.iter().any(|k| r.actions[..i].iter().any(|o| b.keys_in(r, &o.id).contains(k)));
-            if !clash {
+            keys.truncate(r.max_keys);
+            if !keys.is_empty() {
                 b.store(r, &a.id, keys);
             }
         }
-        b
+        loop {
+            let clashing: Vec<String> = b
+                .over
+                .iter()
+                .filter(|(id, keys)| keys.iter().any(|k| b.holder(r, id, k).is_some()))
+                .map(|(id, _)| id.clone())
+                .collect();
+            if clashing.is_empty() {
+                return b;
+            }
+            for id in clashing {
+                b.over.remove(&id);
+            }
+        }
     }
 
     pub fn from_json(v: &serde_json::Value) -> Bindings {
@@ -349,12 +399,12 @@ impl Bindings {
 
     pub fn down(&self, id: &str) -> bool {
         use macroquad::prelude::{is_key_down, is_mouse_button_down};
-        self.keys(id).iter().any(|k| key_code(k).is_some_and(is_key_down) || mouse_index(k).is_some_and(|i| is_mouse_button_down(mouse_button(i))))
+        self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_down) || mouse_index(k).is_some_and(|i| is_mouse_button_down(mouse_button(i))))
     }
 
     pub fn pressed(&self, id: &str) -> bool {
         use macroquad::prelude::{is_key_pressed, is_mouse_button_pressed};
-        self.keys(id).iter().any(|k| key_code(k).is_some_and(is_key_pressed) || mouse_index(k).is_some_and(|i| is_mouse_button_pressed(mouse_button(i))))
+        self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_pressed) || mouse_index(k).is_some_and(|i| is_mouse_button_pressed(mouse_button(i))))
     }
 
     /// The text a prompt shows for the action (`PRESS [E]`): the first key as the player has it bound.
@@ -559,6 +609,47 @@ mod tests {
         assert_eq!(b.keys("flashlight"), ["H", "V"]);
         begin_capture("jump", false);
         assert_eq!(apply_capture(r(), &mut b, "F11"), CaptureResult::Refused(BindError::Reserved));
+    }
+
+    /// Every key held by at most one action.
+    fn no_shared_key(b: &Bindings) {
+        let mut all: Vec<String> = r().actions.iter().flat_map(|a| b.keys(&a.id)).collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n, "a key is on two actions: {:?}", b.to_json());
+    }
+
+    #[test]
+    fn reset_never_leaves_a_key_on_two_actions() {
+        let mut b = Bindings::default();
+        b.set("flashlight", "G").unwrap(); // the taser's G swaps over, the taser takes F
+        b.reset("taser");
+        assert_eq!(b.keys("taser"), ["G"]);
+        assert_eq!(b.keys("flashlight"), ["F"], "the flashlight takes the taser's old key back");
+        no_shared_key(&b);
+        no_shared_key(&Bindings::from_json(&b.to_json()));
+        // the holder keeps its other keys when it has some
+        let mut b = Bindings::default();
+        b.set("flashlight", "G").unwrap();
+        b.add("flashlight", "H").unwrap();
+        b.reset("taser");
+        assert_eq!(b.keys("taser"), ["G"]);
+        assert_eq!(b.keys("flashlight"), ["H"]);
+        no_shared_key(&b);
+        assert_eq!(Bindings::from_json(&b.to_json()), b);
+    }
+
+    #[test]
+    fn a_saved_swap_loads_unchanged_and_a_clash_is_dropped() {
+        let swap = serde_json::json!({ "flashlight": ["G"], "taser": ["F"] });
+        let b = Bindings::from_json(&swap);
+        assert_eq!(b.keys("flashlight"), ["G"]);
+        assert_eq!(b.keys("taser"), ["F"]);
+        assert_eq!(b.to_json(), swap);
+        let clash = Bindings::from_json(&serde_json::json!({ "flashlight": ["G"] }));
+        assert_eq!(clash, Bindings::default(), "the taser still holds G by default");
+        no_shared_key(&clash);
     }
 
     #[test]

@@ -34,7 +34,10 @@ mod stack_entry_tests;
 mod spiral_stairs_tests;
 #[cfg(test)]
 mod rail_tests;
+#[cfg(test)]
 mod inferno_terrain_tests;
+#[cfg(test)]
+mod frame_fix_tests;
 mod items;
 pub mod meters;
 pub mod seating;
@@ -181,6 +184,9 @@ pub struct Game {
     pub remote_hunters: bool,
     /// The floor kind last worked out under each hunter, for her step sound (`sync_hunter_floors`).
     hunter_floors: HunterFloors,
+    /// The key (depth, level, absolute x, absolute y) of the cell the runner's floor kind was last worked out for
+    /// (`sync_runner_floor`); a new floor (depth) or level never matches an old key, so it is worked out again.
+    runner_floor_at: Option<(i32, i32, i32, i32)>,
     /// The room is the PUBLIC route and this game simulates its hunters: idle hunters patrol near a runner (app/public_route.rs).
     pub public_route: bool,
     pub(crate) patrol_book: crate::app::public_route::PatrolBook,
@@ -361,6 +367,7 @@ impl Game {
             sabotage: None,
             remote_hunters: false,
             hunter_floors: HunterFloors::default(),
+            runner_floor_at: None,
             public_route: false,
             patrol_book: Default::default(),
             no_local_runner: false,
@@ -514,6 +521,7 @@ impl Game {
             sabotage: None,
             remote_hunters: false,
             hunter_floors: HunterFloors::default(),
+            runner_floor_at: None,
             public_route: false,
             patrol_book: Default::default(),
             no_local_runner: false,
@@ -832,6 +840,33 @@ impl Game {
         }
     }
 
+    /// Sets the runner's step surface (`Player::floor_kind`) from the floor kind the world mesh draws under it, worked
+    /// out again only when its absolute cell, level or floor changes. Guests run it too (it is the local body's own
+    /// sound); a dedicated room has no runner.
+    fn sync_runner_floor(&mut self) {
+        if self.no_local_runner {
+            return;
+        }
+        let f = &self.fac;
+        let (x, y) = (self.p.pos.0.floor() as i32, self.p.pos.1.floor() as i32);
+        let at = (self.depth, f.level, x + f.origin.0, y + f.origin.1);
+        if self.runner_floor_at == Some(at) {
+            return;
+        }
+        self.runner_floor_at = Some(at);
+        self.p.floor_kind = crate::render::world_mesh::floor_kind_at(f, x, y, &mut self.hunter_floors.choices);
+    }
+
+    /// The level layer whose bed wins over the region's (audio/ambient.rs `bed_id_for`): "sewer" or "inferno" on the
+    /// Infinite route's whole-layer levels (-1..=-3), None elsewhere.
+    fn ambience_layer(&self) -> Option<&'static str> {
+        self.inf
+            .as_ref()
+            .filter(|i| (-3..=-1).contains(&i.level))
+            .map(|i| crate::world::route::regions::godot_region_for(&i.seed, 0, 0, i.level))
+            .filter(|r| *r == "sewer" || *r == "inferno")
+    }
+
     pub fn eye(&self) -> Vec3 {
         self.p.eye()
     }
@@ -1029,6 +1064,8 @@ impl Game {
                 // the floor under each hunter picks her step sound
                 self.sync_hunter_floors();
             }
+            // the floor under the runner picks its own step sound (guests too: it is the local body)
+            self.sync_runner_floor();
             let hunters: Vec<crate::audio::world::HunterAudio> = self.hunters.iter().map(|h| crate::audio::world::HunterAudio {
                 id: &h.def.id,
                 pos: h.pos,
@@ -1045,12 +1082,14 @@ impl Game {
                 targets_runner: !h.target_is_bot && !h.shadow,
             }).collect();
             crate::audio::world::update(dt, &listener, &hunters);
-            // the region bed under the runner (rooms carry the region id; corridors fade the bed out)
-            let region_id = self
+            // the bed under the runner: a level layer's bed (sewer, Inferno) wins, else the room's region bed (corridors
+            // fade the bed out)
+            let layer = self.ambience_layer();
+            let region = self
                 .fac
                 .room_at(self.p.pos.0 as f64, self.p.pos.1 as f64)
-                .map(|i| self.fac.rooms[i].region.clone());
-            crate::audio::world::ambience(dt, region_id.as_deref(), 0.0);
+                .map(|i| self.fac.rooms[i].region.as_str());
+            crate::audio::world::ambience(dt, crate::audio::ambient::bed_id_for(layer, region), 0.0);
             // the wolf spiders' tell, skitter and lair crackle (audio/creature.rs)
             let creatures: Vec<crate::audio::creature::CreatureAudio> = self
                 .hunters
@@ -1071,7 +1110,7 @@ impl Game {
             crate::audio::creature::update(dt, &listener, &creatures);
         }
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
-        self.update_npcs(dt);
+        self.update_npcs_in(dt, npc::Tuning::get(), content);
         // a downed runner or bot is revived by a teammate's hold, or dies at the timeout (game/revive.rs)
         let ended_before = self.report.is_some();
         self.tick_revives(dt, c);
@@ -1098,6 +1137,10 @@ impl Game {
 
         if self.downed.is_some() {
             // a downed runner lies still: no move, no ladder, no interact. The hunters and the teammates carry on below.
+            // The use key spends a revive kit from any slot (items.rs `use_revive_kit` checks the data's self-revive).
+            if c.use_item && self.p.stun <= 0.0 && !guest_gate::input_blocked(self, self.world_in) {
+                self.use_revive_kit();
+            }
         } else if self.ladder.is_some() {
             // a climb is continuous in y: the label follows the body's height every frame, like a walked flight
             self.advance_ladder(dt, c, content, catalog);

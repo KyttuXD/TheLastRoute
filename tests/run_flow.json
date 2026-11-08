@@ -40,7 +40,7 @@
       "steps": [
         { "cmd": "teleport", "to": "lift" },
         { "cmd": "interact", "kind": "LIFT" },
-        { "expect": [ { "path": "run.depth", "value": 1 }, { "any": "events", "where": { "path": "text", "value": "The service lift has no route signal." } } ] },
+        { "expect": [ { "path": "run.depth", "value": 1 }, { "any": "events", "where": { "path": "text", "value": "SERVICE LIFT // NO ROUTE SIGNAL" } } ] },
         { "cmd": "teleport", "to": "relay", "index": 0 }, { "cmd": "interact", "kind": "RELAY" },
         { "cmd": "teleport", "to": "relay", "index": 1 }, { "cmd": "interact", "kind": "RELAY" },
         { "cmd": "teleport", "to": "relay", "index": 2 }, { "cmd": "interact", "kind": "RELAY" },

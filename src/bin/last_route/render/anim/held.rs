@@ -22,6 +22,32 @@ pub enum HeldId {
     Battery,
     StimPack,
     MusicBox,
+    /// The lockpick set; its pose row is data (data/render/fp_hands.json `poses.lockpick`).
+    Lockpick,
+    /// The revive kit; its pose row is data (data/render/fp_hands.json `poses.revive_kit`).
+    ReviveKit,
+}
+
+/// The data row (data/render/fp_hands.json `poses`) that places a held item with no row in the table below.
+pub fn data_row_name(id: HeldId) -> Option<&'static str> {
+    match id {
+        HeldId::Lockpick => Some("lockpick"),
+        HeldId::ReviveKit => Some("revive_kit"),
+        _ => None,
+    }
+}
+
+/// A pose from its data row: neither the lockpick nor the revive kit swings.
+pub fn pose_from_row(r: &crate::render::fp_hands::PoseRow) -> Pose {
+    Pose {
+        view: r.view,
+        scale: r.scale,
+        yaw: r.yaw,
+        pitch: r.pitch,
+        grip: vec3(0.0, r.grip, 0.0),
+        reach: r.reach,
+        swing: None,
+    }
 }
 
 pub struct Pose {
@@ -39,8 +65,15 @@ pub const PLAYER_MODELS_SCALE: f32 = 1.067;
 pub const VIEWMODEL_PUSH_RANGE: f32 = 1.0;
 pub const VIEWMODEL_MAX_PUSH: f32 = 0.65;
 
-/// HeldItemPoses FIRST_PERSON / GRIP / REACH / SWINGS.
+/// HeldItemPoses FIRST_PERSON / GRIP / REACH / SWINGS. The lockpick and the revive kit take theirs from
+/// `fp_hands::item_pose` (a broken data file fails the tests; at run time they fall back to the stim pack's row, no swing).
 pub fn pose(id: HeldId) -> Pose {
+    if let Some(name) = data_row_name(id) {
+        return match crate::render::fp_hands::item_pose(name) {
+            Some(r) => pose_from_row(&r),
+            None => pose(HeldId::StimPack),
+        };
+    }
     let p = |view: Vec3, scale: f32, yaw: f32, pitch: f32, grip: f32, reach: f32, swing| Pose {
         view,
         scale,
@@ -97,6 +130,8 @@ pub fn pose(id: HeldId) -> Pose {
             0.80,
             None,
         ),
+        // placed from data above; never reached
+        HeldId::Lockpick | HeldId::ReviveKit => pose(HeldId::StimPack),
         // the box is carried flat and turned to show its front (no swing, like the other carried items)
         HeldId::MusicBox => p(
             vec3(0.25, -0.26, -0.52),
@@ -285,4 +320,23 @@ pub struct HeldState {
     pub last_taser_fx: f32,
     pub last_torch: Option<bool>,
     pub last_time: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lockpick_and_the_revive_kit_are_posed_from_their_data_rows_and_never_swing() {
+        for (id, name) in [(HeldId::Lockpick, "lockpick"), (HeldId::ReviveKit, "revive_kit")] {
+            let row = crate::render::fp_hands::item_pose(name).expect("the shipped row");
+            let p = pose(id);
+            assert_eq!((p.view, p.scale, p.yaw, p.pitch, p.reach), (row.view, row.scale, row.yaw, row.pitch, row.reach), "{name}");
+            assert_eq!(p.grip, vec3(0.0, row.grip, 0.0), "{name}");
+            assert!(p.swing.is_none(), "{name} has no swing");
+            assert_eq!(duration(id, Motion::Swing), 0.25, "{name} takes the use twist");
+            assert!(model_transform(id).is_finite());
+        }
+        assert_eq!(data_row_name(HeldId::Crowbar), None);
+    }
 }

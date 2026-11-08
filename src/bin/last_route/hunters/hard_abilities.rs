@@ -104,7 +104,13 @@ pub struct Rules {
     pub leap: Leap,
     pub gates: Gates,
     pub velocity_smoothing: f32,
+    /// A runner position step faster than this (cells per second) is a teleport (respawn, lift, sight regained far
+    /// away), not motion: the velocity estimate is left as it was and only re-seeded from the new position.
+    pub max_track_speed: f32,
 }
+
+/// The `max_track_speed` used when the data omits it: about three times the runner's sprint (config PLAYER_SPRINT_SPEED).
+pub const DEFAULT_MAX_TRACK_SPEED: f32 = 19.0;
 
 fn num(v: &Value, what: &str) -> Result<f32, String> {
     let n = v.as_f64().ok_or_else(|| format!("{what}: must be a number"))? as f32;
@@ -182,6 +188,11 @@ impl Rules {
                 void_black_unwatched: num(&gates["void_black_unwatched_seconds"], "gates.void_black_unwatched_seconds")?,
             },
             velocity_smoothing: num(&v["velocity_smoothing"], "velocity_smoothing")?,
+            max_track_speed: if v["max_track_speed"].is_null() {
+                DEFAULT_MAX_TRACK_SPEED
+            } else {
+                num(&v["max_track_speed"], "max_track_speed")?
+            },
         })
     }
 
@@ -234,6 +245,7 @@ pub fn rules() -> &'static Rules {
                 leap: Leap { speed: 7.2, lead_seconds: 0.15, bonk_stun: 0.8, stumble_speed: 0.3, link_clearance: 1.5 },
                 gates: Gates { nyxie_requires_dark: true, solyth_min_temperature: 60.0, void_black_unwatched: 3.0 },
                 velocity_smoothing: 8.0,
+                max_track_speed: DEFAULT_MAX_TRACK_SPEED,
             }
         })
     })
@@ -381,6 +393,23 @@ impl HardAbilities {
         self.stumble_left = 0.0;
     }
 
+    /// A stun (or anything else that stops the body) cut the leap short: it ends now and the pounce cooldown starts,
+    /// so the leap never resumes along the old `leap_dir` once the hunter is free. Nothing happens when not leaping.
+    pub fn interrupt_leap(&mut self) {
+        if !self.leaping {
+            return;
+        }
+        self.cancel();
+        if let Some(row) = self.rules.pounce(self.diff) {
+            self.pounce_cooldown = self.pounce_cooldown.max(row.cooldown);
+        }
+    }
+
+    /// Seconds until this hunter may pounce again.
+    pub fn pounce_cooldown(&self) -> f32 {
+        self.pounce_cooldown
+    }
+
     /// Advance the timers and the runner's velocity estimate. Call once per brain update, before movement.
     pub fn tick(&mut self, dt: f32, target: Option<(f32, f32)>) {
         self.pounce_cooldown = (self.pounce_cooldown - dt).max(0.0);
@@ -390,12 +419,19 @@ impl HardAbilities {
         if let Some(p) = target {
             if let Some(last) = self.last_target {
                 if dt > 0.0 {
-                    let k = (dt * self.rules.velocity_smoothing).clamp(0.0, 1.0);
                     let raw = ((p.0 - last.0) / dt, (p.1 - last.1) / dt);
-                    self.velocity = (self.velocity.0 + (raw.0 - self.velocity.0) * k, self.velocity.1 + (raw.1 - self.velocity.1) * k);
+                    // a jump faster than any runner moves is a teleport: keep the estimate, only re-seed the position
+                    if (raw.0 * raw.0 + raw.1 * raw.1).sqrt() <= self.rules.max_track_speed {
+                        let k = (dt * self.rules.velocity_smoothing).clamp(0.0, 1.0);
+                        self.velocity = (self.velocity.0 + (raw.0 - self.velocity.0) * k, self.velocity.1 + (raw.1 - self.velocity.1) * k);
+                    }
                 }
             }
             self.last_target = Some(p);
+        } else {
+            // sight lost: the next sighting starts a fresh track (no spike from the gap). `velocity` stays, since
+            // update_sight leads the intercept with the last good estimate.
+            self.last_target = None;
         }
     }
 
@@ -646,6 +682,8 @@ mod tests {
         assert_eq!(r.slam(Difficulty::Standard).unwrap().chance, 0.10);
         assert_eq!(r.slam(Difficulty::Hard).unwrap().chance, 1.0);
         assert_eq!(r.leap.speed, 7.2);
+        let sprint = crate::config::PLAYER_SPRINT_SPEED;
+        assert!(r.max_track_speed > 2.5 * sprint && r.max_track_speed < 3.5 * sprint, "about 3x the sprint: {}", r.max_track_speed);
     }
 
     /// Nyxie's and Solyth's nightmare pounce file equals the shared table (Godot lines 17, 26, 49-55).
@@ -835,6 +873,57 @@ mod tests {
         assert!(Rules::parse(r#"{"schema":"x"}"#).is_err());
         let text = embedded::data_under(PATH).next().map(|(_, t)| t).unwrap();
         assert!(Rules::parse(&text.replace("\"min\": 2.2, \"max\": 3.5", "\"min\": 9.0, \"max\": 3.5")).is_err());
+    }
+
+    #[test]
+    fn regained_sight_does_not_spike_the_velocity() {
+        let mut a = comp(Difficulty::Nightmare, "mavrine");
+        a.tick(0.1, Some((0.0, 0.0)));
+        for i in 1..=20 {
+            a.tick(0.1, Some((i as f32 * 0.1, 0.0)));
+        }
+        let built = a.target_velocity();
+        assert!(built.0 > 0.5, "a velocity was built: {built:?}");
+        a.tick(0.1, None);
+        assert_eq!(a.target_velocity(), built, "losing sight keeps the last good velocity");
+        for _ in 0..99 {
+            a.tick(0.1, None);
+        }
+        a.tick(0.1, Some((10.0, 0.0)));
+        let after = a.target_velocity();
+        let mag = |v: (f32, f32)| (v.0 * v.0 + v.1 * v.1).sqrt();
+        assert!(mag(after) <= mag(built) + 1e-5, "sight regained far away: {after:?} vs {built:?}");
+    }
+
+    #[test]
+    fn a_teleport_step_does_not_feed_the_velocity() {
+        let mut a = comp(Difficulty::Nightmare, "mavrine");
+        a.tick(0.1, Some((0.0, 0.0)));
+        a.tick(0.1, Some((0.3, 0.0)));
+        let before = a.target_velocity();
+        // 50 cells in a tenth of a second is far above max_track_speed
+        a.tick(0.1, Some((50.0, 0.0)));
+        assert_eq!(a.target_velocity(), before, "the jump is ignored");
+        a.tick(0.1, Some((50.3, 0.0)));
+        assert!(a.target_velocity().0 > before.0, "tracking goes on from the new spot");
+        let text = embedded::data_under(PATH).next().map(|(_, t)| t).unwrap();
+        let mut v: Value = serde_json::from_str(text).unwrap();
+        v["max_track_speed"] = Value::Null;
+        assert_eq!(Rules::parse(&v.to_string()).unwrap().max_track_speed, DEFAULT_MAX_TRACK_SPEED, "a missing value has a default");
+        v["max_track_speed"] = Value::from(4.0);
+        assert_eq!(Rules::parse(&v.to_string()).unwrap().max_track_speed, 4.0, "the value is data");
+    }
+
+    #[test]
+    fn interrupting_a_leap_ends_it_and_starts_the_cooldown() {
+        let mut a = comp(Difficulty::Hard, "haelith");
+        a.interrupt_leap();
+        assert_eq!(a.pounce_cooldown(), 0.0, "nothing to interrupt");
+        assert!(a.try_pounce(&ctx(), &mut Budget::default()));
+        a.interrupt_leap();
+        assert!(!a.leaping);
+        assert_eq!(a.pounce_cooldown(), rules().pounce(Difficulty::Hard).unwrap().cooldown);
+        assert_eq!(a.leap_wanted(0.1), 0.0, "no leap distance is left");
     }
 
     #[test]

@@ -22,6 +22,8 @@ const RING_STEP: f32 = 1.2;
 const RING_ANGLE: f32 = 2.39996;
 /// ADMIN_SAFE_SEARCH: how far (cells) a teleport looks for open floor.
 const SAFE_SEARCH: i32 = 16;
+/// What a room guest sees when an admin row would change the hunters (they live on the host).
+pub(super) const HUNTERS_ON_HOST: &str = "ADMIN // HUNTERS LIVE ON THE ROOM'S HOST";
 
 /// NPC TELEPORT TO ME: the NPC lands on the open floor nearest the runner, on the runner's level.
 /// `shift` moves it and drops its path, so it replans from there.
@@ -292,6 +294,11 @@ impl Admin {
                 let Some((id, name)) = hunters.get(h).cloned() else {
                     return;
                 };
+                // guest rule: a room's hunters live on its host; only the emote report (op 3) reads them here
+                if self.hunters_remote(g) && op != 3 {
+                    g.say(HUNTERS_ON_HOST);
+                    return;
+                }
                 if id == super::menu::SPIDER_PAIR {
                     self.spider_pair(g, content, op);
                     self.mark_debug();
@@ -925,7 +932,16 @@ impl Admin {
         });
     }
 
+    /// A room guest draws the hunters the host sends: admin rows never change them here.
+    pub(super) fn hunters_remote(&self, g: &Game) -> bool {
+        self.in_room || g.remote_hunters
+    }
+
     fn all_hunters(&mut self, g: &mut Game, content: &Content, i: usize) {
+        if self.hunters_remote(g) {
+            g.say(HUNTERS_ON_HOST);
+            return;
+        }
         let prof = g.prof();
         let at = g.p.pos;
         match i {
@@ -1017,7 +1033,8 @@ impl Admin {
         g.announce("RELAY ONLINE");
         g.say("ADMIN // SIGNAL RELAY GRANTED");
         let need = g.prof().activation_relays.min(g.fac.relays.len() as i32);
-        if !g.is_infinite()
+        if !self.hunters_remote(g)
+            && !g.is_infinite()
             && !g.hunters.is_empty()
             && !g.hunters[0].active
             && g.relays_collected >= need
@@ -1030,6 +1047,10 @@ impl Admin {
 
     /// _admin_spawn_ravelle_trap: a wire 1.5 m ahead, across the runner's facing.
     fn spawn_ravelle_trap(&mut self, g: &mut Game) {
+        if self.hunters_remote(g) {
+            g.say(HUNTERS_ON_HOST);
+            return;
+        }
         let (fx, fy) = g.forward2();
         let at = (g.p.pos.0 + fx * 1.5, g.p.pos.1 + fy * 1.5);
         let across = (-fy * 1.42, fx * 1.42);

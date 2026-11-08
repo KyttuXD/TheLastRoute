@@ -595,6 +595,43 @@ mod tests {
         assert!(g.slots.iter().flatten().all(|s| s.item != Item::ReviveKit));
     }
 
+    /// A downed runner on the Infinite route with the hunters cleared, a battery selected and (when `kit`) a revive kit
+    /// in another slot; one frame with the use key held.
+    fn downed_frame(kit: bool) -> Game {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, "KIT-DOWN-7", 0, &content, &catalog);
+        g.hunters.clear();
+        for s in g.slots.iter_mut() {
+            *s = None;
+        }
+        g.selected = 0;
+        g.slots[0] = Some(Slot { item: Item::Battery, n: 1 });
+        if kit {
+            g.slots[2] = Some(Slot { item: Item::ReviveKit, n: 1 });
+        }
+        g.p.stun = 0.0;
+        g.downed = Some(super::super::revive::Downed { remaining: 30.0, held: 0.0, hunter: 0 });
+        let c = crate::game::Controls { use_item: true, ..Default::default() };
+        g.step(1.0 / 60.0, &c, &content, &catalog, &Sounds::default());
+        g
+    }
+
+    #[test]
+    fn the_use_key_spends_a_kit_from_any_slot_to_stand_a_downed_runner_up() {
+        assert!(crate::ui::inventory::rules().kit_self_revive, "the data allows a self-revive");
+        let g = downed_frame(true);
+        assert!(g.downed.is_none(), "the kit stood the runner up");
+        assert!(g.slots.iter().flatten().all(|s| s.item != Item::ReviveKit), "the kit is spent");
+        assert_eq!(g.slots[0].map(|s| s.item), Some(Item::Battery), "the selected item is untouched");
+    }
+
+    #[test]
+    fn without_a_kit_the_use_key_leaves_the_runner_down() {
+        let g = downed_frame(false);
+        assert!(g.downed.is_some(), "no kit, no self-revive");
+        assert_eq!(g.slots[0].map(|s| s.item), Some(Item::Battery));
+    }
+
     #[test]
     fn a_crowbar_hit_stuns_and_prints_no_stunned_message() {
         let Some((mut g, t)) = face_a_hunter() else { return };

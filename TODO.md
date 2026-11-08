@@ -191,7 +191,7 @@ Sources: the website game at KyttusLab/games/night-watch (src/modes, docs/ROADMA
 - [ ] VPS update procedure: stop the lastroute-rust service, replace /opt/lastroute-rust/current/lr_server, check the SHA-256, start the service
 - [ ] Hunter stats stay hidden from other players in a room (the stats check from the open questions, Q24)
 - [ ] Room directory: list open rooms, show capacity, and refresh without reconnecting (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
-- [ ] Reconnect: a player who drops can rejoin their room within the reserved window (2026-11-08: server slot hold and client rejoin.rs written, not built; routes and app hooks left)
+- [ ] Reconnect: a player who drops can rejoin their room within the reserved window (2026-11-08: client rejoin wired in app (no host takeover while the window is open, last try counted, CREATE ROOM remembered), tested; server routes left)
 - [ ] Host migration or room close when the host leaves, with a clear message to the others (2026-11-08: room close with HOST LEFT reason written server and client, not built; host migration left)
 - [ ] Co-op revives: downed runners, a revive hold and the window (`game/player/revive_downs.gd`, `_update_revives` at `infinite_route_test.gd` 6901) (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [x] Spectate a downed or ghost runner (the SPECTATE admin button has no handler yet) (already done: game/spectate.rs)
@@ -353,7 +353,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [x] Port Porcelle's hunter radar ping on the minimap: a slow ping about every 8 s, an eased ring, and a steady dim dot under reduced motion (effort S; game/hud/radar_ping.gd) (already done: ui/radar_ping.rs)
 - [x] Port the centre reticle, shown only while the view is aimed (hidden with the cursor free, at the desk, under the tablet or in the pause menu) (effort S; game/hud/crosshair.gd)
 - [ ] Port world-space teammate markers: name and distance at each teammate, edge markers off screen, floor offset, dimming when stale, DOWN and CAUGHT labels (effort M; game/hud/teammate_waypoints.gd) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
-- [ ] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [x] Port quick-chat map pings: a room-chat ping shows on the minimap and full map on the floor where it was posted (effort S; game/hud/hud.gd) (done 2026-11-08)
 - [x] Port the QUIT TO DESKTOP confirmation: YES on the left, NO focused by default, Esc or click outside closes; YES saves and closes a hosted room (effort S; game/ui_common/quit_confirm.gd)
 - [ ] Port the top-centre update badge: downloading percentage, then RESTART NOW or LATER, with the status-bar text during a run (effort S; game/menus/update_badge.gd) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [ ] Port the games hub ADMIN panel: build info, server health, updates per platform, public route status, notices, debug toggles, skin removal (no tokens shown) (effort M; game/admin/hub_admin_panel.gd) (2026-11-08: existing hub panel covers health, updates, public route; live check left)
@@ -541,8 +541,8 @@ Godot references are `game/...` under the KyttusLabApp folder.
 
 - [ ] Carnival booths and carousel rides (`docs/CARNIVAL_BOOTHS.md`, `_request_booth` and `_request_carousel` in `infinite_route_test.gd` 4676-4835) (effort L)
 - [ ] Flood valves (`_request_valve`, `infinite_route_test.gd` 4924)
-- [ ] Waypoints: one per player, route chevrons and a ground trail (`docs/WAYPOINTS.md`, `_request_waypoint` at 1739). Rust only has an admin label reading "NO WAYPOINT SET" (`src/bin/last_route/ui/admin/actions.rs` 324) (status note: [~] in the parity-gaps audit, [x] in the full audit; the less complete status is kept) (2026-11-08: per-player store, sync fields and chevrons written; ground trail, set key and hooks left)
-- [ ] Map: waypoint and teammate pins are missing. Discovery and the full map are ported (`src/bin/last_route/ui/map.rs`) (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [ ] Waypoints: one per player, route chevrons and a ground trail (`docs/WAYPOINTS.md`, `_request_waypoint` at 1739). Rust only has an admin label reading "NO WAYPOINT SET" (`src/bin/last_route/ui/admin/actions.rs` 324) (status note: [~] in the parity-gaps audit, [x] in the full audit; the less complete status is kept) (2026-11-08: own waypoint sent, ages and world chevrons wired and tested; ground trail and set key left)
+- [ ] Map: waypoint and teammate pins are missing. Discovery and the full map are ported (`src/bin/last_route/ui/map.rs`) (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: waypoint pins wired on the full map (peer_waypoint_pins) and tested; teammate position pins still to check)
 
 ### Co-op and NPCs
 
@@ -827,13 +827,13 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Host-authoritative route sync: protocol exists but the run loop does not call it (status note: [~] in the parity-gaps audit; the less complete status is kept)
 
 ### HUD and menus
-- [ ] Port Interaction prompt text: prompt wording is fixed to keyboard keys (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
+- [x] Port Interaction prompt text: prompt wording is fixed to keyboard keys (status note: [~] in the parity-gaps audit; the less complete status is kept) (done 2026-11-08)
 - [ ] Port Device-aware control glyphs: gamepad and rebind-aware prompts (effort M)
 - [ ] Port Full inventory overlay: grid with drag and drop (effort M)
 - [ ] Port Screen-edge danger effects: thermal warning panel and strength curves (effort M/S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Top-centre status bar: test server, admin active and public route segments (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [x] Port Fullscreen map: pan, zoom and recentre
-- [ ] Port Room chat, speech bubbles and subtitles (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [ ] Port Room chat, speech bubbles and subtitles (effort L/M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: chat binding, quick-chat pings and subtitle setting wired and tested; speech bubbles not checked)
 - [ ] Port Player waypoint pin: placement, clear, distance and off-screen arrow (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [ ] Port Title menu: PUBLIC ROUTE button and admin visibility for admin accounts other than KYTTU (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic written, not built; title button, admin visibility and menu hooks left)
 - [ ] Port Create an online room: the ONLINE branch is text only
@@ -842,8 +842,8 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [ ] Port Connected players list: only the local row is listed (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: logic and tests written (net/rejoin, anticheat, host_requests, ui/room_panel), not built; mod.rs and menu/world_sync hooks left)
 - [ ] Port Account panel: sign-in and account creation are offline only (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: client logic and tests written (net/api.rs, ui/account_panel.rs etc.), not built; menu/app hooks left)
 - [ ] Port Settings audio: voice and subtitle rows have no effect (effort M/S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Settings display: vsync, FPS limit, quality, ADS and focus pause have no effect (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: frame cap logic written; focus source, ADS reader and hooks left)
-- [ ] Port Settings controls: rebinding is not possible, and the CHANGE, + and RESET buttons are disabled (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
+- [ ] Port Settings display: vsync, FPS limit, quality, ADS and focus pause have no effect (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: frame cap written; focus pause now reads real window focus on Windows (web always focused); ADS reader left)
+- [ ] Port Settings controls: rebinding is not possible, and the CHANGE, + and RESET buttons are disabled (effort M) (status note: [~] in the parity-gaps audit; the less complete status is kept) (2026-11-08: CHAT binding opens chat, Escape cancelling a rebind keeps the panel open, RESET no longer leaves a key on two actions; all tested; other app hooks left)
 - [ ] Port Pause menu: SAID RECENTLY and MUTE block, and the save status line (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 
 ### Network
@@ -882,7 +882,7 @@ Session 2026-11-03: Classic is playable with data-driven rules, full building ma
 - [x] Port Hunter draw pool: Nightmare weights missing (effort S). Done 2026-11-03: `tier_weights_for("nightmare")` returns .175/.525/.30 and Nightmare is in `LOBBY`.
 - [ ] Port Movement, camera and look tuning: pitch clamp, FOV maximum and bob rates differ from Godot (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: bob rates moved to data; Godot re-check left)
 - [ ] Port Stamina and tool tuning: overheat multiplier applied to sprint, and the troll drain missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
-- [ ] Port Rebindable controls: fixed labels, no rebinding or saved bindings (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
+- [ ] Port Rebindable controls: fixed labels, no rebinding or saved bindings (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept) (2026-11-08: rebinding, RESET and saved bindings fixed and tested; CHAT and interact prompt follow the bindings; other app hooks left)
 - [ ] Port Prop collision boxes: solidity is cell-based, with no oriented boxes (effort M) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Room catalogue sizes: room size profiles missing (effort S) (status note: [~] in the parity-gaps audit 2026-11-03; the less complete status is kept)
 - [ ] Port Region definitions: embedded JSON is never read
@@ -1015,7 +1015,7 @@ Source: `LastRoute Godot\KyttusLabApp` (re-synced from the other computer) compa
 - [ ] NPC names changed to the R-4821 format (`game/config/guest_names.gd:1-38`). Rust `npc.rs:125-138` still emits K-04821, and the module doc at `npc.rs:66` is stale.
 - [ ] Minimap: off-view border pointers, other-floor dimmed marks, stale dimming, downed and caught rings (`game/hud/facility_map.gd:1357-1576`, `remote_players.gd:1482-1500`). Rust `ui/map.rs:263-307` has none; `net/world_sync.rs:146-153` has no age, state or floor, and `world_sync.rs:487` drops other floors. (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
 - [x] Player list: ALIVE, CAUGHT, SPECTATING, DISCONNECTED, IN LOBBY; host first, then name; floor and ping text (`game/network/room_player_list.gd:14-67`). Done in `ui/pause.rs` (`status_of`, `order`, `floor_text`, `ping_text`, `player_rows`) with `RunnerState` and the sample's `spectating`, `game_over`, `escape_active` flags in `net/world_sync.rs`. Open: Rust has no spectator mode, so SPECTATING is never sent; IN LOBBY has no caller (the list only opens in a run); the talking and pulse columns are not ported; the floor now shows `-depth` as the Godot list does, which changes the sign shown on Rust routes (confirm with KT).
-- [ ] Teammate waypoints: the setting is stored but nothing reads it (`app/settings.rs:35, 64, 107`, `ui/settings_panel.rs:400-404`). Godot: `game/hud/teammate_waypoints.gd:10-159`. The admin TELEPORT TO WAYPOINT and CLEAR WAYPOINT rows are inert (`ui/admin/menu.rs:122-123`). (2026-11-08: overlay honours the setting; admin rows hook left)
+- [ ] Teammate waypoints: the setting is stored but nothing reads it (`app/settings.rs:35, 64, 107`, `ui/settings_panel.rs:400-404`). Godot: `game/hud/teammate_waypoints.gd:10-159`. The admin TELEPORT TO WAYPOINT and CLEAR WAYPOINT rows are inert (`ui/admin/menu.rs:122-123`). (2026-11-08: overlay wired: teammate chevrons and map pins drawn under the setting, tested; admin rows hook left)
 
 ### Rooms, guests and hub
 - [x] Room-owner RESTART ROUTE and END ROUTE: Godot applies and acks (`game/autoload/room_state.gd:580-630`). Done 2026-11-03: `net/world_sync.rs` reads the heartbeat reply reserved commands (`RouteCommand`, `OwnerCursor`), acks them through commandSince/commandAck, sends the host End to guests (`Message::End`); `app/mod.rs` applies restart and end. Not done: kick, settings and transfer are named as not in this build (`net/api.rs:406-440` parse is unchanged); Godot mode, scale and daytime settings are not applied; nightmare difficulty (index 3) maps to STANDARD.
@@ -1095,7 +1095,7 @@ Source: the 2026-11-04 repo audit. Items that need a design decision are in `doc
 - [ ] Shared HardAbilities: burst, intercept, slam (`hunters/ai/hard_abilities.gd` 55, 60, 65, 179); confirm the Nyxie data file matches 15-19, 51-53
 - [ ] Check hunter constants against Godot: brain stuck/centre/give-up (`hunter_brain.gd` 30-43), hearing and sight (`hunter_seats.gd` 14-16), void sight 2.5 (`void_cyan_gimmick.gd` 7), relay rush 7 and delay (`hunter_director.gd` 10-13, 39)
 - [ ] NPC teammates: storey crossing (`npc_teammates.gd` 34, 396-567), chat with 30 s cooldown (52, 637), down and revive (235, 261), remaining command ops (47-51), 12 Hz sync (35) (update 2026-11-04: storey crossing is done (bots cross flights and ladders); chat, down and revive, command ops and sync are open)
-- [ ] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing (2026-11-08: markers, pings, chat, pause and waypoint code written, not built; mod.rs/app/world_sync hooks left)
+- [x] Teammate waypoint overlay (`hud/teammate_waypoints.gd`, `hud/waypoint_overlay.gd`); the setting is saved and does nothing (done 2026-11-08)
 - [ ] Interactable diff: vent, lift against `assets/interactables/`
 - [ ] Remove the "did you hear that?" line (`game/hunting.rs` 253) and the STUNNED messages (`game/items.rs` 156, 196)
 

@@ -106,8 +106,7 @@ pub fn data() -> Option<&'static HandData> {
     D.get_or_init(|| HandData::parse(TEXT).ok()).as_ref()
 }
 
-/// The pose row of a held item that has no Item variant yet (lockpick, revive kit).
-#[allow(dead_code)]
+/// The pose row of a held item placed from data (`HeldId::Lockpick`, `HeldId::ReviveKit`: "lockpick", "revive_kit").
 pub fn item_pose(name: &str) -> Option<PoseRow> {
     data().and_then(|d| d.pose(name)).cloned()
 }

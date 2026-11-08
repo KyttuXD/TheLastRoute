@@ -7,11 +7,17 @@ use super::hunter::{CreatureInput, HunterView, Input};
 use crate::content::embedded;
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::wolf_spider::Phase;
-use crate::hunters::secret_creatures::{IDS, WHITE};
+use crate::hunters::secret_creatures::{BLACK, IDS, WHITE};
 use macroquad::prelude::*;
 use serde_json::Value;
 
 const CLIPS: [&str; 6] = ["idle", "walk", "sprint", "bark", "attack", "death"];
+
+/// Metres per bbmodel unit of each spider rig: the white one is the original 0.035 x 1.5; the black one is 0.05 (KT's call,
+/// so its bigger model stands under 3 m).
+fn want_metres(id: &str) -> f64 {
+    if id == BLACK { 0.05 } else { 0.0525 }
+}
 
 fn json(path: &str) -> Value {
     serde_json::from_slice(embedded::asset(path).unwrap_or_else(|| panic!("{path} is not embedded"))).unwrap()
@@ -54,8 +60,9 @@ fn the_rigs_drive_the_models_own_groups_and_carry_the_six_clips() {
         for n in names.iter().filter(|n| *n != "hitbox") {
             assert!(bones.contains(&n.as_str()), "{id}: model group {n} has no bone");
         }
-        // 0.0525 m per unit: the original 0.035 scaled 1.5x (the spider is drawn 1.5x its original size)
-        assert!((rig_json["metres"].as_f64().unwrap() - 0.0525).abs() < 1e-9, "{id}: 0.0525 m per unit (1.5x the original 0.035)");
+        // white: 0.0525 m per unit (the original 0.035 scaled 1.5x); black: 0.05 m per unit (KT's call)
+        let want = want_metres(id);
+        assert!((rig_json["metres"].as_f64().unwrap() - want).abs() < 1e-9, "{id}: {want} m per unit");
         for clip in CLIPS {
             let c = &rig_json["clips"][clip];
             assert!(c.is_object(), "{id}: no {clip} clip");
@@ -85,8 +92,8 @@ fn a_creature_rig_is_drawn_at_its_own_scale_and_loops_close() {
     for id in IDS {
         let r: std::rc::Rc<Rig> = rig(id).expect("the rig loads");
         assert!(r.is_creature());
-        // 0.0525 = the original 0.035 x 1.5, so the spider is drawn 1.5x bigger
-        assert!((r.draw_scale() - 0.0525).abs() < 1e-6, "{id}: {}", r.draw_scale());
+        // white 0.0525 (the original 0.035 x 1.5), black 0.05
+        assert!((r.draw_scale() as f64 - want_metres(id)).abs() < 1e-6, "{id}: {}", r.draw_scale());
         for clip in ["idle", "walk", "sprint"] {
             let c = &r.clips[clip];
             assert!(c.looping && (c.length - c.times[c.times.len() - 1]).abs() < 1e-4);
@@ -200,10 +207,29 @@ fn the_posed_creature_stands_on_the_ground_at_its_size() {
         // the model-space root bone sits at the origin and the whole body is finite
         assert!(out.bones.iter().all(|m| m.to_cols_array().iter().all(|v| v.is_finite())), "{id}");
         let top = r.bones.iter().enumerate().map(|(k, _)| out.root.transform_point3(out.bones[k].w_axis.truncate()).y).fold(f32::MIN, f32::max);
-        assert!(top > 1.0 && top < 3.2, "{id}: the highest joint is {top} m up (about 2 m at the head, the black one a little taller)");
+        assert!(top > 1.0 && top < 3.0, "{id}: the highest joint is {top} m up (about 2 m at the head, the black one a little taller)");
         let low = r.bones.iter().enumerate().map(|(k, _)| out.root.transform_point3(out.bones[k].w_axis.truncate()).y).fold(f32::MAX, f32::min);
         assert!(low > -0.5, "{id}: the lowest joint is {low} m");
     }
+}
+
+#[test]
+fn the_black_spider_at_its_scale_stands_taller_than_the_white_but_under_three_metres() {
+    // the highest group pivot of the rest pose, in bbmodel units, times the rig's metres per unit
+    fn rest_top(id: &str) -> f64 {
+        fn walk(nodes: &Value, top: &mut f64) {
+            for n in nodes.as_array().into_iter().flatten().filter(|n| n.is_object()) {
+                *top = top.max(n["origin"][1].as_f64().unwrap_or(0.0));
+                walk(&n["children"], top);
+            }
+        }
+        let mut top = f64::MIN;
+        walk(&json(&format!("hunters/{id}.bbmodel"))["outliner"], &mut top);
+        top * json(&format!("hunters/anim/{id}.json"))["metres"].as_f64().unwrap()
+    }
+    let (black, white) = (rest_top(BLACK), rest_top(WHITE));
+    assert!(black < 3.0, "the black spider's rest top is {black} m");
+    assert!(black > white, "the black spider ({black} m) is the taller one (white {white} m)");
 }
 
 #[test]

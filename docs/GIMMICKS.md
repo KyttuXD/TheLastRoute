@@ -720,7 +720,7 @@ There are two modes. **The finite floor (main_3d) uses the legacy mode**: main_3
 **Player state:** `in_vent`, `vent_entry_id`, and `vent_time_in`, which increases by dt while `in_vent`.
 
 **use_vent(vent_id):**
-1. If there are no vents, or the id is unknown: return "The grate won't budge."
+1. If there are no vents, or the id is unknown: return "THE GRATE WON'T BUDGE"
 2. `i = vent.index`, `n = 4`.
 3. If `!player.in_vent` (entering): `in_vent = true`, `vent_entry_id = vent_id`, `vent_time_in = 0`. **Verrine teleports** to `vents[(i + 2) % n]` (cell + 0.5).
 4. `next = vents[(i + 1) % n]`. If `next.id == vent_entry_id`: the player exits (`in_vent = false`, `entry = ""`) and the message is "VENT NETWORK EXITED". The player is not moved: they stay at the grate they pressed.

@@ -30,6 +30,8 @@ const HIDE_PHASE_MS = 30_000;
 const ITEM_LIMIT = 96;
 const DISCOVERY_LIMIT = 512;
 const DISCOVERY_TOTAL_LIMIT = 30_000;
+// Endless rooms keep more discovered cells, but bounded. Matches DISCOVERY_ENDLESS_LIMIT in room_service.rs.
+const DISCOVERY_ENDLESS_LIMIT = 250_000;
 
 function finite(value, fallback, minimum, maximum) {
   const number = Number(value);
@@ -409,7 +411,7 @@ export function createRoomService({
     for (const claim of (Array.isArray(body.itemClaims) ? body.itemClaims : []).slice(0, ITEM_LIMIT)) {
       if (Math.round(finite(claim?.depth, -1, 0, 9_999)) === room.activeDepth) applyItemClaim(room.items, claim);
     }
-    const maxDiscovery = room.settings.mapScale === "endless" ? Infinity : DISCOVERY_TOTAL_LIMIT;
+    const maxDiscovery = room.settings.mapScale === "endless" ? DISCOVERY_ENDLESS_LIMIT : DISCOVERY_TOTAL_LIMIT;
     for (const cell of (Array.isArray(body.discoveryClaims) ? body.discoveryClaims : []).slice(0, DISCOVERY_LIMIT)) {
       if (typeof cell === "string" && cell.length <= 12 && room.discovered.size < maxDiscovery && !room.discovered.has(cell)) {
         room.discovered.add(cell);

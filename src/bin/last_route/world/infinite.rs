@@ -161,6 +161,24 @@ pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Faci
     legacy_chunk(seed, k, cat, loot)
 }
 
+/// A legacy chunk's backpack draw from the table's `backpacks` list (`LootTables.pick_backpack`): the rank is
+/// `1 + floor(max(0, -level) / BACKPACK_DEPTH_STEP)`, capped at the list length, then one `next_index` over that
+/// rank. An empty list draws nothing and places nothing; an unknown name draws but places nothing.
+fn backpack_pickup(backpacks: &[String], level: i32, rng: &mut Rng) -> Option<Pickup> {
+    let n = backpacks.len();
+    if n == 0 {
+        return None;
+    }
+    let depth = (0.0f64.max(-(level as f64)) / super::route::loot::BACKPACK_DEPTH_STEP).floor() as usize;
+    let depth_rank = (1 + depth).clamp(1, n);
+    match backpacks[rng.next_index(depth_rank).min(n - 1)].as_str() {
+        "backpack_small" => Some(Pickup::BackpackSmall),
+        "backpack_medium" => Some(Pickup::BackpackMedium),
+        "backpack_large" => Some(Pickup::BackpackLarge),
+        _ => None,
+    }
+}
+
 /// The old builder: a `Facility::generate` floor re-dressed as streamed rooms, with Rust's own
 /// loot, seams, stair flights and fixtures.
 pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Facility, Fixtures) {
@@ -255,12 +273,24 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
                 place(item, &mut rng, &mut pickups);
             }
             "battery" => place(Pickup::Battery, &mut rng, &mut pickups),
+            "backpack" => {
+                if let Some(item) = backpack_pickup(&loot.backpacks, k.level, &mut rng) {
+                    place(item, &mut rng, &mut pickups);
+                }
+            }
             _ => {}
         }
     }
+    // one next_float per aid entry in file order (the solo chance), as LootTables.roll_aid
     for (item, chance) in &loot.aid {
-        if item == "stim_pack" && (rng.next_float() as f32) < *chance {
-            place(Pickup::Stim, &mut rng, &mut pickups);
+        let hit = (rng.next_float() as f32) < *chance;
+        let pickup = match item.as_str() {
+            "stim_pack" => Pickup::Stim,
+            "revive_kit" => Pickup::ReviveKit,
+            _ => continue,
+        };
+        if hit {
+            place(pickup, &mut rng, &mut pickups);
         }
     }
     f.pickups = pickups;
@@ -686,6 +716,67 @@ mod tests {
                 assert!(stair_link(world, 0, 0, upper).is_some(), "{world} upper {upper}");
             }
         }
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_backpack_draw_grows_with_depth_and_skips_empty_or_unknown_lists() {
+        let packs = names(&["backpack_small", "backpack_medium", "backpack_large"]);
+        let mut rng = Rng::new("packs");
+        // levels 0 to -3: rank 1, always the small pack
+        for level in [0, -1, -2, -3] {
+            for _ in 0..20 {
+                assert_eq!(backpack_pickup(&packs, level, &mut rng), Some(Pickup::BackpackSmall));
+            }
+        }
+        // level -4: rank 2, small or medium, never large
+        let draws: Vec<_> = (0..200).map(|_| backpack_pickup(&packs, -4, &mut rng)).collect();
+        assert!(draws.contains(&Some(Pickup::BackpackMedium)));
+        assert!(!draws.contains(&Some(Pickup::BackpackLarge)));
+        // level -12: rank capped at 3, the large pack comes up
+        let draws: Vec<_> = (0..200).map(|_| backpack_pickup(&packs, -12, &mut rng)).collect();
+        assert!(draws.contains(&Some(Pickup::BackpackLarge)));
+        assert_eq!(backpack_pickup(&[], -12, &mut rng), None);
+        assert_eq!(backpack_pickup(&names(&["backpack_huge"]), 0, &mut rng), None);
+    }
+
+    #[test]
+    fn legacy_loot_places_backpacks_and_revive_kits_from_the_table() {
+        let table = crate::content::loot::Loot {
+            id: "route".into(),
+            base: vec![],
+            rolls: vec![("backpack".into(), 1.0)],
+            tools: vec![],
+            backpacks: names(&["backpack_small", "backpack_medium", "backpack_large"]),
+            aid: vec![("stim_pack".into(), 1.0), ("revive_kit".into(), 1.0), ("mystery".into(), 1.0)],
+        };
+        let loot = LootTables { route: table.clone(), sewer: table };
+        // the legacy level-0 fallback and the Inferno (the sewer levels place the sewer port's own pickups);
+        // both are shallower than BACKPACK_DEPTH_STEP, so rank 1: the small pack
+        let table_loot = |f: &Facility| -> Vec<Pickup> {
+            f.pickups.iter().map(|p| p.1).filter(|p| *p != Pickup::MusicBox).collect()
+        };
+        for world in WORLDS {
+            for level in [0, INFERNO_LEVEL] {
+                let (f, _) = legacy_chunk(world, ChunkKey { cx: 2, cy: 1, level }, cat(), &loot);
+                let got = table_loot(&f);
+                assert!(got.contains(&Pickup::BackpackSmall), "{world} L{level}: {got:?}");
+                assert!(got.contains(&Pickup::Stim), "{world} L{level}: {got:?}");
+                assert!(got.contains(&Pickup::ReviveKit), "{world} L{level}: {got:?}");
+                assert_eq!(got.len(), 3, "{world} L{level}: an unknown aid item placed something: {got:?}");
+            }
+        }
+        // an empty backpack list rolls the backpack but places nothing
+        let mut none = loot.clone();
+        none.route.backpacks.clear();
+        none.sewer.backpacks.clear();
+        none.route.aid.clear();
+        none.sewer.aid.clear();
+        let (f, _) = legacy_chunk(WORLDS[0], ChunkKey { cx: 2, cy: 1, level: INFERNO_LEVEL }, cat(), &none);
+        assert!(table_loot(&f).is_empty(), "{:?}", f.pickups);
     }
 
     #[test]

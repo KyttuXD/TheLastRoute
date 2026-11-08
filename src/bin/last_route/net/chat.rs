@@ -284,6 +284,10 @@ pub struct ChatRules {
     pub bubble_max_chars: usize,
     /// How many names the pause menu's SAID RECENTLY list shows.
     pub said_recently_max: usize,
+    /// The quick-chat lines (upper case, at most 24 characters each), the first one first; each is sent as a map ping.
+    pub quick_chat_presets: Vec<String>,
+    /// The channel a quick-chat ping goes on ("team" or "nearby").
+    pub quick_chat_channel: String,
 }
 
 impl Default for ChatRules {
@@ -306,6 +310,8 @@ impl Default for ChatRules {
             bubble_seconds: 5.0,
             bubble_max_chars: 40,
             said_recently_max: 6,
+            quick_chat_presets: vec!["OVER HERE".into(), "HELP".into(), "HUNTER HERE".into(), "FOLLOW ME".into(), "WAIT".into(), "GO GO GO".into()],
+            quick_chat_channel: "team".into(),
         }
     }
 }
@@ -342,6 +348,24 @@ impl ChatRules {
             bubble_seconds: v.get("bubble_seconds").and_then(Value::as_f64).filter(|s| *s > 0.0).map(|s| s as f32).unwrap_or(d.bubble_seconds),
             bubble_max_chars: v.get("bubble_max_chars").and_then(Value::as_u64).map(|n| (n as usize).clamp(4, MAX_CHAT_LENGTH)).unwrap_or(d.bubble_max_chars),
             said_recently_max: v.get("said_recently_max").and_then(Value::as_u64).map(|n| (n as usize).clamp(1, 20)).unwrap_or(d.said_recently_max),
+            quick_chat_presets: v
+                .get("quick_chat_presets")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(|p| sanitize_text(p).to_uppercase().chars().take(24).collect::<String>())
+                        .filter(|p| !p.trim().is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|p| !p.is_empty())
+                .unwrap_or(d.quick_chat_presets),
+            quick_chat_channel: v
+                .get("quick_chat_channel")
+                .and_then(Value::as_str)
+                .map(|c| c.trim().to_lowercase())
+                .filter(|c| CHAT_CHANNELS.contains(&c.as_str()))
+                .unwrap_or(d.quick_chat_channel),
         }
     }
 
@@ -539,7 +563,14 @@ pub fn fade_alpha(age: f32, life: f32, fade: f32) -> f32 {
 
 /// Guest side: the message to send for a typed line (`send_chat(text, channel)` + position context).
 pub fn submit(text: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64) -> Option<Message> {
+    submit_with(text, channel, at, world, depth, "", false)
+}
+
+/// [`submit`] with the quick-chat `preset` it came from (empty for a typed line) and whether it is a map `ping`.
+pub fn submit_with(text: &str, channel: &str, at: [f64; 2], world: [f64; 3], depth: i64, preset: &str, ping: bool) -> Option<Message> {
     let mut payload = Map::new();
+    payload.insert("preset".into(), json!(preset));
+    payload.insert("ping".into(), json!(ping));
     payload.insert("text".into(), json!(text));
     payload.insert("channel".into(), json!(channel));
     payload.insert("at".into(), json!(at));
@@ -764,5 +795,30 @@ mod tests {
         feed.tick(rules.ping_seconds);
         assert!(feed.pings().is_empty());
         assert_eq!(ping_alpha(1.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_quick_chat_submission_carries_its_preset_and_ping() {
+        let Some(Message::SubmitChatPayload { payload }) = submit_with("OVER HERE", "team", [1.0, 2.0], [1.0, 0.0, 2.0], -2, "OVER HERE", true) else { panic!() };
+        assert_eq!(payload.get("ping"), Some(&json!(true)));
+        assert_eq!(payload.get("preset"), Some(&json!("OVER HERE")));
+        let line = ChatLine::sanitize(3, "A", &payload, false);
+        assert!(line.ping && line.depth == -2);
+        let Some(Message::SubmitChatPayload { payload }) = submit("hi", "team", [0.0; 2], [0.0; 3], 0) else { panic!() };
+        assert_eq!(payload.get("ping"), Some(&json!(false)), "a typed line is not a ping");
+        assert_eq!(payload.get("preset"), Some(&json!("")));
+    }
+
+    #[test]
+    fn quick_chat_presets_and_channel_come_from_the_data_upper_case() {
+        let rules = ChatRules::load();
+        assert_eq!(rules.quick_chat_presets.first().map(String::as_str), Some("OVER HERE"));
+        assert!(rules.quick_chat_presets.iter().all(|p| *p == p.to_uppercase() && !p.is_empty()));
+        assert!(CHAT_CHANNELS.contains(&rules.quick_chat_channel.as_str()));
+        let parsed = ChatRules::parse(&json!({ "quick_chat_presets": ["  over there ", "", 5], "quick_chat_channel": "shout" }));
+        assert_eq!(parsed.quick_chat_presets, vec!["OVER THERE".to_string()]);
+        assert_eq!(parsed.quick_chat_channel, "team", "an unknown channel falls back");
+        let empty = ChatRules::parse(&json!({ "quick_chat_presets": [] }));
+        assert_eq!(empty.quick_chat_presets, ChatRules::default().quick_chat_presets);
     }
 }

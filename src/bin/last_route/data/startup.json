@@ -14,8 +14,6 @@
     "run_status": "UPDATE {percent}%"
   },
   "account_panel": {
-    "name_min": 3,
-    "name_max": 24,
     "pending_signin": "SIGNING IN...",
     "pending_create": "CREATING ACCOUNT...",
     "pending_password": "CHANGING PASSWORD...",

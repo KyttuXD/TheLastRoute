@@ -419,9 +419,6 @@ pub fn moving_backward(vel: (f32, f32), yaw: f32) -> bool {
     (vel.0 * fx + vel.1 * fz) / speed < -0.5
 }
 
-/// Runs the driver of `key` for this frame and draws the figure. The figure's own ground step since its last frame
-/// says whether a moving state is walking backwards (a remote runner's or a bot's facing is its yaw).
-#[allow(clippy::too_many_arguments)]
 /// Sets where bot `name` looks this frame: the head's yaw offset from the body (+ left) and its pitch (+ up), in radians.
 /// Call before [`draw_bots`] (the host from the bot's life state, a guest from the wire).
 pub fn set_bot_look(name: &str, yaw: f32, pitch: f32) {
@@ -429,7 +426,14 @@ pub fn set_bot_look(name: &str, yaw: f32, pitch: f32) {
         return;
     }
     BOT_LOOK.with(|m| {
-        m.borrow_mut().insert(name.to_string(), (yaw, pitch));
+        let mut m = m.borrow_mut();
+        // the name is copied only the first time a bot looks; after that the entry is updated in place
+        match m.get_mut(name) {
+            Some(look) => *look = (yaw, pitch),
+            None => {
+                m.insert(name.to_string(), (yaw, pitch));
+            }
+        }
     });
 }
 
@@ -444,7 +448,9 @@ const LOOK_YAW_CAP: f32 = 1.5;
 
 /// Draws one driven figure and returns its held flashlight's lamp point (see [`draw_body`]). `look_pitch` is the runner's
 /// aim (+ up) that tilts its head; a bot passes where it looks. `look_yaw` turns the head from the body (+ left); a
-/// runner or an older peer passes 0.
+/// runner or an older peer passes 0. The figure's own ground step since its last frame says whether a moving state is
+/// walking backwards (a remote runner's or a bot's facing is its yaw).
+#[allow(clippy::too_many_arguments)]
 fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_yaw: f32, look_pitch: f32, pick: &Pick, slim: bool, state: &RunnerState, held: Option<Item>, emote: Option<(&str, u32)>, dt: f32, epoch: u64) -> Option<Vec3> {
     let driven = FIGURES.with(|f| {
         let mut f = f.borrow_mut();
@@ -1154,5 +1160,28 @@ mod tests {
         assert_eq!(BOT_LOOK.with(|m| m.borrow().get("R-00001").copied()), Some((0.4, -0.1)));
         set_bot_look("R-00001", f32::NAN, 0.0);
         assert_eq!(BOT_LOOK.with(|m| m.borrow().get("R-00001").copied()), Some((0.4, -0.1)), "a bad sample leaves the look");
+    }
+
+    #[test]
+    fn a_remote_runners_lockpick_set_and_revive_kit_are_carried_by_their_first_person_grip() {
+        let d = crate::net::held_wire::data().expect("remote_held.json parses");
+        for (item, name) in [(Item::Lockpick, "lockpick"), (Item::ReviveKit, "revive_kit")] {
+            let p = d.pose(item);
+            assert!(!p.upright && p.tilt_deg == 0.0, "{name} is carried, not stood on its handle like a crowbar");
+            let fp = crate::render::fp_hands::item_pose(name).expect("first-person row");
+            assert_eq!(p.grip, fp.grip, "{name} hangs by the same grip as in first person");
+            assert!(p.scale > 0.0);
+        }
+    }
+
+    #[test]
+    fn set_bot_look_updates_a_known_bot_in_place() {
+        set_bot_look("R-LOOK-2", 0.1, 0.2);
+        let n = BOT_LOOK.with(|m| m.borrow().len());
+        set_bot_look("R-LOOK-2", -0.3, 0.05);
+        assert_eq!(BOT_LOOK.with(|m| m.borrow().get("R-LOOK-2").copied()), Some((-0.3, 0.05)), "the newest look wins");
+        assert_eq!(BOT_LOOK.with(|m| m.borrow().len()), n, "a second look adds no entry");
+        set_bot_look("R-LOOK-3", 0.0, 0.0);
+        assert_eq!(BOT_LOOK.with(|m| m.borrow().len()), n + 1, "a new bot is added");
     }
 }

@@ -96,6 +96,14 @@ fn knock_volume_with(base: f32, falloff: f32, d: f32) -> f32 {
     (base * (1.0 - d / falloff)).max(0.0)
 }
 
+/// Pan of a knock at `hunter` heard by a runner at `runner` facing `facing`, the way a hunter step pans
+/// (audio/cues/rules.rs hunter_step_pan_volume_with): the offset along the runner's right over `pan_span`, in -1..1.
+fn knock_pan(hunter: (f32, f32), runner: (f32, f32), facing: (f32, f32), pan_span: f32) -> f32 {
+    let offset = (hunter.0 - runner.0, hunter.1 - runner.1);
+    let right = (-facing.1, facing.0);
+    ((offset.0 * right.0 + offset.1 * right.1) / pan_span.max(0.001)).clamp(-1.0, 1.0)
+}
+
 impl Game {
     /// The host's hunter frame (Godot `_collect_hunter_report`): one object per hunter of every list, with its id,
     /// position, facing, state name, active flag, stun, slow factor and disguise, and the `level` it stands on and its
@@ -267,6 +275,8 @@ impl Game {
             return;
         }
         crate::hunters::gimmicks::nyxie::party_advance(dt);
+        // the hard-ability party clocks (hunters/hard_abilities.rs): advanced once per host frame, every level
+        self.resident_hunters.advance_hard_party(dt);
         // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
         crate::hunters::path_scheduler::begin_frame(&self.fac);
         // one navigation graph over the active and resident levels, given to every brain of every list
@@ -354,6 +364,11 @@ impl Game {
         let mut all_events: Vec<(usize, Event)> = vec![];
         let mut caught: Option<usize> = None;
         let mut light = super::light_sight::LightFrame::default();
+        // the active level's hard-ability party: every brain shares one budget and one clock (before this frame's advance)
+        let (party, clock) = self.resident_hunters.hard_party(self.fac.level);
+        for h in &mut self.hunters {
+            super::resident_hunters::share_hard_party(h, &party, clock);
+        }
         for i in 0..self.hunters.len() {
             let (hunter_target, chose_bot, guest_peer) = if self.no_local_runner {
                 match self.target_for_guests(&self.hunters[i], list_level, &guests, &bot_targets) {
@@ -430,7 +445,10 @@ impl Game {
                     let d = pdist(self.hunters[i].pos, self.p.pos);
                     let volume = knock_volume(d);
                     if volume > 0.0 {
-                        crate::audio::sound::hunter_knock(0.0, volume);
+                        // panned like a hunter step: the offset along the runner's right over `pan_span` (data/audio/cues.json)
+                        let span = crate::audio::cues::rules::HunterStepHearing::get().pan_span as f32;
+                        let pan = knock_pan(self.hunters[i].pos, self.p.pos, self.forward2(), span);
+                        crate::audio::sound::hunter_knock(pan, volume);
                     }
                 }
             }
@@ -624,7 +642,7 @@ impl Game {
             self.hunters[hi].enter_search_from(pos, 1.8, &self.fac);
             self.hunters[hi].apply_stun(prof.escape_stun, false);
             crate::audio::sound::escape();
-            self.say("You broke free!");
+            self.say("YOU BROKE FREE!");
         } else if esc.remaining <= 0.0 {
             self.escape = None;
             self.end_run(hi, "contact");
@@ -679,7 +697,7 @@ impl Game {
         if c.interact {
             if self.p.hide_lock > 0.0 {
                 let s = self.p.hide_lock.ceil();
-                self.say(&format!("Locked in hiding for {s:.0}s."));
+                self.say(&format!("LOCKED IN HIDING FOR {s:.0}S"));
             } else {
                 self.leave_locker(None); // leaving a hiding spot is silent (route_interactable_3d.gd 795-808)
                 return;
@@ -980,6 +998,31 @@ mod noise_react_tests {
         h.state = State::Wander;
         g.hunters.push(h);
         (g, content)
+    }
+
+    #[test]
+    fn two_hunters_on_one_level_share_the_hard_party_budget_after_a_host_frame() {
+        let (mut g, content) = game();
+        let mut h = Brain::new(content.hunters[0].clone(), (7.5, 5.5), "U", Difficulty::Standard);
+        h.active = true;
+        h.state = State::Wander;
+        g.hunters.push(h);
+        assert!(!Arc::ptr_eq(&g.hunters[0].hard_budget, &g.hunters[1].hard_budget), "each brain starts with its own budget");
+        frames_one(&mut g);
+        assert!(Arc::ptr_eq(&g.hunters[0].hard_budget, &g.hunters[1].hard_budget), "the level's party is one budget");
+        let (party, _) = g.resident_hunters.hard_party(g.fac.level);
+        assert!(Arc::ptr_eq(&g.hunters[0].hard_budget, &party), "the budget is the level's party entry");
+        frames_one(&mut g);
+        assert!(Arc::ptr_eq(&g.hunters[0].hard_budget, &party), "the same party is kept frame to frame");
+    }
+
+    #[test]
+    fn a_guest_never_shares_a_hard_party() {
+        let (mut g, content) = game();
+        g.hunters.push(Brain::new(content.hunters[0].clone(), (7.5, 5.5), "U", Difficulty::Standard));
+        g.remote_hunters = true;
+        frames_one(&mut g);
+        assert!(!Arc::ptr_eq(&g.hunters[0].hard_budget, &g.hunters[1].hard_budget), "a guest's hunters only display");
     }
 
     #[test]
@@ -2087,6 +2130,23 @@ mod knock_tuning_tests {
         assert!((knock_volume(10.0) - 0.025).abs() < 1e-6);
         assert_eq!(knock_volume(20.0), 0.0);
         assert_eq!(knock_volume(50.0), 0.0);
+    }
+
+    #[test]
+    fn a_knock_pans_along_the_runners_right_like_a_hunter_step() {
+        let span = crate::audio::cues::rules::HunterStepHearing::get().pan_span as f32;
+        // facing +y: the right is (-1, 0) by the step rule (right = (-facing.y, facing.x))
+        let facing = (0.0, 1.0);
+        assert_eq!(knock_pan((5.0, 5.0), (5.0, 5.0), facing, span), 0.0, "a knock at the runner is centred");
+        assert_eq!(knock_pan((5.0, 9.0), (5.0, 5.0), facing, span), 0.0, "a knock straight ahead is centred");
+        let side = knock_pan((5.0 - span / 2.0, 5.0), (5.0, 5.0), facing, span);
+        assert!((side - 0.5).abs() < 1e-5, "half the span to the right pans half way: {side}");
+        assert_eq!(knock_pan((5.0 - 3.0 * span, 5.0), (5.0, 5.0), facing, span), 1.0, "past the span is clamped");
+        assert_eq!(knock_pan((5.0 + 3.0 * span, 5.0), (5.0, 5.0), facing, span), -1.0, "the other side pans the other way");
+        // the same figures as the step rule
+        let (step_pan, _) = crate::audio::cues::rules::hunter_step_pan_volume((-1.0, 0.5), (0.0, 1.0)).unwrap();
+        assert!((knock_pan((4.0, 5.5), (5.0, 5.0), facing, span) - step_pan as f32).abs() < 1e-5);
+        assert!((knock_pan((-1.0, 0.0), (0.0, 0.0), facing, 2.0) - 0.5).abs() < 1e-6, "a changed span changes the pan");
     }
 
     #[test]

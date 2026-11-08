@@ -3,7 +3,7 @@
 use super::*;
 use std::sync::MutexGuard;
 use crate::crash_reports::CRASH_MAX_BODY_BYTES;
-use crate::game_saves::{match_save_path, SAVE_MAX_BYTES};
+use crate::game_saves::{match_save_path, upstream_get, UpstreamStep, SAVE_MAX_BYTES};
 use crate::lr_regex as regex;
 use crate::moderation::Who;
 use crate::skins::skins::{SkinAction, SKIN_JSON_BODY_BYTES};
@@ -441,12 +441,24 @@ impl LastRouteServer {
         reply(result)
     }
 
-    /// GET/PUT `/api/v1/saves/:gameId/:slot`, run without the state lock. Only the save store's own lock is held.
+    /// GET/PUT `/api/v1/saves/:gameId/:slot`, run without the state lock. Saved to local files, the store's own lock is
+    /// held for the whole request. With a website the store's lock is held only for the checks (allow-list, body, rate
+    /// limit and a reserved write time) and never across a website call: a GET calls the website with no lock, and a PUT
+    /// runs load, newest-wins and save under a lock of its own session, game and slot, then retakes the store's lock
+    /// briefly to give the reserved write time back when the save was refused or the stored one could not be read.
     fn save_route(&self, saves: &Mutex<GameSaves>, accounts: &AccountService, request: &Request, game_id: &str, slot: &str) -> Response {
         let token = request.header("x-session-token");
         if request.method == "GET" {
             let Ok(store) = saves.lock() else { return internal_error() };
-            return reply(store.get(accounts, &token, game_id, slot));
+            let step = store.begin_upstream_get(game_id, slot);
+            return match step {
+                UpstreamStep::Local => reply(store.get(accounts, &token, game_id, slot)),
+                UpstreamStep::Answered(refused) => reply(refused),
+                UpstreamStep::Ready(upstream) => {
+                    drop(store);
+                    reply(upstream_get(&upstream, &token, game_id, slot))
+                }
+            };
         }
         if request.body_overflow || request.body.len() > SAVE_MAX_BYTES {
             return json_response(413, &json!({ "ok": false, "code": "SAVE_TOO_LARGE",
@@ -456,7 +468,20 @@ impl LastRouteServer {
             return json_response(400, &json!({ "ok": false, "code": "BAD_SAVE", "error": "INVALID JSON BODY" }), &[]);
         };
         let Ok(mut store) = saves.lock() else { return internal_error() };
-        reply(store.put(accounts, &token, game_id, slot, &body))
+        let step = store.begin_upstream_put(&token, game_id, slot, &body);
+        let put = match step {
+            UpstreamStep::Local => return reply(store.put(accounts, &token, game_id, slot, &body)),
+            UpstreamStep::Answered(refused) => return reply(refused),
+            UpstreamStep::Ready(put) => put,
+        };
+        drop(store);
+        let outcome = put.run(&token, game_id, slot, &body);
+        if outcome.release {
+            if let Ok(mut store) = saves.lock() {
+                store.release_write(&put);
+            }
+        }
+        reply(outcome.reply)
     }
 
     /// The size and moderation checks a skin upload passes before the (unported) skin store. The session lookup can
@@ -1042,7 +1067,15 @@ impl LastRouteServer {
                 let (r, g) = self.with_accounts(g, |accounts| accounts.rename(body, allow));
                 guard = g;
                 if let (Some(true), Some(previous)) = (r.1.get("ok").and_then(Value::as_bool), previous) {
-                    guard.moderation.rename_account(&previous, &str_nullish(r.1.get("username")));
+                    let renamed = str_nullish(r.1.get("username"));
+                    guard.moderation.rename_account(&previous, &renamed);
+                    if renamed != previous {
+                        // the account's cloud saves follow it to the new name (a no-op when the website owns them)
+                        let saves = guard.game_saves.clone();
+                        if let Ok(mut store) = saves.lock() {
+                            store.rename_account(&previous, &renamed);
+                        };
+                    }
                 }
                 r
             }
@@ -1403,6 +1436,100 @@ mod skin_lock_tests {
         assert_eq!(*lock_recover(&mutex), 5);
         assert_eq!(internal_error().status, 500);
         assert_eq!(internal_error().json_body()["code"], json!("INTERNAL_ERROR"));
+    }
+
+    /// A website whose first connection stalls until `release` fires (then answers `stalled`) while every later one is
+    /// answered at once with `quick`.
+    fn stalled_then_quick(release: mpsc::Receiver<()>, stalled: &'static str, quick: &'static str) -> Upstream {
+        fn answer(mut stream: std::net::TcpStream, reply: &str) {
+            stream.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+            let mut buffer = [0u8; 4096];
+            while stream.read(&mut buffer).is_ok_and(|n| n > 0) {}
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (first, _) = listener.accept().unwrap();
+            std::thread::spawn(move || {
+                let _ = release.recv();
+                answer(first, stalled);
+            });
+            while let Ok((stream, _)) = listener.accept() {
+                answer(stream, quick);
+            }
+        });
+        Upstream::parse(&format!("http://127.0.0.1:{port}")).unwrap()
+    }
+
+    #[test]
+    fn a_stalled_website_save_of_one_account_does_not_block_another_accounts_save_read() {
+        let (release, released) = mpsc::channel();
+        let upstream = stalled_then_quick(
+            released,
+            r#"{"ok":false,"code":"NO_SAVE"}"#,
+            r#"{"ok":true,"data":{"saved_at":7},"savedAt":9000}"#,
+        );
+        let server = Arc::new(LastRouteServer::new(ServerOptions { account_upstream: Some(upstream), ..Default::default() }));
+        let saving = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                let body = json!({ "data": { "saved_at": 50 }, "updatedAt": 50 });
+                server.handle(&Request::json("PUT", "/api/v1/saves/last-route-rust/run", &body).with_header("x-session-token", "token-a"))
+            })
+        };
+        // Give the PUT time to reach the stalled website and sit there.
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let reader = server.clone();
+        std::thread::spawn(move || {
+            let response = reader.handle(&Request::new("GET", "/api/v1/saves/last-route-rust/run").with_header("x-session-token", "token-b"));
+            let _ = done_tx.send((response.status, response.json_body()));
+        });
+        let (status, body) = done_rx.recv_timeout(Duration::from_secs(2)).expect("the save read waited on another account's save");
+        assert_eq!((status, body["updatedAt"].clone()), (200, json!(7)));
+
+        release.send(()).unwrap();
+        let saved = saving.join().unwrap();
+        assert_eq!(saved.json_body()["code"], json!("NO_SAVE"), "the stalled load's answer is passed on");
+    }
+
+    #[test]
+    fn renaming_an_account_takes_its_cloud_saves_to_the_new_name() {
+        let root = std::env::temp_dir().join(format!("rename-saves-{}", hex(&random_bytes(6))));
+        let mut options = ServerOptions {
+            account_store_path: Some(root.join("accounts.json")),
+            save_directory: Some(root.join("saves")),
+            ..Default::default()
+        };
+        options.api_rate_limit_max = 100_000;
+        options.account_rate_limit_max = 100_000;
+        let server = LastRouteServer::new(options);
+        let sign_up = |name: &str| {
+            let response = server.handle(&Request::json("POST", "/api/account/register", &json!({ "username": name, "password": "correct horse battery" })));
+            assert_eq!(response.status, 200, "{}", response.json_body());
+            response.json_body()["sessionToken"].as_str().unwrap().to_string()
+        };
+        let path = "/api/v1/saves/last-route-rust/run";
+        let run = json!({ "format": 2, "saved_at": 100, "place": "LEVEL 1", "payload": { "seed_text": "S", "level": 1 } });
+        let token = sign_up("ADA");
+        let put = server.handle(&Request::json("PUT", path, &json!({ "data": run, "updatedAt": 100 })).with_header("x-session-token", &token));
+        assert_eq!(put.status, 200);
+
+        let renamed = server.handle(&Request::json("POST", "/api/account/rename", &json!({ "sessionToken": token, "username": "BEA" })));
+        assert_eq!((renamed.status, renamed.json_body()["username"].clone()), (200, json!("BEA")), "{}", renamed.json_body());
+
+        let read = server.handle(&Request::new("GET", path).with_header("x-session-token", &token)).json_body();
+        assert_eq!(read["data"], run, "the renamed account keeps its run");
+        let fresh = sign_up("ADA");
+        let read = server.handle(&Request::new("GET", path).with_header("x-session-token", &fresh)).json_body();
+        assert_eq!(read["data"], Value::Null, "a new account under the old name starts with no save");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
 }

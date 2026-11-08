@@ -1660,7 +1660,15 @@ impl Game {
             return;
         }
         let is_host = !super::guest_gate::is_display_only(self);
-        let speed = if self.p.hidden.is_some() { 0.0 } else { self.p.move_vel.0.hypot(self.p.move_vel.1) };
+        // a hidden runner is still; a climber is moving only on a frame its climb moved it (the climb leaves `move_vel`
+        // as it was at the mount, so the walk speed would read stale); otherwise the walk speed
+        let speed = if self.p.hidden.is_some() {
+            0.0
+        } else if self.ladder.is_some() {
+            if self.p.noise > 0.0 { crate::world::vertical::LADDER_CLIMB_SPEED } else { 0.0 }
+        } else {
+            self.p.move_vel.0.hypot(self.p.move_vel.1)
+        };
         let voids = self.hunters.iter().filter(|h| h.active && h.def.id.starts_with("void_")).count();
         let cfg = super::anti_idle::cfg();
         match self.anti_idle.step(dt, is_host, speed, voids, self.difficulty, cfg) {
@@ -3413,6 +3421,148 @@ mod tests {
         assert_eq!(g.inf.as_ref().unwrap().level, dir);
         assert_eq!(g.inf.as_ref().unwrap().origin(), o, "the same window");
         assert_eq!(mark(&g), before, "the floor's hunters are the ones it kept");
+    }
+
+    fn voids(g: &Game) -> usize {
+        g.hunters.iter().filter(|h| h.def.id.starts_with("void_")).count()
+    }
+
+    /// Takes every void hunter out of the list and its parallel residency ids, so a test starts with none.
+    fn without_voids(g: &mut Game) {
+        assert_eq!(g.inf.as_ref().unwrap().loaded.len(), g.hunters.len(), "the residency ids run parallel to the hunters");
+        let keep: Vec<bool> = g.hunters.iter().map(|h| !h.def.id.starts_with("void_")).collect();
+        let mut k = keep.iter();
+        g.hunters.retain(|_| *k.next().unwrap());
+        let mut k = keep.iter();
+        g.inf.as_mut().unwrap().loaded.retain(|_| *k.next().unwrap());
+        g.reset_director();
+    }
+
+    /// Seconds of standing still that build the anti-idle pressure up to its spawn mark, plus a margin (all from data).
+    fn idle_to_spawn(g: &Game) -> f32 {
+        let c = crate::game::anti_idle::cfg();
+        c.grace_for(g.difficulty) + c.spawn_pressure / c.rise_per_s.max(1.0e-6) + 5.0
+    }
+
+    #[test]
+    fn a_guest_idling_past_the_grace_raises_no_pressure_and_spawns_no_void_hunter() {
+        let (mut g, content, _) = populated();
+        g.remote_hunters = true;
+        g.p.move_vel = (0.0, 0.0);
+        let before = voids(&g);
+        let (count, dt) = (g.hunters.len(), 0.5);
+        let mut t = 0.0;
+        while t < idle_to_spawn(&g) + crate::game::anti_idle::cfg().spawn_cooldown_s {
+            g.time += dt;
+            g.step_anti_idle(dt, &content);
+            t += dt;
+        }
+        assert_eq!(g.anti_idle.pressure(), 0.0, "only the host's pressure changes");
+        assert_eq!((voids(&g), g.hunters.len()), (before, count), "a guest's hunters come from the host's frames");
+        assert!(!g.spawn_void_hunter(&content, "TEST:GUEST", None), "a guest never adds a void hunter");
+        assert_eq!(g.hunters.len(), count);
+    }
+
+    #[test]
+    fn a_solo_runner_idling_on_level_zero_draws_exactly_one_void_hunter_at_the_spawn_distance() {
+        let (mut g, content, _) = populated();
+        assert_eq!(g.inf.as_ref().unwrap().level, 0);
+        without_voids(&mut g);
+        g.p.move_vel = (0.0, 0.0);
+        let c = crate::game::anti_idle::cfg();
+        let dt = 0.5;
+        // a spawn spot can miss (the point lands in solid rock): the next try comes after the cooldown, on a new stream
+        let limit = idle_to_spawn(&g) + c.spawn_cooldown_s * 6.0;
+        let mut t = 0.0;
+        while t < limit && voids(&g) == 0 {
+            g.time += dt;
+            g.step_anti_idle(dt, &content);
+            t += dt;
+        }
+        assert_eq!(voids(&g), 1, "standing still past the grace brings one void hunter");
+        assert_eq!(g.inf.as_ref().unwrap().loaded.len(), g.hunters.len(), "the residency ids stay parallel");
+        let v = g.hunters.iter().find(|h| h.def.id.starts_with("void_")).unwrap();
+        let d = pdist(v.pos, g.p.pos);
+        assert!((d - c.spawn_distance).abs() <= c.spawn_distance * 0.5, "spawned {d} cells away, want about {}", c.spawn_distance);
+        // standing on, the cap holds: no second void hunter
+        let mut t = 0.0;
+        while t < c.spawn_cooldown_s * 2.0 {
+            g.time += dt;
+            g.step_anti_idle(dt, &content);
+            t += dt;
+        }
+        assert_eq!(voids(&g), 1, "max_void_hunters caps the spawns");
+        assert_eq!(g.inf.as_ref().unwrap().loaded.len(), g.hunters.len());
+    }
+
+    #[test]
+    fn a_void_incursion_run_twice_brings_at_most_one_void_hunter() {
+        let (mut g, content, _) = populated();
+        without_voids(&mut g);
+        g.depth = 40;
+        g.void_incursion(&content);
+        g.void_incursion(&content);
+        assert!(voids(&g) <= 1, "the incursion rolls once a floor: {}", voids(&g));
+        if voids(&g) == 0 {
+            assert!(g.spawn_void_hunter(&content, "TEST:VOID", None));
+        }
+        g.void_incursion(&content);
+        assert_eq!(voids(&g), 1, "a floor that already has a void hunter gets no second one");
+        assert_eq!(g.inf.as_ref().unwrap().loaded.len(), g.hunters.len());
+    }
+
+    #[test]
+    fn a_pickup_burst_saves_once_inside_the_minimum_interval() {
+        let (mut g, _, _) = run();
+        let a = crate::game::progression::Autosave::load();
+        assert!(a.triggers.iter().any(|t| t == "pickup") && !a.always.iter().any(|t| t == "pickup"), "pickup is a rate-limited trigger");
+        assert!(a.min_interval_s > 0.0, "the data has a minimum interval to test");
+        g.time = 100.0;
+        let before = g.autosave_count;
+        assert!(g.autosave_on("pickup"), "the first pickup saves");
+        g.time += a.min_interval_s * 0.5;
+        assert!(!g.autosave_on("pickup"), "a second pickup inside the interval does not");
+        assert_eq!(g.autosave_count, before + 1);
+        assert_eq!(g.last_autosave, "pickup");
+        g.time += a.min_interval_s;
+        assert!(g.autosave_on("pickup"), "once the interval has run out it saves again");
+        assert_eq!(g.autosave_count, before + 2);
+    }
+
+    #[test]
+    fn holding_still_on_a_ladder_builds_anti_idle_pressure_and_climbing_drains_it() {
+        use crate::game::ladder::Phase;
+        let (mut g, content, catalog) = run();
+        let i = g.fac.stairs.iter().position(|s| s.is_ladder() && s.dir < 0).expect("the start window has a ladder down");
+        // the walk that reached the ladder leaves its speed in move_vel; the climb never clears it
+        g.p.move_vel = (3.0, 0.0);
+        assert!(g.start_ladder(i), "the runner mounts the ladder");
+        let still = crate::game::Controls::default();
+        let c = crate::game::anti_idle::cfg();
+        let dt = 0.05;
+        let mut t = 0.0;
+        while t < c.grace_for(g.difficulty) + 10.0 {
+            g.advance_ladder(dt, &still, &content, &catalog);
+            g.time += dt;
+            g.step_anti_idle(dt, &content);
+            t += dt;
+        }
+        assert_eq!(g.ladder.map(|k| k.phase), Some(Phase::Climb), "the runner hangs on the shaft");
+        assert!(g.p.move_vel.0.hypot(g.p.move_vel.1) > c.idle_speed, "the stale walk speed is still there");
+        let held = g.anti_idle.pressure();
+        assert!(held > 0.0, "a climber holding still is idle");
+        // climbing down moves the body: the climb speed resets the idle and the pressure eases
+        let down = crate::game::Controls { fwd: -1.0, ..crate::game::Controls::default() };
+        let mut t = 0.0;
+        while t < 0.5 {
+            g.advance_ladder(dt, &down, &content, &catalog);
+            g.time += dt;
+            g.step_anti_idle(dt, &content);
+            t += dt;
+        }
+        assert_eq!(g.ladder.map(|k| k.phase), Some(Phase::Climb));
+        assert!(g.anti_idle.pressure() < held, "a climbing runner is not idle");
+        assert_eq!(g.anti_idle.idle_seconds(), 0.0);
     }
 }
 

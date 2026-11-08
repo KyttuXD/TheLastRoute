@@ -1,6 +1,6 @@
 {
   "schema": "lr.hard_abilities/1",
-  "_note": "Hard abilities (hunters/hard_abilities.rs), ported from Godot game/hunters/ai/hard_abilities.gd. frequency is an on/off gate (0 = every ability off, as Relaxed); budget is the party-wide seconds between two uses of one ability; roster lists the hunters that have each ability per difficulty; pounce / burst / intercept / slam hold the per-difficulty numbers (pounce rate is per eligible second, the others are chance per event); leap is shared. Nightmare pounce for the special hunters lives in hunters/nightmare_pounce.json.",
+  "_note": "Hard abilities (hunters/hard_abilities.rs), ported from Godot game/hunters/ai/hard_abilities.gd. frequency is an on/off gate (0 = every ability off, as Relaxed); budget is the party-wide seconds between two uses of one ability; roster lists the hunters that have each ability per difficulty; pounce / burst / intercept / slam hold the per-difficulty numbers (pounce rate is per eligible second, the others are chance per event); leap is shared; velocity_smoothing and max_track_speed (cells per second, about 3x the runner sprint; a faster step is a teleport and is not tracked) feed the runner velocity estimate. Nightmare pounce for the special hunters lives in hunters/nightmare_pounce.json.",
   "frequency": { "relaxed": 0.0, "standard": 0.12, "hard": 1.0, "nightmare": 1.6 },
   "budget": { "standard": 360.0, "hard": 45.0, "nightmare": 25.0 },
   "pounce_runner_guard": 10.0,
@@ -48,5 +48,6 @@
     "nightmare": { "chance": 1.0, "seconds": 35.0 }
   },
   "gates": { "nyxie_requires_dark": true, "solyth_min_temperature": 60.0, "void_black_unwatched_seconds": 3.0 },
-  "velocity_smoothing": 8.0
+  "velocity_smoothing": 8.0,
+  "max_track_speed": 19.0
 }

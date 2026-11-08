@@ -333,6 +333,7 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             }
             if pursued && !w.was_pursued {
                 e.play(&rules::chase_start());
+                super::tts::note_cue("chase_start");
             }
             w.was_pursued = pursued;
             let danger = rules::heartbeat_danger(
@@ -530,5 +531,20 @@ mod bed_stream_tests {
         super::WORLD.with(|w| assert_eq!(w.borrow().surfaces.get("tester_h").map(String::as_str), Some("wood")));
         super::set_hunter_floor("tester_h", "");
         super::WORLD.with(|w| assert!(w.borrow().surfaces.get("tester_h").is_none()));
+    }
+}
+
+#[cfg(test)]
+mod chase_subtitle_tests {
+    /// Regression: the chase_start cue played through the engine but never noted its subtitle, so "*FOOTSTEPS CLOSE IN*"
+    /// never showed. The cue has a subtitle, and the pursuit edge notes it right after playing it.
+    #[test]
+    fn chase_start_notes_its_subtitle() {
+        assert!(super::super::tts::subtitle_for("chase_start", true).is_some(), "chase_start has no subtitle in cues.json");
+        let src = include_str!("world.rs");
+        let play = src.find("e.play(&rules::chase_start());").expect("chase_start play");
+        let rest = &src[play..];
+        let next_line = rest.lines().nth(1).unwrap_or_default().trim();
+        assert_eq!(next_line, "super::tts::note_cue(\"chase_start\");");
     }
 }

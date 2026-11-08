@@ -137,6 +137,9 @@ pub struct Player {
     pub floor_y: f32,
     /// Whether the feet are on the ground (set by `update_movement`); footsteps, head bob and landing read it.
     pub grounded: bool,
+    /// The RefTextures floor kind under the runner (`Game::sync_runner_floor`), for its step sound; "" when unknown
+    /// (the step then sounds like concrete).
+    pub floor_kind: &'static str,
     vy: f32,
     pub yaw: f32,
     pub pitch: f32,
@@ -201,6 +204,7 @@ impl Player {
             feet_y: 0.0,
             floor_y: 0.0,
             grounded: true,
+            floor_kind: "",
             vy: 0.0,
             yaw: 0.0,
             pitch: 0.0,
@@ -693,7 +697,12 @@ impl Player {
             } else {
                 "walk"
             };
-            crate::audio::sound::footstep(gait, "", speed_now.min(speed * 1.5));
+            let pace = speed_now.min(speed * 1.5);
+            if self.floor_kind.is_empty() {
+                crate::audio::sound::footstep(gait, "", pace);
+            } else {
+                crate::audio::sound::footstep_on_floor(gait, self.floor_kind, pace);
+            }
         }
     }
 }

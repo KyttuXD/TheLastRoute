@@ -178,6 +178,11 @@ impl Rejoin {
         self.dropped_at.is_some() && self.seconds_left(now).map_or(false, |s| s > 0.0) && self.tries < self.rules.max_tries
     }
 
+    /// True while a window is open, even when its time or tries are used up (the last try may still be joining).
+    pub fn awaiting(&self) -> bool {
+        self.dropped_at.is_some()
+    }
+
     /// True when a window was open and has run out.
     pub fn expired(&self, now: f64) -> bool {
         self.dropped_at.is_some() && !self.within_window(now)
@@ -306,6 +311,22 @@ mod tests {
         assert!(!format!("{:?}", j).contains("SECRETTOKEN"));
         let over = j.status_line(j.rules.window_seconds + 1.0).unwrap();
         assert!(over.contains("COULD NOT"), "{over}");
+    }
+
+    #[test]
+    fn the_last_try_is_still_awaited_until_remembered() {
+        let mut j = rj();
+        j.remember("ABCDE", "T");
+        j.dropped("LOST THE CONNECTION", 0.0);
+        for _ in 0..j.rules.max_tries {
+            j.tried(0.0);
+        }
+        assert!(!j.within_window(0.0), "the tries are used up");
+        assert!(j.awaiting(), "the last try may still land");
+        j.remember("ABCDE", "T2");
+        assert!(!j.awaiting());
+        j.forget();
+        assert!(!j.awaiting());
     }
 
     #[test]

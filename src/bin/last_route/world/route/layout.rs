@@ -2257,6 +2257,188 @@ fn carve_concept_tunnels(grid: &mut Grid, circ: &mut Circ, world: &str, c: Coord
     }
 }
 
+/// How far a tunnel run is followed when the dressing reads a tunnel's width and direction.
+const TUNNEL_RUN_CAP: i32 = 8;
+
+/// The mineshaft dressing of a level-0 chunk: the `tunnel_dressing` rules of the tunnels table
+/// (data/region_rooms/tunnels.json), placed on the chunk's open tunnel cells (`concept_map::is_tunnel_cell`, minus the
+/// stairwell `keep` rects) in z-then-x order, drawn from `Rng("<world>:TUNNEL-DRESS:<chunk>")`.
+///
+/// A rule with `every` above 0 takes every `every`-th cell along the tunnel (by the world coordinate along it, so the
+/// rhythm carries on across chunk seams); with `every` 0 each candidate cell rolls `chance`. Placements:
+/// - `edge`: a cell of a straight stretch with one solid neighbour, facing away from it into the tunnel, with at least
+///   two more tunnel cells beyond it across the tunnel;
+/// - `centre`: the middle line of the tunnel (as many tunnel cells either side across it). A solid prop never stands
+///   there: a solid centre rule is placed as an edge one, so the middle line stays a clear path the whole length;
+/// - `ceiling`: the middle line, hung at the ceiling (`mount_y` = wall height less the prop's height), never solid.
+/// A solid prop is kept only when every cell it covers is an edge cell against the same wall, so it never narrows the
+/// tunnel to less than one clear cell. Cells next to a room door or under another prop are skipped.
+fn dress_tunnels(world: &str, c: Coord, grid: &Grid, keep: &[Rect], existing: &[props::Prop]) -> Vec<props::Prop> {
+    let Some(table) = crate::world::route::furnished::region_rooms::table("tunnels") else {
+        return Vec::new();
+    };
+    if table.tunnel_dressing.is_empty() {
+        return Vec::new();
+    }
+    let concept = concept_map::concept();
+    let orient = concept.orient_of(world);
+    if !concept.chunk_has_tunnel(orient, c.x, c.z) {
+        return Vec::new();
+    }
+    let (ox, oz) = (c.x.saturating_mul(CHUNK), c.z.saturating_mul(CHUNK));
+    let inside = |p: V2| p.x >= 0 && p.y >= 0 && p.x < CHUNK && p.y < CHUNK;
+    let mut tun = [[false; N]; N];
+    let mut cells: Vec<V2> = Vec::new();
+    for z in 0..CHUNK {
+        for x in 0..CHUNK {
+            let held = keep.iter().any(|r| x >= r.x && x < r.x + r.w && z >= r.y && z < r.y + r.h);
+            if !held && grid[z as usize][x as usize] == 0 && concept.is_tunnel_cell(orient, ox.saturating_add(x), oz.saturating_add(z)) {
+                tun[z as usize][x as usize] = true;
+                cells.push(V2::new(x, z));
+            }
+        }
+    }
+    if cells.is_empty() {
+        return Vec::new();
+    }
+    let is_tun = |p: V2| inside(p) && tun[p.y as usize][p.x as usize];
+    let is_solid = |p: V2| inside(p) && grid[p.y as usize][p.x as usize] != 0;
+    let run = |p: V2, d: V2| {
+        let mut n = 0;
+        while n < TUNNEL_RUN_CAP && is_tun(p.add(d.mul(n + 1))) {
+            n += 1;
+        }
+        n
+    };
+    let dirs = [V2::new(-1, 0), V2::new(1, 0), V2::new(0, -1), V2::new(0, 1)];
+    // the wall direction of an edge cell, and the world coordinate along the tunnel
+    let edge_of = |p: V2| -> Option<(V2, i32)> {
+        let walls: Vec<V2> = dirs.iter().copied().filter(|d| is_solid(p.add(*d))).collect();
+        let [d] = walls.as_slice() else {
+            return None;
+        };
+        let d = *d;
+        let along = V2::new(d.y.abs(), d.x.abs());
+        if !(is_tun(p.add(along)) && is_tun(p.sub(along)) && is_tun(p.sub(d)) && is_tun(p.sub(d.mul(2)))) {
+            return None;
+        }
+        Some((d, if along.x != 0 { ox.saturating_add(p.x) } else { oz.saturating_add(p.y) }))
+    };
+    // the world coordinate along the tunnel of a middle-line cell
+    let middle_of = |p: V2| -> Option<i32> {
+        let (w, e, n, s) = (run(p, V2::new(-1, 0)), run(p, V2::new(1, 0)), run(p, V2::new(0, -1)), run(p, V2::new(0, 1)));
+        let (across_x, across_z) = (w + e, n + s);
+        if across_z < across_x && n == s && n >= 1 {
+            Some(ox.saturating_add(p.x))
+        } else if across_x < across_z && w == e && w >= 1 {
+            Some(oz.saturating_add(p.y))
+        } else {
+            None
+        }
+    };
+    // cells already taken: other props, and one cell round a room door
+    let mut used: HashSet<V2> = HashSet::new();
+    for p in existing {
+        used.insert(p.cell);
+        used.extend(p.occupied_cells.iter().copied());
+        if p.room_door {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    used.insert(p.cell.add(V2::new(dx, dz)));
+                }
+            }
+            used.extend(p.doorway_cells.iter().copied());
+        }
+    }
+    let tag = props::chunk_tag(c);
+    let mut rng = Rng::new(&format!("{world}:TUNNEL-DRESS:{tag}"));
+    let wall_height = f64::from(crate::config::WALL_HEIGHT);
+    let mut out: Vec<props::Prop> = Vec::new();
+    for rule in &table.tunnel_dressing {
+        let Some(entry) = table.props.iter().find(|p| p.prop_type == rule.prop_type) else {
+            continue;
+        };
+        let prop_type: &'static str = entry.prop_type.as_str();
+        let size = entry.size;
+        let ceiling = rule.placement == "ceiling";
+        let solid = entry.solid && !ceiling;
+        let on_edge = rule.placement == "edge" || (rule.placement == "centre" && solid);
+        for &cell in &cells {
+            if used.contains(&cell) {
+                continue;
+            }
+            let (wall, along) = if on_edge {
+                match edge_of(cell) {
+                    Some((d, a)) => (Some(d), a),
+                    None => continue,
+                }
+            } else {
+                match middle_of(cell) {
+                    Some(a) => (None, a),
+                    None => continue,
+                }
+            };
+            let pick = if rule.every > 0 { along.rem_euclid(rule.every) == 0 } else { rng.next_float() < rule.chance };
+            if !pick {
+                continue;
+            }
+            let mut prop = props::Prop {
+                id: format!("{tag}:TUNNEL:{}", out.len()),
+                prop_type,
+                cell,
+                yaw: 0.0,
+                facing_target: cell,
+                blocker_size: size,
+                solid: false,
+                occupied_cells: Vec::new(),
+                room_id: String::new(),
+                room_door: false,
+                doorway_cells: Vec::new(),
+                threshold_wall_cells: Vec::new(),
+                placement_offset: None,
+                backing_wall: None,
+                open_direction: None,
+                collider_size: None,
+                wall_mounted: false,
+                mount_offset: None,
+                corridor_clear: false,
+                room_template: None,
+                mount_y: 0.0,
+                mount_scaled: false,
+                oriented: false,
+                spec_index: 0,
+            };
+            if let Some(d) = wall {
+                let open = d.neg();
+                prop.yaw = props::room_facing_yaw(cell, cell.add(open));
+                prop.facing_target = cell.add(open);
+                prop.backing_wall = Some(d);
+                prop.open_direction = Some(open);
+                if solid {
+                    let occupied = props::prop_occupied_cells(cell, open, size, [0.0, 0.0]);
+                    // every covered cell is an edge cell against the same wall, so the middle line stays clear
+                    let fits = !occupied.is_empty()
+                        && occupied.iter().all(|o| is_tun(*o) && !used.contains(o) && edge_of(*o).is_some_and(|(w, _)| w == d));
+                    if !fits {
+                        continue;
+                    }
+                    prop.solid = true;
+                    prop.placement_offset = Some([0.0, 0.0]);
+                    prop.collider_size = Some(props::collider_size(prop_type, size));
+                    prop.corridor_clear = true;
+                    used.extend(occupied.iter().copied());
+                    prop.occupied_cells = occupied;
+                }
+            } else if ceiling {
+                prop.mount_y = (wall_height - f64::from(size[1])).max(0.0);
+            }
+            used.insert(cell);
+            out.push(prop);
+        }
+    }
+    out
+}
+
 /// `chunk_layout` with level 0 laid out from Godot's region draw, not the concept map: the Godot parity goldens.
 pub fn chunk_layout_godot(world: &str, c: Coord) -> Option<ChunkLayout> {
     with_godot_regions(|| chunk_layout(world, c))
@@ -2311,7 +2493,8 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     }
     // _build_chunk 1003-1007 (grid.rs): the thresholds, the safe room and the door planner, which
     // writes the grid that the furniture reads (stage 3a).
-    let safe = gen.is_safe_room(c);
+    // a hollow chunk is rock with only the tunnels through it: it never holds the safe room (live::is_live_safe_chunk)
+    let safe = !hollow && gen.is_safe_room(c);
     let doors = grid::level0_before_props(&mut grid, &parts.rooms, region, safe);
     // the region's hall shapes (data/world/hall_shapes.json): alcoves and opened junctions, carved before the props,
     // pickups and spawns read the grid. Never on the Godot parity layout, which keeps Godot's halls exactly.
@@ -2324,10 +2507,20 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     grid::level0_after_props(&mut grid, &parts.rooms, &doors);
     // the threshold and doorway restores above re-wall room edges a tunnel crossed: cut the tunnels again so they stay
     // open, but never into a stairwell (its walled box, one cell round it, and its lane), which keeps its own walls
+    let keep: Vec<Rect> = stairwells.iter().flat_map(|w| [w.bbox.grow(1), stairwell_lane(w)]).collect();
     if !godot_regions() && !hollow {
-        let keep: Vec<Rect> = stairwells.iter().flat_map(|w| [w.bbox.grow(1), stairwell_lane(w)]).collect();
         carve_concept_tunnels(&mut grid, &mut parts.circulation, world, c, &keep);
     }
+    // the mineshaft dressing (data/region_rooms/tunnels.json `tunnel_dressing`), hollow chunks too; never on the Godot
+    // parity layout
+    let region_props = if godot_regions() {
+        region_props
+    } else {
+        let mut props_out = region_props.unwrap_or_default();
+        let dressing = dress_tunnels(world, c, &grid, &keep, &props_out);
+        props_out.extend(dressing);
+        Some(props_out)
+    };
     // 1024-1028 (props.rs, stage 3b-iv): push_out, scale_surface_mounts and PlacementClearance.clear, on the grid
     // after the hump pass
     let region_props = region_props.map(|props| props::post_passes(&grid, &parts.rooms, props));
@@ -2703,6 +2896,145 @@ mod tests {
             }
         }
         assert!(open_tunnel > 0);
+    }
+
+    /// 4-connected components of `cells`.
+    fn components(cells: &HashSet<V2>) -> usize {
+        let mut seen: HashSet<V2> = HashSet::new();
+        let mut count = 0;
+        for start in cells {
+            if !seen.insert(*start) {
+                continue;
+            }
+            count += 1;
+            let mut stack = vec![*start];
+            while let Some(p) = stack.pop() {
+                for d in [V2::new(-1, 0), V2::new(1, 0), V2::new(0, -1), V2::new(0, 1)] {
+                    let n = p.add(d);
+                    if cells.contains(&n) && seen.insert(n) {
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    /// The mineshaft dressing (tunnels.json `tunnel_dressing`) lands in tunnel chunks, never splits a tunnel (a clear
+    /// path still runs its whole length), and never reaches the Godot parity layout.
+    #[test]
+    fn tunnels_get_their_dressing_and_stay_passable() {
+        let world = "2024";
+        let concept = concept_map::concept();
+        let o = concept.orient_of(world);
+        let mut chunks = Vec::new();
+        'scan: for cx in -25..25 {
+            for cz in -25..25 {
+                // a tunnel that runs through the chunk (at least two chunk lengths of tunnel cells), not one that only
+                // clips a corner too small for any dressing
+                let crossed = || {
+                    (0..CHUNK).flat_map(|z| (0..CHUNK).map(move |x| (x, z))).filter(|&(x, z)| concept.is_tunnel_cell(o, cx * CHUNK + x, cz * CHUNK + z)).count()
+                        >= (2 * CHUNK) as usize
+                };
+                if concept.classify_chunk(o, cx, cz) == ChunkClass::Hollow && concept.chunk_has_tunnel(o, cx, cz) && crossed() {
+                    chunks.push(Coord::new(cx, 0, cz));
+                    if chunks.len() >= 6 {
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        assert!(!chunks.is_empty(), "no hollow tunnel chunk");
+        let mut dressed = 0;
+        for c in chunks {
+            let layout = chunk_layout(world, c).expect("layout");
+            let props = layout.region_props.as_deref().expect("the concept layout always has a prop list");
+            let dressing: Vec<&props::Prop> = props.iter().filter(|p| p.id.contains(":TUNNEL:")).collect();
+            dressed += dressing.len();
+            let tunnel: HashSet<V2> = (0..CHUNK)
+                .flat_map(|z| (0..CHUNK).map(move |x| V2::new(x, z)))
+                .filter(|p| layout.grid[p.y as usize][p.x as usize] == 0 && concept.is_tunnel_cell(o, c.x * CHUNK + p.x, c.z * CHUNK + p.y))
+                .collect();
+            let blocked: HashSet<V2> = props.iter().filter(|p| p.solid).flat_map(|p| p.occupied_cells.iter().copied().chain([p.cell])).collect();
+            for p in &dressing {
+                assert!(tunnel.contains(&p.cell), "{c:?}: {} is off the tunnel", p.id);
+            }
+            let free: HashSet<V2> = tunnel.difference(&blocked).copied().collect();
+            assert_eq!(components(&free), components(&tunnel), "{c:?}: the dressing splits the tunnel");
+            // the same seed dresses the chunk the same way
+            assert_eq!(chunk_layout(world, c).unwrap().region_props, layout.region_props);
+        }
+        assert!(dressed > 0, "no tunnel chunk got any dressing");
+        // the Godot parity layout is never dressed
+        for (cx, cz) in [(0, 0), (1, 0), (1, 1), (-2, 3)] {
+            if let Some(godot) = chunk_layout_godot(world, Coord::new(cx, 0, cz)) {
+                assert!(godot.region_props.iter().flatten().all(|p| !p.id.contains(":TUNNEL:")), "{cx},{cz}");
+            }
+        }
+    }
+
+    /// The primary hunter chunk (1, 0) is never hollow, so its two guaranteed hunters always have floor to stand on:
+    /// checked on seeds that turn the map with `swap` and without `flip_z` (where the vote can make it rock).
+    #[test]
+    fn the_primary_hunter_chunk_spawns_its_two_hunters() {
+        let concept = concept_map::concept();
+        let c = Coord::new(1, 0, 0);
+        let mut checked = 0;
+        for i in 0..400 {
+            let world = format!("{}", 31000 + i * 7);
+            let o = concept.orient_of(&world);
+            if !o.swap || o.flip_z {
+                continue;
+            }
+            assert_ne!(concept_map::chunk_class(&world, 1, 0), ChunkClass::Hollow, "{world}");
+            if (Gen { world: &world }).is_safe_room(c) {
+                continue;
+            }
+            let layout = chunk_layout(&world, c).expect("the primary chunk has a layout");
+            assert!(!layout.rooms.is_empty() || !layout.corridors.is_empty(), "{world}: the primary chunk is rock");
+            let props_now = layout.region_props.as_deref().unwrap_or(&[]);
+            let spawns = hunter_spawns::chunk_hunter_spawns(&world, c, &layout.grid, &[], props_now, false);
+            assert_eq!(spawns.len(), 2, "{world}: the primary chunk spawns two hunters");
+            assert_eq!(layout.hunter_spawns.len(), 2, "{world}");
+            checked += 1;
+            if checked >= 4 {
+                break;
+            }
+        }
+        assert!(checked > 0, "no seed turned the map with swap and without flip_z");
+    }
+
+    /// A hollow chunk never holds the safe room, whatever its Godot roll says: the 5x5 safe square
+    /// (`grid::carve_safe_room`) is never cut into the rock, and live agrees (`live::is_live_safe_chunk`).
+    #[test]
+    fn a_hollow_chunk_is_never_a_safe_room() {
+        let mut seen = 0;
+        for i in 0..20 {
+            let world = format!("{}", 2024 + i * 11);
+            let concept = concept_map::concept();
+            let o = concept.orient_of(&world);
+            for cx in -15..15 {
+                for cz in -15..15 {
+                    let c = Coord::new(cx, 0, cz);
+                    if concept.classify_chunk(o, cx, cz) != ChunkClass::Hollow || !(Gen { world: &world }).is_safe_room(c) {
+                        continue;
+                    }
+                    seen += 1;
+                    assert!(!crate::world::route::live::is_live_safe_chunk(&world, cx, cz), "{world} {cx},{cz}");
+                    let layout = chunk_layout(&world, c).expect("layout");
+                    // the safe room would open the whole 5x5 square round the centre; in rock only a tunnel (or a
+                    // stairwell) may open all of it
+                    if !layout.stairwells.is_empty() {
+                        continue;
+                    }
+                    let square: Vec<(i32, i32)> = (CENTER - 2..=CENTER + 2).flat_map(|z| (CENTER - 2..=CENTER + 2).map(move |x| (x, z))).collect();
+                    let all_open = square.iter().all(|(x, z)| layout.grid[*z as usize][*x as usize] == 0);
+                    let all_tunnel = square.iter().all(|(x, z)| concept.is_tunnel_cell(o, c.x * CHUNK + x, c.z * CHUNK + z));
+                    assert!(!all_open || all_tunnel, "{world} {cx},{cz}: a safe square was cut into the rock");
+                }
+            }
+        }
+        assert!(seen > 0, "no hollow chunk rolled a safe room in the sample");
     }
 
     #[test]

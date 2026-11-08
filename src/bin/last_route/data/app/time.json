@@ -14,5 +14,20 @@
     "America/Denver": "MST7MDT,M3.2.0,M11.1.0",
     "America/Los_Angeles": "PST8PDT,M3.2.0,M11.1.0",
     "UTC": "UTC0"
+  },
+  "windows_abbr": {
+    "Eastern Standard Time": "EST",
+    "Eastern Daylight Time": "EDT",
+    "Central Standard Time": "CST",
+    "Central Daylight Time": "CDT",
+    "Mountain Standard Time": "MST",
+    "Mountain Daylight Time": "MDT",
+    "Pacific Standard Time": "PST",
+    "Pacific Daylight Time": "PDT",
+    "Alaskan Standard Time": "AKST",
+    "Alaskan Daylight Time": "AKDT",
+    "Hawaiian Standard Time": "HST",
+    "Atlantic Standard Time": "AST",
+    "Atlantic Daylight Time": "ADT"
   }
 }

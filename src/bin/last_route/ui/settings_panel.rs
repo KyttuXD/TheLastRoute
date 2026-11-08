@@ -363,6 +363,9 @@ pub fn draw_settings(
     in_run: bool,
 ) -> bool {
     let _scope = MenuScope::enter();
+    // a rebind waiting for a key this frame: its Escape cancels the rebind and never closes the panel
+    let capturing_at_start = crate::app::bindings::capture().is_some();
+    let mut capture_took_escape = false;
     let p = pal();
     let panel = centered(440.0, 254.0);
     // opaque: the title screen behind the overlay must not show through the panel
@@ -758,6 +761,7 @@ pub fn draw_settings(
             match crate::app::bindings::poll_capture(&mut st.bindings) {
                 crate::app::bindings::CaptureResult::Bound => changed = true,
                 crate::app::bindings::CaptureResult::Refused(e) => NOTE.with(|n| *n.borrow_mut() = refusal_note(&e)),
+                crate::app::bindings::CaptureResult::Cancelled => capture_took_escape = true,
                 _ => {}
             }
             if hovered(area) {
@@ -828,12 +832,33 @@ pub fn draw_settings(
     let close = esc_close(a, Rect::new(ox + 193.0, oy + 234.0, 54.0, 16.0));
     // Escape first leaves a SKIN text box or the picker; only a second press closes the panel
     let skin_took_escape = super::skin_tab::take_escape();
-    close || (is_key_pressed(KeyCode::Escape) && !skin_took_escape)
+    let closes = panel_closes(close, is_key_pressed(KeyCode::Escape), skin_took_escape, capture_took_escape, capturing_at_start);
+    if closes {
+        // a rebind left waiting must not catch the next key pressed after the panel is gone
+        crate::app::bindings::cancel_capture();
+    }
+    closes
+}
+
+/// Whether the panel closes this frame: its CLOSE button, or an Escape that no SKIN box, picker or rebind took (a rebind
+/// that was waiting at the start of the frame keeps that Escape for itself).
+fn panel_closes(button: bool, escape: bool, skin_took: bool, capture_took: bool, capturing_at_start: bool) -> bool {
+    button || (escape && !skin_took && !capture_took && !capturing_at_start)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_cancelling_a_rebind_keeps_the_panel_open() {
+        assert!(panel_closes(false, true, false, false, false), "a plain Escape closes");
+        assert!(!panel_closes(false, true, false, true, false), "the rebind took it");
+        assert!(!panel_closes(false, true, false, false, true), "a rebind was waiting this frame");
+        assert!(!panel_closes(false, true, true, false, false), "a SKIN box took it");
+        assert!(panel_closes(true, false, false, false, true), "CLOSE always closes");
+        assert!(!panel_closes(false, false, false, false, false));
+    }
 
     /// The saved keys the settings file writes, sorted.
     fn saved_keys() -> Vec<String> {

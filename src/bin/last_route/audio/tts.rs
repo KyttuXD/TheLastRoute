@@ -95,8 +95,12 @@ pub fn subtitle_for(cue: &str, subtitles_on: bool) -> Option<String> {
 /// setting's default is).
 static SUBTITLES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Turning SUBTITLES off also takes down the line the HUD is showing now.
 pub fn set_subtitles(on: bool) {
     SUBTITLES_ON.store(on, Ordering::Relaxed);
+    if !on {
+        SHOWN.with(|s| *s.borrow_mut() = None);
+    }
 }
 
 /// How long a cue's subtitle stays on the HUD (data/audio/cues.json "subtitle_seconds", 2 s when missing).
@@ -432,6 +436,15 @@ impl Speaker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtitles_off_takes_down_the_shown_line() {
+        SHOWN.with(|s| *s.borrow_mut() = Some(("A HUNTER IS NEAR".into(), crate::shared::clock::Instant::now())));
+        assert!(current_subtitle().is_some());
+        set_subtitles(false);
+        assert!(current_subtitle().is_none(), "off clears the line on the HUD");
+        set_subtitles(true);
+    }
 
     fn line(world: [f64; 3], depth: i64, text: &str, peer: i64) -> ChatLine {
         ChatLine {
