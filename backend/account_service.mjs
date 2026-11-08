@@ -4,6 +4,9 @@ import { dirname } from "node:path";
 
 const USERNAME_PATTERN = /^[A-Z0-9_]{3,24}$/;
 const ADMIN_OWNER_USERNAMES = new Set(["KYTTU", "AYTTU"]);
+// Canonical UPPERCASE names no account may register or rename into, developer or not. "SERVER" is the
+// dedicated host's display name; reserving it stops peers impersonating the host in the roster.
+const RESERVED_USERNAMES = new Set(["SERVER"]);
 export const ADMIN_PERMISSION_NAMES = Object.freeze([
   "inventory", "player", "world", "hunters", "visual",
 ]);
@@ -39,6 +42,10 @@ function usernameOf(value) {
 
 function isAdminOwnerUsername(value) {
   return ADMIN_OWNER_USERNAMES.has(usernameOf(value));
+}
+
+function isReservedUsername(value) {
+  return RESERVED_USERNAMES.has(usernameOf(value));
 }
 
 function cleanAdminPermissions(value) {
@@ -129,6 +136,9 @@ export function createAccountService({ storePath = null, logger = console, now =
       return [400, { ok: false, code: "INVALID_USERNAME", error: "Username must be 3-24 characters: letters, numbers, underscore" }];
     }
     if (isAdminOwnerUsername(username) && !allowDeveloperNames) {
+      return [403, { ok: false, code: "RESERVED_USERNAME", error: "That username is reserved" }];
+    }
+    if (isReservedUsername(username)) {
       return [403, { ok: false, code: "RESERVED_USERNAME", error: "That username is reserved" }];
     }
     if (!validPassword(body.password)) {
@@ -244,6 +254,9 @@ export function createAccountService({ storePath = null, logger = console, now =
         error: "Full admin account usernames cannot be changed" }];
     }
     if (isAdminOwnerUsername(username) && username !== currentUsername && !allowDeveloperNames) {
+      return [403, { ok: false, code: "RESERVED_USERNAME", error: "That username is reserved" }];
+    }
+    if (username !== currentUsername && isReservedUsername(username)) {
       return [403, { ok: false, code: "RESERVED_USERNAME", error: "That username is reserved" }];
     }
     if (username !== currentUsername && accounts.has(username)) {

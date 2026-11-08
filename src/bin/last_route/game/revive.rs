@@ -100,10 +100,34 @@ impl Game {
     }
 
     /// True when someone could revive the runner if it went down: another living runner in the room
-    /// (`room_teammates`), or an NPC bot on the run that has joined the runner and is not down itself (a hidden bot
-    /// counts: it can leave its locker). Solo with no such bot, a capture ends the run at once.
+    /// (`room_teammates`, set from the net roster in app/mod.rs), or an NPC bot on the run that has joined the runner and
+    /// is not down itself (a hidden bot counts: it can leave its locker). Solo with no such bot, a capture ends the run
+    /// at once.
+    ///
+    /// Co-op note: `room_teammates` counts the room's remote human runners, who go down for them too (the gate is the
+    /// same on every client). A downed runner stands back up by a local helper's hold, a revive kit, or — when a remote
+    /// teammate attends it over the wire — a host-reported revive; nobody near, it dies at the timeout (`tick_revives`).
     pub fn runner_has_reviver(&self) -> bool {
         self.room_teammates > 0 || self.npcs.iter().any(|n| n.joined && !self.downed_npcs.contains_key(&n.id))
+    }
+
+    /// The brief immunity a runner gets the instant it stands back up (a hold-revive in `tick_revives`, or a revive kit
+    /// in `game/items.rs`): the same `escape_grace` window and hunter stun/search-shove the struggle-win path grants at
+    /// `game/hunting.rs:623-645`, so the hunter still standing over the body cannot re-grab it on the very next frame
+    /// (`resolve_capture` bails while `escape_grace > 0`, hunting.rs:526-528). Without it an adjacent hunter re-enters an
+    /// escapable grab at once, the escape flips None->Some, and the "<HUNTER> HAS THE HOST" notice re-fires forever
+    /// (net/hunter_events.rs). This is the TODO 714 capture-immunity behaviour (game/capture_immunity_tests.rs).
+    pub(super) fn grant_post_revive_grace(&mut self, hunter: usize) {
+        // no struggle is in flight for a runner that just stood up, and the grace blocks the next grab for a moment
+        self.escape = None;
+        self.escape_grace = crate::config::ESCAPE_GRACE;
+        // stun the catching hunter and send it searching from the body, the way a won struggle does (hunting.rs:642-643).
+        // the index came from the catch; the active list may have shifted since, so a stale index is simply skipped.
+        if self.hunters.get(hunter).is_some() {
+            let pos = self.p.pos;
+            self.hunters[hunter].enter_search_from(pos, 1.8, &self.fac);
+            self.hunters[hunter].apply_stun(rules().hunter_stun_seconds, false);
+        }
     }
 
     /// The runner would die: it goes down instead when someone could revive it ([`Game::runner_has_reviver`]). Returns
@@ -197,7 +221,10 @@ impl Game {
             d.held = if helped { d.held + dt } else { 0.0 };
             d.remaining -= dt;
             if d.held >= r.hold_seconds {
+                let hunter = d.hunter;
                 self.downed = None;
+                // a just-revived runner cannot be instantly re-grabbed (resolve_capture, hunting.rs:526)
+                self.grant_post_revive_grace(hunter);
                 self.say("YOU ARE BACK UP");
             } else if d.remaining <= 0.0 {
                 self.downed = None;
@@ -573,5 +600,65 @@ mod tests {
             g.tick_revives(0.1, &held);
         }
         assert!(g.downed_npcs.is_empty(), "the runner's held interact revives the bot");
+    }
+
+    /// Co-op (a human teammate in the room) downs the runner on a capture; once a local helper's hold stands it back up,
+    /// the runner carries a post-revive grace, so the hunter still beside it cannot re-grab it on the next frame. This is
+    /// the grab-god bug: without the grace the re-grab re-fired the "HAS THE HOST" notice forever (net/hunter_events.rs).
+    #[test]
+    fn a_held_revive_in_co_op_leaves_the_runner_briefly_immune_to_a_re_grab() {
+        let (mut g, _) = game();
+        // only a human teammate in the room: no joined bot gates the down, so this is the pure co-op path
+        g.room_teammates = 1;
+        for n in g.npcs.iter_mut() {
+            n.joined = false;
+        }
+        // a hunter standing on the runner, chasing: the one that would re-grab the instant the runner stands up
+        let level = g.runner_level();
+        let pos = g.p.pos;
+        let had_hunter = chase_at(&mut g, level, pos);
+        g.end_run(0, "contact");
+        assert!(g.runner_downed() && g.report.is_none(), "a teammate in the room sends the runner down, not out");
+        // a local helper holds the three-second revive
+        let id = g.npcs[0].id;
+        beside_runner(&mut g, id);
+        for _ in 0..31 {
+            g.tick_revives(0.1, &idle());
+        }
+        assert!(!g.runner_downed() && g.report.is_none(), "the hold stood the runner back up");
+        assert!(g.escape.is_none(), "no struggle is in flight the instant the runner stands up");
+        assert!(g.escape_grace > 0.0, "the just-revived runner is briefly immune to a re-grab");
+        if had_hunter {
+            assert!(g.hunters[0].stun > 0.0, "the hunter over the body is stunned, as a won struggle stuns it");
+        }
+        // one hunter step with the grace up does not start a new grab (resolve_capture bails while escape_grace > 0)
+        let prof = g.prof();
+        g.update_hunters(0.1, &prof, &crate::audio::Sounds::default());
+        assert!(g.escape.is_none(), "the grace blocks an immediate re-grab");
+        assert!(!g.runner_downed(), "the revived runner is not downed again on the next frame");
+    }
+
+    /// A revive kit stands the runner up with the same post-revive grace as a hold-revive (game/items.rs).
+    #[test]
+    fn a_kit_revive_also_grants_the_post_revive_grace() {
+        let (mut g, _) = game();
+        g.end_run(0, "caught");
+        assert!(g.runner_downed());
+        g.give(crate::game::items::Item::ReviveKit, 1);
+        assert!(g.use_revive_kit(), "the kit stands the runner up");
+        assert!(!g.runner_downed());
+        assert!(g.escape.is_none() && g.escape_grace > 0.0, "the kit revive grants the re-grab immunity too");
+    }
+
+    /// Solo with nobody to revive and no kit: a capture ends the run at once, with no down and no repeated notice. Guards
+    /// the solo path against the co-op grace change above.
+    #[test]
+    fn a_solo_capture_still_ends_the_run_with_no_down_and_no_grace() {
+        let mut g = solo();
+        assert!(!g.runner_has_reviver());
+        g.end_run(0, "contact");
+        assert!(!g.runner_downed(), "nobody to revive: no down");
+        assert!(g.report.is_some(), "the capture ends the run at once");
+        assert_eq!(g.escape_grace, 0.0, "a run that simply ends grants no post-revive grace");
     }
 }

@@ -1496,10 +1496,16 @@ pub const ACCOUNT_NAME_MIN: usize = 3;
 /// See ACCOUNT_NAME_MIN: the account server (^[A-Z0-9_]{3,24}$) owns the rule.
 pub const ACCOUNT_NAME_MAX: usize = 24;
 
-/// 3-24 characters, A-Z 0-9 and `_` (after upper-casing).
+/// Canonical UPPERCASE names the servers reserve (they answer RESERVED_USERNAME); blocked here so a client
+/// never sends them. "SERVER" is the dedicated host's display name. Extend to reserve more names.
+pub const RESERVED_ACCOUNT_NAMES: [&str; 1] = ["SERVER"];
+
+/// 3-24 characters, A-Z 0-9 and `_` (after upper-casing), and not a reserved name.
 pub fn valid_account_name(raw: &str) -> bool {
     let n = canonical_account_name(raw);
-    (ACCOUNT_NAME_MIN..=ACCOUNT_NAME_MAX).contains(&n.chars().count()) && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    (ACCOUNT_NAME_MIN..=ACCOUNT_NAME_MAX).contains(&n.chars().count())
+        && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && !RESERVED_ACCOUNT_NAMES.contains(&n.as_str())
 }
 
 /// The canonical name, or the upper-case reason it was refused (nothing is sent).
@@ -1745,6 +1751,17 @@ mod client_flow_tests {
         assert!(!valid_account_name("has space"));
         assert!(!valid_account_name("dash-name"));
         assert!(matches!(validate_account_name("x"), Err(NetError::Refused(m)) if m == m.to_uppercase() && !m.is_empty()));
+    }
+
+    #[test]
+    fn the_dedicated_host_name_server_is_reserved_client_side() {
+        // "SERVER" is the dedicated host's name: the client refuses it (any case) before any request
+        for raw in ["SERVER", "server", " Server "] {
+            assert!(!valid_account_name(raw), "{raw}");
+            assert!(matches!(validate_account_name(raw), Err(NetError::Refused(_))), "{raw}");
+        }
+        // a name merely containing it is still fine
+        assert!(valid_account_name("SERVER_1"));
     }
 
     #[test]

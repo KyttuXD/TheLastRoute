@@ -322,7 +322,11 @@ pub fn player_rows(g: &Game, username: &str, local_host: bool, roster: &[RosterE
         kick: None,
     };
     let mut rows = vec![me];
-    rows.extend(roster.iter().map(|e| PlayerRow {
+    rows.extend(roster.iter()
+        // A peer presenting the dedicated host's name "SERVER" is an impostor; only the real host
+        // (host=true, set by the host sim and unforgeable by a guest) may show under that name.
+        .filter(|e| e.host || !e.name.eq_ignore_ascii_case("SERVER"))
+        .map(|e| PlayerRow {
         name: if e.name.is_empty() { crate::net::guest_name::placeholder(e.peer) } else { e.name.clone() },
         host: e.host,
         you: false,
@@ -760,11 +764,22 @@ mod tests {
         let content = crate::content::Content::load();
         let catalog = crate::world::catalog::Catalog::load();
         let g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-TEST-7", 0, &content, &catalog);
-        let roster = [roster_entry(1, "SERVER", true), roster_entry(3, "GUEST_2468", false), roster_entry(7, "", false)];
+        // peer 5 is an impostor presenting the dedicated host's name while not being the host: it is filtered out,
+        // but the real host (peer 1, host=true) must still show as SERVER.
+        let roster = [
+            roster_entry(1, "SERVER", true),
+            roster_entry(3, "GUEST_2468", false),
+            roster_entry(5, "SERVER", false),
+            roster_entry(7, "", false),
+        ];
         let rows = player_rows(&g, "guest_4829", false, &roster, false);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         // the host first, then by name; this runner is a guest like the others and reads the same everywhere
         assert_eq!(names, ["SERVER", "GUEST_0007", "GUEST_2468", "GUEST_4829"]);
+        // exactly one SERVER row survives, and it is the host entry
+        let server_rows: Vec<&PlayerRow> = rows.iter().filter(|r| r.name == "SERVER").collect();
+        assert_eq!(server_rows.len(), 1, "the impostor SERVER is filtered out");
+        assert!(server_rows[0].host, "the surviving SERVER row is the dedicated host");
         assert!(rows.iter().find(|r| r.you).is_some_and(|r| r.name == "GUEST_4829"));
         assert!(rows.iter().all(|r| r.name != "RUNNER"));
         // an account name is shown as it is, and a runner with no name at all reads as a guest

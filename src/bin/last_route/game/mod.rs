@@ -38,6 +38,8 @@ mod rail_tests;
 mod inferno_terrain_tests;
 #[cfg(test)]
 mod frame_fix_tests;
+#[cfg(test)]
+mod danger_tests;
 mod items;
 pub mod meters;
 pub mod seating;

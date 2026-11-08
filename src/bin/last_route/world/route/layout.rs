@@ -2898,6 +2898,108 @@ mod tests {
         assert!(open_tunnel > 0);
     }
 
+    /// Flood a coordinate set from the spawn chunk (0, 0), 4-connected.
+    fn flood_from_spawn(open: &HashSet<(i32, i32)>) -> HashSet<(i32, i32)> {
+        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        let mut stack: Vec<(i32, i32)> =
+            open.iter().copied().filter(|&(x, z)| (0..CHUNK).contains(&x) && (0..CHUNK).contains(&z)).collect();
+        for &c in &stack {
+            seen.insert(c);
+        }
+        while let Some((x, z)) = stack.pop() {
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (x + dx, z + dz);
+                if open.contains(&n) && seen.insert(n) {
+                    stack.push(n);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Whole-map reachability: the carved mineshaft keeps every district it should join reachable from spawn.
+    ///
+    /// The reference is an idealised open model over the window built from the UNPINCHED pixel-`T` network, not the
+    /// carved tunnels: a non-hollow region chunk is treated as fully open (its halls are its own problem, the region
+    /// generators keep them connected) and every pixel-`T` cell is open, with cross-chunk joins exactly where the
+    /// real grid has them (region-to-region seams, tunnel continuity). Flooding that model from spawn gives the set
+    /// of chunks and cells the map *intends* to connect — islands of rock-locked region with no tunnel fall out of it
+    /// on their own, so they are never asserted. Then the real per-chunk grids (carved with the narrowed tunnels) are
+    /// stitched and flooded the same way, and we assert the real grid reaches (a) every carved core tunnel cell and
+    /// (b) every core region chunk that the idealised model reaches. The dead-end bug pinched the shaft into
+    /// disconnected pieces, so the real flood fell short of the unpinched reference; the connectivity-preserving carve
+    /// closes that gap.
+    #[test]
+    fn the_concept_tunnels_keep_every_district_reachable() {
+        let concept = concept_map::concept();
+        let (build, core) = (6, 4);
+        let in_core = |x: i32, z: i32| {
+            (-core * CHUNK..(core + 1) * CHUNK).contains(&x) && (-core * CHUNK..(core + 1) * CHUNK).contains(&z)
+        };
+        for world in ["2024", "4242"] {
+            let o = concept.orient_of(world);
+            // idealised open model (region chunks fully open + the unpinched pixel-T network) and the carved tunnels
+            let mut ideal: HashSet<(i32, i32)> = HashSet::new();
+            let mut tunnels: HashSet<(i32, i32)> = HashSet::new();
+            for cz in -build..=build {
+                for cx in -build..=build {
+                    let region = matches!(concept.classify_chunk(o, cx, cz), ChunkClass::Region(_));
+                    for z in 0..CHUNK {
+                        for x in 0..CHUNK {
+                            let w = (cx * CHUNK + x, cz * CHUNK + z);
+                            if concept.is_tunnel_cell(o, w.0, w.1) {
+                                tunnels.insert(w);
+                            }
+                            if region || concept.pixel_of_cell(o, w.0, w.1) == concept_map::TUNNEL {
+                                ideal.insert(w);
+                            }
+                        }
+                    }
+                }
+            }
+            let ideal_seen = flood_from_spawn(&ideal);
+
+            // real carved grids, stitched and flooded the same way
+            let mut real_open: HashSet<(i32, i32)> = HashSet::new();
+            for cz in -build..=build {
+                for cx in -build..=build {
+                    let Some(layout) = chunk_layout(world, Coord::new(cx, 0, cz)) else {
+                        continue;
+                    };
+                    for z in 0..CHUNK {
+                        for x in 0..CHUNK {
+                            if layout.grid[z as usize][x as usize] == 0 {
+                                real_open.insert((cx * CHUNK + x, cz * CHUNK + z));
+                            }
+                        }
+                    }
+                }
+            }
+            let real_seen = flood_from_spawn(&real_open);
+            assert!(real_seen.iter().any(|&(x, z)| (0..CHUNK).contains(&x) && (0..CHUNK).contains(&z)), "{world}: spawn chunk has no open floor");
+
+            // (a) every carved core tunnel cell the idealised model reaches is reached in the real grid. A tunnel cell
+            // the later passes re-walled (e.g. under a stairwell box) is no longer open floor, so it is not asserted.
+            for &(x, z) in &tunnels {
+                if in_core(x, z) && ideal_seen.contains(&(x, z)) && real_open.contains(&(x, z)) {
+                    assert!(real_seen.contains(&(x, z)), "{world}: tunnel cell ({x}, {z}) is marooned from spawn in the carved grid");
+                }
+            }
+            // (b) every core region chunk the idealised model reaches has a reached open cell in the real grid
+            for cz in -core..=core {
+                for cx in -core..=core {
+                    if !matches!(concept.classify_chunk(o, cx, cz), ChunkClass::Region(_)) {
+                        continue;
+                    }
+                    let cells = || (0..CHUNK).flat_map(|z| (0..CHUNK).map(move |x| (cx * CHUNK + x, cz * CHUNK + z)));
+                    if cells().any(|c| ideal_seen.contains(&c)) {
+                        assert!(cells().any(|c| real_seen.contains(&c)), "{world}: region chunk ({cx}, {cz}) is unreachable from spawn in the carved grid");
+                    }
+                }
+            }
+        }
+    }
+
     /// 4-connected components of `cells`.
     fn components(cells: &HashSet<V2>) -> usize {
         let mut seen: HashSet<V2> = HashSet::new();

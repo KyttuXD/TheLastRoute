@@ -19,6 +19,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub const ADMIN_OWNER_USERNAMES: [&str; 2] = ["KYTTU", "AYTTU"];
+/// Canonical UPPERCASE names no account may register or rename into, regardless of developer status.
+/// "SERVER" is the dedicated host's display name (headless/dedicated.rs); blocking it keeps peers from
+/// impersonating the host in the roster. Extend this list to reserve more names.
+pub const RESERVED_USERNAMES: [&str; 1] = ["SERVER"];
 pub const ADMIN_PERMISSION_NAMES: [&str; 5] = ["inventory", "player", "world", "hunters", "visual"];
 pub const MIN_PASSWORD_LENGTH: usize = 6;
 pub const MAX_PASSWORD_LENGTH: usize = 200;
@@ -155,6 +159,11 @@ pub(crate) fn valid_username(name: &str) -> bool {
 fn is_admin_owner_username(name: &str) -> bool {
     let canonical = username_of_str(name);
     ADMIN_OWNER_USERNAMES.contains(&canonical.as_str())
+}
+
+fn is_reserved_username(name: &str) -> bool {
+    let canonical = username_of_str(name);
+    RESERVED_USERNAMES.contains(&canonical.as_str())
 }
 
 /// `cleanAdminPermissions(value)`: known names only, trimmed + lower-cased, de-duplicated, sorted.
@@ -495,6 +504,9 @@ impl AccountService {
         if is_admin_owner_username(&username) && !allow_developer_names {
             return fail(403, "RESERVED_USERNAME", "That username is reserved");
         }
+        if is_reserved_username(&username) {
+            return fail(403, "RESERVED_USERNAME", "That username is reserved");
+        }
         if crate::guest_names::is_reserved_for_guests(&username) {
             return guest_username();
         }
@@ -741,6 +753,9 @@ impl AccountService {
             return fail(403, "OWNER_IMMUTABLE", "Full admin account usernames cannot be changed");
         }
         if is_admin_owner_username(&username) && username != current_username && !allow_developer_names {
+            return fail(403, "RESERVED_USERNAME", "That username is reserved");
+        }
+        if username != current_username && is_reserved_username(&username) {
             return fail(403, "RESERVED_USERNAME", "That username is reserved");
         }
         if username != current_username && crate::guest_names::is_reserved_for_guests(&username) {
@@ -1093,6 +1108,12 @@ mod tests {
         for name in ["GUEST_ALPHA", "GUESTS_1234", "THE_GUEST_1234"] {
             assert_eq!(app.accounts.register(&json!({ "username": name, "password": PASSWORD }), false).0, 200, "{name}");
         }
+        // "SERVER" is the dedicated host's name: no account, developer or not, may take it (case-insensitively)
+        for name in ["SERVER", "server", "Server"] {
+            let (status, body) = app.accounts.register(&json!({ "username": name, "password": PASSWORD }), false);
+            assert_eq!((status, body["code"].as_str()), (403, Some("RESERVED_USERNAME")), "{name}");
+            assert_eq!(app.accounts.register(&json!({ "username": name, "password": PASSWORD }), true).0, 403, "{name} dev");
+        }
     }
 
     #[test]
@@ -1124,6 +1145,9 @@ mod tests {
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "no" }), false).0, 400);
         // nobody may rename into a guest's name either
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "guest_4829" }), false).1["code"], "RESERVED_USERNAME");
+        // nor into the dedicated host's "SERVER" name (case-insensitively)
+        assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "SERVER" }), false).1["code"], "RESERVED_USERNAME");
+        assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "server" }), false).1["code"], "RESERVED_USERNAME");
         let second = token(&a.register(&json!({ "username": "OTHER", "password": PASSWORD }), false).1);
         assert_eq!(a.rename(&json!({ "sessionToken": player, "username": "other" }), false).0, 409);
 

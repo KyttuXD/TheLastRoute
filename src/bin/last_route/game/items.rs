@@ -256,8 +256,12 @@ impl Game {
         let Some(i) = self.slot_of(Item::ReviveKit) else {
             return false;
         };
+        // the hunter that caught the runner, before the body is cleared, for the post-revive grace
+        let hunter = self.downed.map(|d| d.hunter).unwrap_or(0);
         self.slots[i] = None;
         self.downed = None;
+        // the same capture immunity a hold-revive grants (game/revive.rs): no instant re-grab after standing up
+        self.grant_post_revive_grace(hunter);
         self.say("YOU ARE BACK UP");
         true
     }

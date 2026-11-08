@@ -29,8 +29,6 @@ const CHUNK: i32 = 45;
 const ORIGIN: i32 = CHUNK / 2;
 /// Sample points per chunk side: cells 2, 7, ... 42.
 const SAMPLES: i32 = 9;
-/// A tunnel run longer than this many pixels is counted as this long.
-const RUN_CAP: i32 = 16;
 pub const WALL: u8 = b'#';
 pub const TUNNEL: u8 = b'T';
 
@@ -83,6 +81,104 @@ pub struct Concept {
     pub height: i32,
     rows: Vec<Vec<u8>>,
     pub settings: Settings,
+    /// Cell-resolution mineshaft mask over the base tile `[0, width*scale) x [0, height*scale)`, row-major with
+    /// stride `mask_w`. It is the pixel-`T` network's centreline (a Zhang-Suen skeleton) dilated back to
+    /// `tunnel_width` across and clipped to the `T` cells, so the carved shaft stays 4-connected: a fixed band
+    /// around a connected centreline never pinches the way the old per-cell narrowing did. Built once in
+    /// `build_tunnel_mask` and read by `is_tunnel_cell`.
+    tunnel_mask: Vec<bool>,
+    mask_w: i32,
+    mask_h: i32,
+}
+
+/// Builds the cell-resolution mineshaft mask for `is_tunnel_cell`. The pixel-`T` network is blown up to cell
+/// resolution (each `T` pixel is `scale` cells), thinned to a one-cell centreline with Zhang-Suen, then that
+/// centreline is dilated by a Manhattan ball of radius `(tunnel_width - 1) / 2` and clipped back to the `T` cells.
+/// A fixed band around a connected centreline is itself 4-connected, so no shaft pinches shut; a straight tunnel
+/// keeps its full `tunnel_width`, and a wide blob is narrowed to a `tunnel_width`-wide corridor down its middle.
+/// Border cells of the tile are left unthinned (Zhang-Suen needs a one-cell margin); that only keeps the band a
+/// touch wider at the tile edge, where the mirror/tile fold joins it to its reflection.
+fn build_tunnel_mask(rows: &[Vec<u8>], scale: i32, tunnel_width: i32) -> (Vec<bool>, i32, i32) {
+    let s = scale.max(1) as usize;
+    let wu = rows[0].len() * s;
+    let hu = rows.len() * s;
+    let idx = |x: usize, y: usize| y * wu + x;
+    // the T network blown up to cell resolution
+    let mut t = vec![false; wu * hu];
+    for y in 0..hu {
+        for x in 0..wu {
+            t[idx(x, y)] = rows[y / s][x / s] == TUNNEL;
+        }
+    }
+    // Zhang-Suen thinning to a one-cell skeleton (the one-cell border is left as-is)
+    let mut img = t.clone();
+    let at = |img: &[bool], x: usize, y: usize| u8::from(img[idx(x, y)]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for step in 0..2 {
+            let mut clear: Vec<usize> = Vec::new();
+            for y in 1..hu.saturating_sub(1) {
+                for x in 1..wu.saturating_sub(1) {
+                    if !img[idx(x, y)] {
+                        continue;
+                    }
+                    let p2 = at(&img, x, y - 1);
+                    let p3 = at(&img, x + 1, y - 1);
+                    let p4 = at(&img, x + 1, y);
+                    let p5 = at(&img, x + 1, y + 1);
+                    let p6 = at(&img, x, y + 1);
+                    let p7 = at(&img, x - 1, y + 1);
+                    let p8 = at(&img, x - 1, y);
+                    let p9 = at(&img, x - 1, y - 1);
+                    let b = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+                    if !(2..=6).contains(&b) {
+                        continue;
+                    }
+                    let seq = [p2, p3, p4, p5, p6, p7, p8, p9, p2];
+                    let a = (0..8).filter(|&i| seq[i] == 0 && seq[i + 1] == 1).count();
+                    if a != 1 {
+                        continue;
+                    }
+                    let keep = if step == 0 {
+                        p2 * p4 * p6 == 0 && p4 * p6 * p8 == 0
+                    } else {
+                        p2 * p4 * p8 == 0 && p2 * p6 * p8 == 0
+                    };
+                    if keep {
+                        clear.push(idx(x, y));
+                    }
+                }
+            }
+            if !clear.is_empty() {
+                changed = true;
+                for i in clear {
+                    img[i] = false;
+                }
+            }
+        }
+    }
+    // dilate the skeleton by a Manhattan ball of radius r, clipped to the T cells
+    let r = (tunnel_width.max(1) - 1) / 2;
+    let (w, h) = (wu as i32, hu as i32);
+    let mut mask = vec![false; wu * hu];
+    for y in 0..hu {
+        for x in 0..wu {
+            if !img[idx(x, y)] {
+                continue;
+            }
+            for dy in -r..=r {
+                let span = r - dy.abs();
+                for dx in -span..=span {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx >= 0 && nx < w && ny >= 0 && ny < h && t[idx(nx as usize, ny as usize)] {
+                        mask[idx(nx as usize, ny as usize)] = true;
+                    }
+                }
+            }
+        }
+    }
+    (mask, w, h)
 }
 
 fn int(v: &Value, file: &str, key: &str, min: i64) -> Result<i32, String> {
@@ -173,12 +269,13 @@ impl Concept {
                 }
             }
         }
-        Ok(Concept { width: width as i32, height: rows.len() as i32, rows, settings })
+        let (tunnel_mask, mask_w, mask_h) = build_tunnel_mask(&rows, settings.scale, settings.tunnel_width);
+        Ok(Concept { width: width as i32, height: rows.len() as i32, rows, settings, tunnel_mask, mask_w, mask_h })
     }
 
-    /// The key at pixel (px, py); outside the image it mirrors or tiles by the settings.
-    pub fn pixel(&self, px: i32, py: i32) -> u8 {
-        let fold = |v: i32, n: i32| match self.settings.outside {
+    /// Folds a coordinate into `[0, n)` by mirror or tile, as the settings say.
+    fn fold(&self, v: i32, n: i32) -> i32 {
+        match self.settings.outside {
             Outside::Tile => v.rem_euclid(n),
             Outside::Mirror => {
                 let m = v.rem_euclid(2 * n);
@@ -188,8 +285,12 @@ impl Concept {
                     m
                 }
             }
-        };
-        self.rows[fold(py, self.height) as usize][fold(px, self.width) as usize]
+        }
+    }
+
+    /// The key at pixel (px, py); outside the image it mirrors or tiles by the settings.
+    pub fn pixel(&self, px: i32, py: i32) -> u8 {
+        self.rows[self.fold(py, self.height) as usize][self.fold(px, self.width) as usize]
     }
 
     /// A cell's place on the map: its offset from the spawn cell, turned by `o`.
@@ -277,48 +378,44 @@ impl Concept {
         }
     }
 
-    /// True when the world cell is inside a mineshaft tunnel: a tunnel pixel, narrowed to `tunnel_width` cells
-    /// across the shorter way of its run of tunnel pixels (the length along the tunnel is not limited).
-    pub fn is_tunnel_cell(&self, o: Orient, wx: i32, wz: i32) -> bool {
-        let (u, v) = self.frame(o, wx, wz);
-        let s = self.settings.scale;
-        let (pu, pv) = (u.div_euclid(s), v.div_euclid(s));
-        let at = |du: i32, dv: i32| {
-            self.pixel(self.settings.spawn_pixel.0 + pu + du, self.settings.spawn_pixel.1 + pv + dv)
-        };
-        if at(0, 0) != TUNNEL {
-            return false;
-        }
-        let run = |dx: i32, dz: i32| {
-            let mut n = 0;
-            while n < RUN_CAP && at(dx * (n + 1), dz * (n + 1)) == TUNNEL {
-                n += 1;
-            }
-            n
-        };
-        let (l, r, up, down) = (run(-1, 0), run(1, 0), run(0, -1), run(0, 1));
-        let horizontal = l + r <= up + down;
-        let (p, pos, before, after) = if horizontal { (pu, u, l, r) } else { (pv, v, up, down) };
-        let (start, end) = ((p - before) * s, (p + after + 1) * s);
-        let tw = self.settings.tunnel_width;
-        if end - start <= tw {
-            return true;
-        }
-        let lo = (start + end) / 2 - tw / 2;
-        pos >= lo && pos < lo + tw
-    }
-
-    /// True when any tunnel pixel lies under the chunk (a coarse test, one look per pixel).
-    pub fn chunk_has_tunnel(&self, o: Orient, cx: i32, cz: i32) -> bool {
-        let step = self.settings.scale.max(1) as usize;
-        for x in (0..CHUNK).step_by(step).chain([CHUNK - 1]) {
-            for z in (0..CHUNK).step_by(step).chain([CHUNK - 1]) {
-                if self.pixel_of_cell(o, cx.saturating_mul(CHUNK).saturating_add(x), cz.saturating_mul(CHUNK).saturating_add(z)) == TUNNEL {
-                    return true;
+    /// Folds `base * scale + coord` (a cell offset from the spawn pixel's cell) into `[0, n)`, in i64 so a far chunk
+    /// cannot overflow, the same mirror/tile way `fold` folds pixels.
+    fn mask_fold(&self, base: i32, coord: i32, n: i32) -> i32 {
+        let a = i64::from(base) * i64::from(self.settings.scale) + i64::from(coord);
+        let n = i64::from(n);
+        let f = match self.settings.outside {
+            Outside::Tile => a.rem_euclid(n),
+            Outside::Mirror => {
+                let m = a.rem_euclid(2 * n);
+                if m >= n {
+                    2 * n - 1 - m
+                } else {
+                    m
                 }
             }
-        }
-        false
+        };
+        f as i32
+    }
+
+    /// True when the world cell is inside a mineshaft tunnel. The shaft is the pixel-`T` network carved
+    /// `tunnel_width` cells wide; this reads the precomputed connectivity-preserving mask (`build_tunnel_mask`: the
+    /// network's centreline dilated to `tunnel_width`), so the tunnels never pinch shut the way the old per-cell
+    /// narrowing did. The world cell is folded through `frame`/orient exactly as `pixel_of_cell`, keeping determinism
+    /// (the seed's turn still applies) and `tunnel_width` the only width knob.
+    pub fn is_tunnel_cell(&self, o: Orient, wx: i32, wz: i32) -> bool {
+        let (u, v) = self.frame(o, wx, wz);
+        let bx = self.mask_fold(self.settings.spawn_pixel.0, u, self.mask_w);
+        let by = self.mask_fold(self.settings.spawn_pixel.1, v, self.mask_h);
+        self.tunnel_mask[(by * self.mask_w + bx) as usize]
+    }
+
+    /// True when the chunk holds a carved tunnel cell. It reads the same mask `is_tunnel_cell` does (not the raw `T`
+    /// pixels), so "has a tunnel" means the same thing to the carve gate, the dressing gate and the tests: a chunk
+    /// that only grazes the rim of a wide blob — whose narrow centreline band runs through a neighbour — reports no
+    /// tunnel, because none is carved there.
+    pub fn chunk_has_tunnel(&self, o: Orient, cx: i32, cz: i32) -> bool {
+        let (ox, oz) = (cx.saturating_mul(CHUNK), cz.saturating_mul(CHUNK));
+        (0..CHUNK).any(|z| (0..CHUNK).any(|x| self.is_tunnel_cell(o, ox.saturating_add(x), oz.saturating_add(z))))
     }
 
     /// The seed's turn of the map. Without `seed_orient` the map is always as drawn.
@@ -579,6 +676,110 @@ mod tests {
     fn labels_are_upper_case() {
         for l in concept().settings.legend.values() {
             assert_eq!(l.label, l.label.to_uppercase());
+        }
+    }
+
+    /// Every turn of the map, as `orient_of` draws it. A seed only ever changes the layout through this, so the eight
+    /// turns stand in for every seed.
+    fn all_orients() -> Vec<Orient> {
+        let mut v = Vec::new();
+        for swap in [false, true] {
+            for flip_x in [false, true] {
+                for flip_z in [false, true] {
+                    v.push(Orient { swap, flip_x, flip_z });
+                }
+            }
+        }
+        v
+    }
+
+    /// The number of 4-connected components of the cells `pred` opens that touch the core window (chunks
+    /// `-core..=core`), flooding through an extra `margin` chunks so a component that only dips out of the core near
+    /// its edge is not miscounted as two. This makes the count immune to the hard window boundary that would
+    /// otherwise split a tunnel (or a wide pixel-`T` blob) that merely grazes the edge.
+    fn comps_touching_core(pred: &dyn Fn(i32, i32) -> bool, core: i32, margin: i32) -> usize {
+        use std::collections::HashSet;
+        let lo = -(core + margin) * CHUNK;
+        let hi = (core + margin + 1) * CHUNK;
+        let core_lo = -core * CHUNK;
+        let core_hi = (core + 1) * CHUNK;
+        let mut cells: HashSet<(i32, i32)> = HashSet::new();
+        for z in lo..hi {
+            for x in lo..hi {
+                if pred(x, z) {
+                    cells.insert((x, z));
+                }
+            }
+        }
+        let mut seen: HashSet<(i32, i32)> = HashSet::new();
+        let mut comps = 0;
+        for &start in &cells {
+            if !seen.insert(start) {
+                continue;
+            }
+            let mut touches = false;
+            let mut stack = vec![start];
+            while let Some((x, z)) = stack.pop() {
+                if (core_lo..core_hi).contains(&x) && (core_lo..core_hi).contains(&z) {
+                    touches = true;
+                }
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let n = (x + dx, z + dz);
+                    if cells.contains(&n) && seen.insert(n) {
+                        stack.push(n);
+                    }
+                }
+            }
+            if touches {
+                comps += 1;
+            }
+        }
+        comps
+    }
+
+    /// The carved tunnel cells have the same 4-connected component count as the pixel-`T` network over the same
+    /// window, for every turn of the map: the connectivity-preserving mask never splits a shaft. The old per-cell
+    /// narrowing failed this badly (tens of components where the pixel network has one or a few), marooning whole
+    /// districts; the mask carries it. A `tw = 99` escape hatch is not available here, but the mask is a subset of
+    /// the pixel-`T` cells, so it can only ever match or (never) exceed the pixel count.
+    #[test]
+    fn carved_tunnels_match_the_pixel_network_connectivity() {
+        let c = concept();
+        for o in all_orients() {
+            let tunnel = |x: i32, z: i32| c.is_tunnel_cell(o, x, z);
+            let pixel_t = |x: i32, z: i32| {
+                let (u, v) = c.frame(o, x, z);
+                c.pixel(c.settings.spawn_pixel.0 + u.div_euclid(c.settings.scale), c.settings.spawn_pixel.1 + v.div_euclid(c.settings.scale)) == TUNNEL
+            };
+            // two window sizes: near spawn the pixel network is one component, a touch wider it is a few. Either way
+            // the carved tunnels must agree exactly (the buggy narrowing gave dozens here).
+            for (core, margin) in [(8, 3), (10, 3)] {
+                let carved = comps_touching_core(&tunnel, core, margin);
+                let pixels = comps_touching_core(&pixel_t, core, margin);
+                assert_eq!(carved, pixels, "orient {o:?}, core {core}: {carved} carved vs {pixels} pixel components");
+                assert!(carved >= 1, "orient {o:?}: the window holds no tunnel to check");
+            }
+        }
+    }
+
+    /// Every cell the mask opens is a pixel-`T` cell: the narrowing only ever removes `T` cells, never adds floor
+    /// outside the drawn tunnels. This is what lets the connectivity test lean on "subset of pixel-`T`".
+    #[test]
+    fn the_tunnel_mask_is_a_subset_of_the_pixel_network() {
+        let c = concept();
+        for o in all_orients() {
+            for cz in -8..8 {
+                for cx in -8..8 {
+                    for z in 0..CHUNK {
+                        for x in 0..CHUNK {
+                            let (wx, wz) = (cx * CHUNK + x, cz * CHUNK + z);
+                            if c.is_tunnel_cell(o, wx, wz) {
+                                assert_eq!(c.pixel_of_cell(o, wx, wz), TUNNEL, "mask cell ({wx}, {wz}) is not a tunnel pixel");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -158,6 +158,26 @@ test("rename keeps the session and progress, and blocks reserved or taken names"
   }
 });
 
+test('"SERVER" is reserved for the dedicated host and cannot be registered or renamed into', async () => {
+  const app = await openAccounts();
+  try {
+    // register, developer or not, case-insensitively
+    for (const name of ["SERVER", "server", "Server"]) {
+      const [status, body] = await app.accounts.register({ username: name, password: PASSWORD });
+      assert.deepEqual([status, body.code], [403, "RESERVED_USERNAME"], name);
+      const [devStatus, devBody] = await app.accounts.register({ username: name, password: PASSWORD }, { allowDeveloperNames: true });
+      assert.deepEqual([devStatus, devBody.code], [403, "RESERVED_USERNAME"], name + " dev");
+      assert.equal(app.accounts.accountExists("SERVER"), false);
+    }
+    // rename into it is refused too
+    const [, player] = await app.accounts.register({ username: "PLAYER", password: PASSWORD });
+    assert.equal(app.accounts.rename({ sessionToken: player.sessionToken, username: "SERVER" })[1].code, "RESERVED_USERNAME");
+    assert.equal(app.accounts.rename({ sessionToken: player.sessionToken, username: "server" })[1].code, "RESERVED_USERNAME");
+  } finally {
+    await app.close();
+  }
+});
+
 test("only a built-in owner can grant, list and clear admin permissions", async () => {
   const app = await openAccounts();
   try {
