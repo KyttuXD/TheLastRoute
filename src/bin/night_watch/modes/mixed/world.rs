@@ -346,11 +346,36 @@ pub fn prop_text(key: &str) -> Option<&'static str> {
         "controlConsole" => include_str!("../../../last_route/assets/props/controlConsole.bbmodel"),
         "storageBarrel" => include_str!("../../../last_route/assets/props/storageBarrel.bbmodel"),
         "supplyCrates" => include_str!("../../../last_route/assets/props/supplyCrates.bbmodel"),
+        "paSpeakerPole" => include_str!("../../../last_route/assets/props/paSpeakerPole.bbmodel"),
+        "trashBin" => include_str!("../../../last_route/assets/props/trashBin.bbmodel"),
+        "foodCourtTable" => include_str!("../../../last_route/assets/props/foodCourtTable.bbmodel"),
+        "mallPlanter" => include_str!("../../../last_route/assets/props/mallPlanter.bbmodel"),
+        "menuBoard" => include_str!("../../../last_route/assets/props/menuBoard.bbmodel"),
+        "ticketBooth" => include_str!("../../../last_route/assets/props/ticketBooth.bbmodel"),
+        "receptionDesk" => include_str!("../../../last_route/assets/props/receptionDesk.bbmodel"),
+        "officeFileBoxes" => include_str!("../../../last_route/assets/props/officeFileBoxes.bbmodel"),
+        "filingCabinet" => include_str!("../../../last_route/assets/props/filingCabinet.bbmodel"),
+        "prizeClawMachine" => include_str!("../../../last_route/assets/props/prizeClawMachine.bbmodel"),
+        "prizeCounter" => include_str!("../../../last_route/assets/props/prizeCounter.bbmodel"),
+        "strengthTester" => include_str!("../../../last_route/assets/props/strengthTester.bbmodel"),
+        "arcadeCabinetCyanMagenta" => include_str!("../../../last_route/assets/props/arcadeCabinetCyanMagenta.bbmodel"),
+        "arcadeBasketballHoop" => include_str!("../../../last_route/assets/props/arcadeBasketballHoop.bbmodel"),
+        "arcadeTokenChanger" => include_str!("../../../last_route/assets/props/arcadeTokenChanger.bbmodel"),
+        "storageShelving" => include_str!("../../../last_route/assets/props/storageShelving.bbmodel"),
+        "locker" => include_str!("../../../last_route/assets/props/locker.bbmodel"),
+        "utilityCart" => include_str!("../../../last_route/assets/props/utilityCart.bbmodel"),
+        "coffeeStation" => include_str!("../../../last_route/assets/props/coffeeStation.bbmodel"),
+        "dinerBooth" => include_str!("../../../last_route/assets/props/dinerBooth.bbmodel"),
+        "dinerStool" => include_str!("../../../last_route/assets/props/dinerStool.bbmodel"),
+        "magazineRack" => include_str!("../../../last_route/assets/props/magazineRack.bbmodel"),
+        "shopShelf" => include_str!("../../../last_route/assets/props/shopShelf.bbmodel"),
+        "snackKiosk" => include_str!("../../../last_route/assets/props/snackKiosk.bbmodel"),
+        "checkoutCounter" => include_str!("../../../last_route/assets/props/checkoutCounter.bbmodel"),
         _ => return None,
     })
 }
 
-pub const PROP_KEYS: [&str; 14] = [
+pub const PROP_KEYS: [&str; 39] = [
     "mallBench",
     "waitingChairs",
     "vendingMachine",
@@ -365,6 +390,31 @@ pub const PROP_KEYS: [&str; 14] = [
     "controlConsole",
     "storageBarrel",
     "supplyCrates",
+    "paSpeakerPole",
+    "trashBin",
+    "foodCourtTable",
+    "mallPlanter",
+    "menuBoard",
+    "ticketBooth",
+    "receptionDesk",
+    "officeFileBoxes",
+    "filingCabinet",
+    "prizeClawMachine",
+    "prizeCounter",
+    "strengthTester",
+    "arcadeCabinetCyanMagenta",
+    "arcadeBasketballHoop",
+    "arcadeTokenChanger",
+    "storageShelving",
+    "locker",
+    "utilityCart",
+    "coffeeStation",
+    "dinerBooth",
+    "dinerStool",
+    "magazineRack",
+    "shopShelf",
+    "snackKiosk",
+    "checkoutCounter",
 ];
 
 fn key_of(name: &str) -> &'static str {
@@ -470,10 +520,17 @@ pub fn hub_parts(skin_idx: usize) -> HubParts {
 
     let mut dress = Group::new("HubDress", Vec3::ZERO);
     let mut props = Vec::new();
-    for a in &m.areas {
+    for (ai, a) in m.areas.iter().enumerate() {
         let c = a.centre();
+        accent(&mut dress, a, ai);
         for (k, (sx, sz)) in a.spots.iter().enumerate() {
-            dress_spot(&mut dress, &mut props, sk, vec3(*sx, 0.0, *sz), k, c);
+            let sp = vec3(*sx, 0.0, *sz);
+            if sk.kit == "bench" {
+                dress_transit(&mut dress, &mut props, a, sp, k, c);
+            } else {
+                // the room's number turns the kit, so no two rooms carry the same three things
+                dress_spot(&mut dress, &mut props, sk, sp, k + ai, c);
+            }
         }
     }
     HubParts { groups: vec![shell, fit, dress, run, mb], props }
@@ -481,6 +538,65 @@ pub fn hub_parts(skin_idx: usize) -> HubParts {
 
 fn prop(props: &mut Vec<PropPlace>, key: &str, pos: Vec3, centre: Vec3) {
     props.push(PropPlace { key: key_of(key), pos, yaw: crate::hunters::yaw_toward(pos, centre), tint: [1.0, 1.0, 1.0] });
+}
+
+/// A room's own colour (a runner rug along its lane and a banner over the first spot), so every camera reads as a place.
+fn room_colour(map_room: &str) -> [f32; 3] {
+    match map_room {
+        "platform" => [0.5, 0.7, 1.7],
+        "concourse" => [1.7, 1.5, 0.7],
+        "ticket_hall" => [1.7, 0.6, 0.6],
+        "west_arcade" => [1.6, 0.5, 1.7],
+        "lost_property" => [1.2, 0.9, 0.6],
+        "cafe" => [0.7, 1.7, 0.8],
+        "east_arcade" => [0.5, 1.6, 1.7],
+        "newsstand" => [1.7, 1.1, 0.5],
+        _ => [1.0, 1.0, 1.0],
+    }
+}
+
+fn accent(g: &mut Group, a: &Area, ai: usize) {
+    let c = a.centre();
+    let (w, l) = a.size();
+    let col = room_colour(&a.map);
+    // the runner follows the long side of the room
+    let size = if l > w { [1.0, 0.02, (l * 0.6).min(14.0)] } else { [(w * 0.6).min(14.0), 0.02, 1.0] };
+    put(g, &format!("RunnerRoom{ai}"), "fabric", col, size, [c.x, 0.012, c.z]);
+    if let Some((sx, sz)) = a.spots.first() {
+        put(g, &format!("BannerRoom{ai}"), "fabric", col, [2.2, 0.6, 0.06], [*sx, 3.0, *sz]);
+    }
+}
+
+/// The transit hub's props for one room: (main prop at the spot, a second prop beside it) for each spot.
+fn transit_theme(map_room: &str) -> &'static [(&'static str, &'static str)] {
+    match map_room {
+        "platform" => &[("mallBench", "paSpeakerPole"), ("waitingChairs", "trashBin"), ("vendingMachine", "mallBench")],
+        "concourse" => &[("foodCourtTable", "mallPlanter"), ("menuBoard", "mallPlanter"), ("foodCourtTable", "mallBench")],
+        "ticket_hall" => &[("ticketBooth", "officeFileBoxes"), ("receptionDesk", "filingCabinet"), ("waitingChairs", "mallPlanter")],
+        "west_arcade" => &[("arcadeCabinet", "prizeClawMachine"), ("prizeCounter", "arcadeCabinet"), ("strengthTester", "arcadeCabinet")],
+        "east_arcade" => &[("arcadeCabinetCyanMagenta", "arcadeTokenChanger"), ("arcadeBasketballHoop", "prizeClawMachine"), ("arcadeCabinetCyanMagenta", "arcadeCabinet")],
+        "lost_property" => &[("storageShelving", "supplyCrates"), ("locker", "locker"), ("utilityCart", "storageBarrel")],
+        "cafe" => &[("coffeeStation", "dinerStool"), ("dinerBooth", "dinerStool"), ("dinerBooth", "dinerStool")],
+        "newsstand" => &[("magazineRack", "shopShelf"), ("snackKiosk", "trashBin"), ("checkoutCounter", "shopShelf")],
+        _ => &[("mallBench", "trashBin"), ("waitingChairs", "trashBin"), ("vendingMachine", "mallBench")],
+    }
+}
+
+fn dress_transit(g: &mut Group, props: &mut Vec<PropPlace>, a: &Area, sp: Vec3, k: usize, centre: Vec3) {
+    let theme = transit_theme(&a.map);
+    let (main, second) = theme[k % theme.len()];
+    prop(props, main, sp, centre);
+    // the second prop stands beside the first, toward the room's middle, and only if it is still inside the room
+    let dir = if centre.x >= sp.x { 1.0 } else { -1.0 };
+    let beside = sp + vec3(dir * 1.9, 0.0, 0.0);
+    if a.contains(beside.x, beside.z) {
+        prop(props, second, beside, centre);
+    }
+    // a lit board over every other spot, in the room's colour
+    if k % 2 == 0 {
+        put(g, "BoardHub", "plastic", [0.4, 0.4, 0.45], [1.4, 0.8, 0.1], [sp.x, 2.4, sp.z - 0.4]);
+        put(g, "ScreenBoardHub", "screen", room_colour(&a.map), [1.2, 0.6, 0.04], [sp.x, 2.4, sp.z - 0.33]);
+    }
 }
 
 /// One dressing spot of a room (the same three corner spots as Godot's `_dress`; the lanes along the middle stay clear).
@@ -838,6 +954,41 @@ mod tests {
         assert_eq!(vent_spot_pos(0), vec3(-10.5, 0.0, -62.0));
         assert_eq!(vent_spot_pos(4), vec3(-6.5, 0.0, -62.0));
         assert_eq!(vent_stand(Side::T), vec3(0.0, 0.0, -1.3));
+    }
+
+    #[test]
+    fn every_camera_room_is_dressed_differently_on_every_skin() {
+        for i in 0..9 {
+            let parts = hub_parts(i);
+            let dress = parts.groups.iter().find(|g| g.name == "HubDress").unwrap();
+            let mut sigs: Vec<(String, Vec<String>)> = Vec::new();
+            for a in &map().areas {
+                let mut keys: Vec<String> = parts.props.iter().filter(|p| a.contains(p.pos.x, p.pos.z)).map(|p| p.key.to_string()).collect();
+                let mut cubes: Vec<String> = dress.cubes.iter().filter(|c| a.contains(c.pos.x, c.pos.z)).map(|c| format!("{}{:?}{:?}", c.name.trim_end_matches(char::is_numeric), c.size, c.tint)).collect();
+                keys.append(&mut cubes);
+                keys.sort();
+                sigs.push((a.id.clone(), keys));
+            }
+            for x in 0..sigs.len() {
+                for y in x + 1..sigs.len() {
+                    assert_ne!(sigs[x].1, sigs[y].1, "skin {i}: {} and {} look the same", sigs[x].0, sigs[y].0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_transit_rooms_use_props_that_fit_them() {
+        let parts = hub_parts(0);
+        let has = |room: &str, key: &str| {
+            let a = map().areas.iter().find(|a| a.map == room).unwrap();
+            parts.props.iter().any(|p| p.key == key && a.contains(p.pos.x, p.pos.z))
+        };
+        assert!(has("ticket_hall", "ticketBooth"));
+        assert!(has("cafe", "coffeeStation"));
+        assert!(has("west_arcade", "prizeClawMachine"));
+        assert!(has("lost_property", "storageShelving"));
+        assert!(has("newsstand", "magazineRack"));
     }
 
     #[test]

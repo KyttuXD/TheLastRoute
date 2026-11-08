@@ -598,6 +598,7 @@ impl ClassicMode {
             }
             slot.actor.pos = agent.walker.pos;
             slot.actor.yaw = agent.walker.yaw;
+            slot.actor.hidden = agent.walker.hidden;
             let pose = view::pose_of(&PoseIn {
                 hunter,
                 shown,
@@ -872,7 +873,7 @@ impl Mode for ClassicMode {
         for a in self.placement.crowd.visible_in(room) {
             if let Some(s) = g.slots.iter().find(|s| s.id == a.id) {
                 if s.actor.visible {
-                    s.actor.draw(&ctx.gfx, &lights, pos);
+                    s.actor.draw_in(&ctx.gfx, &lights, pos, Actor::is_duct_room(room));
                 }
             }
         }

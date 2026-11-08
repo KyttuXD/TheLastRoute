@@ -137,6 +137,28 @@ impl LureMode {
         ctx.snd.cues(&cue_names::monitor_toggle());
     }
 
+    /// The room a `--monitor ROOM` request names, as a sim room id (accepts a map id or a sim id).
+    fn requested_sim_room(room: &str) -> Option<String> {
+        if ROOMS.contains(&room) {
+            return Some(room.to_string());
+        }
+        let m = map();
+        m.map_to_sim(room).filter(|r| ROOMS.contains(r)).map(|r| r.to_string())
+    }
+
+    /// `--monitor ROOM` makes the shell raise the HUD's monitor flag right after `start`, but this mode keeps its own monitor
+    /// state and rewrites the HUD from it every frame, so the request was lost. On the first frame, take it over: open the
+    /// monitor and point it at that camera.
+    fn adopt_requested_monitor(&mut self, ctx: &mut ShiftCtx) {
+        if self.frame != 0 || self.monitor_up || !ctx.hud.monitor_up {
+            return;
+        }
+        if let Some(room) = Self::requested_sim_room(&ctx.hud.monitor_room) {
+            self.monitor_room = room;
+        }
+        self.open_monitor(ctx);
+    }
+
     fn toggle_monitor(&mut self, ctx: &mut ShiftCtx) {
         if self.monitor_up {
             self.close_monitor(ctx);
@@ -433,6 +455,7 @@ impl LureMode {
                         if owns {
                             actor.pos = a.walker.pos;
                             actor.yaw = a.walker.yaw;
+                            actor.hidden = a.walker.hidden;
                         } else {
                             if was {
                                 driver.reset();
@@ -623,6 +646,7 @@ impl Mode for LureMode {
             return;
         }
         let input = ctx.input;
+        self.adopt_requested_monitor(ctx);
         ctx.player.frozen = self.monitor_up;
         ctx.player.look_frozen = self.monitor_up;
         ctx.player.noclip = self.admin.noclip;
@@ -801,7 +825,7 @@ impl Mode for LureMode {
                 for agent in self.presence.crowd.visible_in(&sim_room) {
                     if let Some(a) = self.actors.get(&agent.id) {
                         if a.visible {
-                            a.draw(ctx.gfx, &lights, pos);
+                            a.draw_in(ctx.gfx, &lights, pos, Actor::is_duct_room(&sim_room));
                         }
                     }
                 }
@@ -889,6 +913,14 @@ impl Mode for LureMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_monitor_request_resolves_sim_and_map_ids_and_rejects_others() {
+        assert_eq!(LureMode::requested_sim_room("ventr").as_deref(), Some("ventr"));
+        assert_eq!(LureMode::requested_sim_room("storage").as_deref(), Some("storage"));
+        assert!(LureMode::requested_sim_room("nowhere").is_none());
+        assert!(LureMode::requested_sim_room("").is_none());
+    }
 
     fn session(night: i32) -> Session {
         let mut s = Session::new();

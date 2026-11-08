@@ -176,7 +176,7 @@ fn window(groups: &mut Vec<Group>) {
     // the ON AIR lamp above the window
     let mut sign = Group::new("OnAirSign", vec3(0.0, 2.75, -HALF_D + 0.1));
     put(&mut sign, "SignPlate", [1.0, 0.3, 0.06], [0.0, 0.0, 0.0], O::new().k("plastic"));
-    put(&mut sign, "SignOnAir", [0.84, 0.18, 0.03], [0.0, 0.0, 0.04], O::new().k("red"));
+    put(&mut sign, "SignOnAir", [0.84, 0.18, 0.03], [0.0, 0.0, 0.04], O::new().k("light").t([1.9, 0.18, 0.12]));
     groups.push(sign);
 }
 

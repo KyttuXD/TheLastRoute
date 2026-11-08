@@ -81,7 +81,6 @@
 		{"model": "cableCoil", "room": "ventr", "x": -1.4, "z": -1.0, "face": "S"},
 		{"model": "deskMic", "room": "booth", "x": -0.2, "z": -1.9, "y": 0.8, "face": "S"},
 		{"model": "paSpeakerPole", "room": "booth", "x": 2.6, "z": 1.9, "face": "N"},
-		{"model": "pottedPlant", "room": "booth", "x": -2.6, "z": 1.9, "face": "N"},
-		{"model": "cableRun", "room": "booth", "x": 1.2, "z": -0.8, "face": "E"}
+		{"model": "pottedPlant", "room": "booth", "x": -2.6, "z": 1.9, "face": "N"}
 	]
 }

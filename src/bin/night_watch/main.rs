@@ -202,7 +202,11 @@ fn shift_frame(env: &mut Env, run: &mut ShiftRun, raw: &InputFrame) -> Flow {
     // clicks on the always-on buttons become the key presses the modes already understand
     if !run.paused && running && !admin_open && !death_active {
         match env.hud.base_click(&run.hud_state, &env.bindings, &input) {
-            Some(BaseClick::Pause) => run.paused = true,
+            Some(BaseClick::Pause) => {
+                if !env.manual {
+                    run.paused = true;
+                }
+            }
             Some(BaseClick::Cameras) | Some(BaseClick::CloseCameras) => {
                 input.pressed.insert(MONITOR);
                 input.down.insert(MONITOR);
@@ -222,7 +226,7 @@ fn shift_frame(env: &mut Env, run: &mut ShiftRun, raw: &InputFrame) -> Flow {
             }
             None => {}
         }
-        if !run.paused && (is_key_pressed(KeyCode::Escape) || input.just(PAUSE)) {
+        if !run.paused && !env.manual && (is_key_pressed(KeyCode::Escape) || input.just(PAUSE)) {
             run.paused = true;
         }
     }

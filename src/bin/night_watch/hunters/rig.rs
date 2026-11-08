@@ -94,6 +94,8 @@ pub struct Actor {
     pub pos: Vec3,
     pub yaw: f32,
     pub visible: bool,
+    /// Crawling inside a duct (the nav walker's `hidden`): `draw` skips it, `draw_in` shows it only to a duct camera.
+    pub hidden: bool,
     /// Multiplies the model colour (and alpha) when drawn.
     pub tint: Color,
     rig: Rc<Rig>,
@@ -118,6 +120,7 @@ impl Actor {
             pos: Vec3::ZERO,
             yaw: 0.0,
             visible: true,
+            hidden: false,
             tint: WHITE,
             rig,
             model,
@@ -317,10 +320,31 @@ impl Actor {
         }
     }
 
-    pub fn draw(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3) {
-        if !self.visible {
+    /// True when `name` is a vent or duct camera room (a camera that may see a crawling hunter).
+    pub fn is_duct_room(name: &str) -> bool {
+        let n = name.to_ascii_lowercase();
+        n.contains("vent") || n.contains("duct")
+    }
+
+    /// Whether this actor is drawn: visible, and not hidden in a duct unless the camera is in the duct.
+    pub fn drawn_for(&self, cam_in_duct: bool) -> bool {
+        self.visible && (!self.hidden || cam_in_duct)
+    }
+
+    /// Draw for a camera feed; `cam_in_duct` lets a vent cam show a crawling hunter.
+    pub fn draw_in(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3, cam_in_duct: bool) {
+        if !self.drawn_for(cam_in_duct) {
             return;
         }
+        self.draw_mesh(gfx, lights, cam_pos);
+    }
+
+    /// Player view / office draw: hidden (in-duct) hunters are skipped.
+    pub fn draw(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3) {
+        self.draw_in(gfx, lights, cam_pos, false);
+    }
+
+    fn draw_mesh(&self, gfx: &Gfx, lights: &LightSet, cam_pos: Vec3) {
         let (mut verts, mut idx) = (Vec::new(), Vec::new());
         let texture = self.build_mesh(&mut verts, &mut idx);
         if verts.is_empty() {
@@ -411,6 +435,20 @@ mod tests {
         compile_nw_poses(&mut rig, crate::assets::POSES_JSON);
         let blends = Rc::new(pose_blends(crate::assets::POSES_JSON));
         Actor::from_parts(id, Rc::new(rig), None, blends)
+    }
+
+    #[test]
+    fn hidden_actor_is_skipped_except_for_a_duct_camera() {
+        let mut a = actor("dovelle", DOVELLE);
+        assert!(a.drawn_for(false));
+        a.hidden = true;
+        assert!(!a.drawn_for(false));
+        assert!(a.drawn_for(true));
+        a.visible = false;
+        assert!(!a.drawn_for(true));
+        assert!(Actor::is_duct_room("vent_a"));
+        assert!(Actor::is_duct_room("Duct2"));
+        assert!(!Actor::is_duct_room("hall"));
     }
 
     #[test]

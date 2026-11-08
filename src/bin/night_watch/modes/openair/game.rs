@@ -402,6 +402,7 @@ impl OpenAirMode {
             if self.catcher == Some(slot.id) {
                 slot.actor.pos = agent.walker.pos;
                 slot.actor.yaw = agent.walker.yaw;
+                slot.actor.hidden = agent.walker.hidden;
                 continue;
             }
             slot.driver.drive(agent, &mut slot.actor);

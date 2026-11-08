@@ -15,7 +15,7 @@
 use crate::core::CamLayout;
 use crate::gfx::office::{collect_solids, mul3, put, Office, OfficeConfig, OfficeParts, OfficeState, OfficeVariant, StationDef, O, SEAT, SPAWN};
 use crate::gfx::office::{HALF_D, HALF_W, HEIGHT};
-use crate::gfx::{cube_aabb, Cube, Gfx, Group, LightSet, Textures, World, WorldBuilder};
+use crate::gfx::{cube_aabb, Cube, Gfx, Group, LightSet, Omni, Textures, World, WorldBuilder};
 use crate::hunters::bbmodel::Model;
 use macroquad::prelude::*;
 use serde_json::Value;
@@ -38,8 +38,10 @@ const RUST: [f32; 3] = [1.6, 0.9, 0.6];
 const WOOD: [f32; 3] = [1.5, 1.05, 0.7];
 const WOOD_DARK: [f32; 3] = [1.2, 0.8, 0.55];
 const CONTAINERS: [[f32; 3]; 5] = [[1.7, 0.5, 0.4], [0.5, 1.0, 1.7], [1.8, 1.5, 0.4], [0.6, 1.6, 0.7], [1.5, 0.7, 1.6]];
-const HULL: [f32; 3] = [1.0, 1.05, 1.25];
-const WARM: [f32; 3] = [1.4, 1.1, 0.9];
+const HULL: [f32; 3] = [1.35, 1.5, 1.9];
+const HULL_RUST: [f32; 3] = [1.8, 1.15, 0.8];
+const HULL_TEAL: [f32; 3] = [0.9, 1.6, 1.8];
+const WARM: [f32; 3] = [1.8, 1.45, 1.05];
 
 // ---- the map data -----------------------------------------------------------------------------------------------------------
 
@@ -212,6 +214,13 @@ const PROP_TEXTS: &[(&str, &str)] = &[
     prop!("storageShelving"),
     prop!("labBench"),
     prop!("trashBin"),
+    prop!("controlConsole"),
+    prop!("cableRun"),
+    prop!("irrigationManifold"),
+    prop!("floorLamp"),
+    prop!("labCoolingUnit"),
+    prop!("maintenanceCleaningCart"),
+    prop!("officeCrtSecurityConsole"),
 ];
 
 pub fn prop_text(name: &str) -> Option<&'static str> {
@@ -298,10 +307,20 @@ fn wall(g: &mut Group, walls: &mut Vec<WallBox>, along_x: bool, fixed: f32, a: f
     }
 }
 
-fn slab(g: &mut Group, x0: f32, x1: f32, z0: f32, z1: f32, tint: [f32; 3], ceiling: bool, name: &str) {
-    put(g, name, [x1 - x0, 0.2, z1 - z0], [(x0 + x1) * 0.5, -0.1, (z0 + z1) * 0.5], O::new().t(tint));
+fn slab(g: &mut Group, x0: f32, x1: f32, z0: f32, z1: f32, tint: [f32; 3], ceiling: bool, name: &str, kind: &'static str) {
+    put(g, name, [x1 - x0, 0.2, z1 - z0], [(x0 + x1) * 0.5, -0.1, (z0 + z1) * 0.5], O::new().k(kind).t(tint));
     if ceiling {
-        put(g, "CeilingShip", [x1 - x0, 0.2, z1 - z0], [(x0 + x1) * 0.5, H + 0.1, (z0 + z1) * 0.5], O::new().t([0.8, 0.8, 0.9]));
+        put(g, "CeilingShip", [x1 - x0, 0.2, z1 - z0], [(x0 + x1) * 0.5, H + 0.1, (z0 + z1) * 0.5], O::new().k("concrete").t([1.1, 1.1, 1.25]));
+        // ceiling lamps: glowing panels flush with the ceiling, about one per 6 m x 6 m (they read in every feed)
+        let nx = (((x1 - x0) / 6.0).round() as i32).max(1);
+        let nz = (((z1 - z0) / 6.0).round() as i32).max(1);
+        for i in 0..nx {
+            for j in 0..nz {
+                let cx = x0 + (x1 - x0) * (i as f32 + 0.5) / nx as f32;
+                let cz = z0 + (z1 - z0) * (j as f32 + 0.5) / nz as f32;
+                put(g, "CeilingPanelLamp", [1.1, 0.06, 0.45], [cx, H - 0.03, cz], O::new().k("light"));
+            }
+        }
     }
 }
 
@@ -329,7 +348,7 @@ pub fn ship_parts() -> ShipParts {
         let mut g = Group::new(&format!("ShipGantry{tag}"), Vec3::ZERO);
         let x0 = (side * 9.3).min(side * 14.5);
         let x1 = (side * 9.3).max(side * 14.5);
-        slab(&mut g, x0, x1, -1.7, 1.7, STEEL, true, "FloorShip");
+        slab(&mut g, x0, x1, -1.7, 1.7, [1.3, 1.4, 1.7], true, "FloorShip", "metal");
         wall(&mut g, &mut walls, true, -1.7, x0, x1, &[], HULL, "WallShip", H);
         wall(&mut g, &mut walls, true, 1.7, x0, x1, &[], HULL, "WallShip", H);
         for i in 0..4 {
@@ -342,7 +361,7 @@ pub fn ship_parts() -> ShipParts {
     // the dock
     {
         let mut d = Group::new("ShipDock", Vec3::ZERO);
-        slab(&mut d, -26.0, -14.5, -9.0, 9.0, [0.85, 0.85, 1.0], true, "FloorShip");
+        slab(&mut d, -26.0, -14.5, -9.0, 9.0, [1.2, 1.3, 1.6], true, "FloorShip", "concrete");
         wall(&mut d, &mut walls, false, -26.0, -9.0, 9.0, &[(-2.0, 2.0)], HULL, "WallShip", H);
         wall(&mut d, &mut walls, false, -14.5, -9.0, 9.0, &[(-1.7, 1.7)], HULL, "WallShip", H);
         wall(&mut d, &mut walls, true, -9.0, -26.0, -14.5, &[(-22.0, -19.0)], HULL, "WallShip", H);
@@ -364,10 +383,10 @@ pub fn ship_parts() -> ShipParts {
     // the airlock
     {
         let mut a = Group::new("ShipAirlock", Vec3::ZERO);
-        slab(&mut a, -32.0, -26.0, -3.0, 3.0, [0.7, 0.75, 0.95], true, "FloorShip");
-        wall(&mut a, &mut walls, false, -32.0, -3.0, 3.0, &[], HULL, "WallShip", H);
-        wall(&mut a, &mut walls, true, -3.0, -32.0, -26.0, &[], HULL, "WallShip", H);
-        wall(&mut a, &mut walls, true, 3.0, -32.0, -26.0, &[], HULL, "WallShip", H);
+        slab(&mut a, -32.0, -26.0, -3.0, 3.0, [1.5, 1.2, 0.9], true, "FloorShip", "metal");
+        wall(&mut a, &mut walls, false, -32.0, -3.0, 3.0, &[], HULL_RUST, "WallShip", H);
+        wall(&mut a, &mut walls, true, -3.0, -32.0, -26.0, &[], HULL_RUST, "WallShip", H);
+        wall(&mut a, &mut walls, true, 3.0, -32.0, -26.0, &[], HULL_RUST, "WallShip", H);
         // a heavy ring door frame at the dock side, a wheel, warning lights (glowing cubes), a lever
         for sz in [-1.9f32, 1.9] {
             put(&mut a, "FrameAirlock", [0.4, 2.8, 0.3], [-26.2, 1.4, sz], O::new().k("metal").t([1.6, 0.7, 0.4]));
@@ -384,10 +403,10 @@ pub fn ship_parts() -> ShipParts {
     // the engine room
     {
         let mut e = Group::new("ShipEngine", Vec3::ZERO);
-        slab(&mut e, -26.0, -14.5, -22.0, -9.0, [0.75, 0.8, 0.95], true, "FloorShip");
-        wall(&mut e, &mut walls, false, -26.0, -22.0, -9.0, &[], HULL, "WallShip", H);
-        wall(&mut e, &mut walls, false, -14.5, -22.0, -9.0, &[(-17.0, -14.0)], HULL, "WallShip", H);
-        wall(&mut e, &mut walls, true, -22.0, -26.0, -14.5, &[], HULL, "WallShip", H);
+        slab(&mut e, -26.0, -14.5, -22.0, -9.0, [1.5, 1.2, 1.0], true, "FloorShip", "metal");
+        wall(&mut e, &mut walls, false, -26.0, -22.0, -9.0, &[], HULL_RUST, "WallShip", H);
+        wall(&mut e, &mut walls, false, -14.5, -22.0, -9.0, &[(-17.0, -14.0)], HULL_RUST, "WallShip", H);
+        wall(&mut e, &mut walls, true, -22.0, -26.0, -14.5, &[], HULL_RUST, "WallShip", H);
         put(&mut e, "BlockEngine", [5.0, 2.2, 3.0], [-21.0, 1.1, -18.0], O::new().k("metal").t([1.2, 0.7, 0.5]));
         for i in 0..4 {
             put(&mut e, "PistonEngine", [0.5, 0.5, 3.2], [-23.0 + i as f32 * 1.4, 2.45, -18.0], O::new().k("metal").t(STEEL));
@@ -404,10 +423,10 @@ pub fn ship_parts() -> ShipParts {
     // the bridge
     {
         let mut b = Group::new("ShipBridge", Vec3::ZERO);
-        slab(&mut b, -14.5, 2.0, -22.0, -10.0, [0.7, 0.8, 1.1], true, "FloorShip");
-        wall(&mut b, &mut walls, true, -22.0, -14.5, 2.0, &[], HULL, "WallShip", H);
-        wall(&mut b, &mut walls, true, -10.0, -14.5, 2.0, &[], HULL, "WallShip", H);
-        wall(&mut b, &mut walls, false, 2.0, -22.0, -10.0, &[], HULL, "WallShip", H);
+        slab(&mut b, -14.5, 2.0, -22.0, -10.0, [0.9, 1.4, 1.8], true, "FloorShip", "floor");
+        wall(&mut b, &mut walls, true, -22.0, -14.5, 2.0, &[], HULL_TEAL, "WallShip", H);
+        wall(&mut b, &mut walls, true, -10.0, -14.5, 2.0, &[], HULL_TEAL, "WallShip", H);
+        wall(&mut b, &mut walls, false, 2.0, -22.0, -10.0, &[], HULL_TEAL, "WallShip", H);
         put(&mut b, "ConsoleBridge", [7.0, 1.0, 1.0], [-6.0, 0.5, -20.6], O::new().k("metal").t([0.7, 0.8, 1.1]));
         for i in 0..5 {
             put(&mut b, "ScreenBridge", [0.7, 0.4, 0.04], [-8.5 + i as f32 * 1.3, 1.25, -20.9], O::new().emissive());
@@ -425,7 +444,7 @@ pub fn ship_parts() -> ShipParts {
     // the cargo hold
     {
         let mut h = Group::new("ShipHold", Vec3::ZERO);
-        slab(&mut h, 14.5, 26.0, -9.0, 9.0, [1.0, 0.95, 0.85], true, "FloorShip");
+        slab(&mut h, 14.5, 26.0, -9.0, 9.0, [1.5, 1.3, 1.0], true, "FloorShip", "wood");
         wall(&mut h, &mut walls, false, 26.0, -9.0, 9.0, &[], WARM, "WallShip", H);
         wall(&mut h, &mut walls, false, 14.5, -9.0, 9.0, &[(-1.7, 1.7)], WARM, "WallShip", H);
         wall(&mut h, &mut walls, true, -9.0, 14.5, 26.0, &[], WARM, "WallShip", H);
@@ -450,10 +469,10 @@ pub fn ship_parts() -> ShipParts {
     // the scrap yard
     {
         let mut y = Group::new("ShipYard", Vec3::ZERO);
-        slab(&mut y, -26.0, 26.0, 9.0, 28.0, [0.7, 0.72, 0.8], false, "GroundYard");
-        slab(&mut y, -14.5, 14.5, 2.7, 9.0, [0.7, 0.72, 0.8], false, "GroundYard");
+        slab(&mut y, -26.0, 26.0, 9.0, 28.0, [1.25, 1.3, 1.2], false, "GroundYard", "concrete");
+        slab(&mut y, -14.5, 14.5, 2.7, 9.0, [1.25, 1.3, 1.2], false, "GroundYard", "concrete");
         // a fence round the outside
-        let fence = [0.7, 0.75, 0.9];
+        let fence = [1.4, 1.5, 1.8];
         wall(&mut y, &mut walls, true, 28.0, -26.0, 26.0, &[], fence, "FenceYard", 2.2);
         wall(&mut y, &mut walls, false, -26.0, 9.0, 28.0, &[], fence, "FenceYard", 2.2);
         wall(&mut y, &mut walls, false, 26.0, 9.0, 28.0, &[], fence, "FenceYard", 2.2);
@@ -497,9 +516,13 @@ pub fn ship_parts() -> ShipParts {
         let mut c = Group::new("ShipCameras", Vec3::ZERO);
         for cam in &map().cameras {
             let p = cam.pos;
-            put(&mut c, "CamHousing", [0.34, 0.22, 0.42], [p.x, p.y, p.z], O::new().k("metal").t([0.45, 0.45, 0.5]));
+            // the housing and its lamp hang BEHIND the lens, so a feed never looks at its own camera (the lamp used to hang
+            // 0.3 m in front of it: the green box in the middle of every feed)
             let dir = (cam.target - cam.pos).normalize_or_zero();
-            put(&mut c, "LedCamera", [0.1, 0.1, 0.1], [p.x + dir.x * 0.3, p.y + dir.y * 0.3, p.z + dir.z * 0.3], O::new());
+            let back = p - dir * 0.4;
+            put(&mut c, "CamHousing", [0.34, 0.22, 0.42], [back.x, back.y, back.z], O::new().k("metal").t([0.45, 0.45, 0.5]));
+            let led = p - dir * 0.15 + vec3(0.0, 0.14, 0.0);
+            put(&mut c, "LedCamera", [0.08, 0.08, 0.08], [led.x, led.y, led.z], O::new());
             if p.y > 3.7 {
                 put(&mut c, "CamPole", [0.1, p.y - 0.1, 0.1], [p.x, (p.y - 0.1) * 0.5, p.z + 0.5], O::new().k("metal"));
             } else {
@@ -721,6 +744,25 @@ impl Scene {
         self.ship.draw(&gfx.shader, lights, cam_pos);
         self.props.draw(gfx, lights, cam_pos);
     }
+}
+
+/// The lights of a security feed: the shared flat feed ambient, a little dimmer, plus the ceiling lamps of the room (the same
+/// spots as the `CeilingPanelLamp` cubes) so every room reads with depth. The open yard gets four lamps along its length.
+pub fn feed_lights(room: &str) -> LightSet {
+    let base = LightSet::feed();
+    let warm = [1.0, 0.93, 0.8];
+    let at = |x: f32, y: f32, z: f32, range: f32| Omni { pos: vec3(x, y, z), color: warm, energy: 1.3, range };
+    let omni = match room {
+        "airlock" => vec![at(-29.0, H - 0.5, 0.0, 9.0)],
+        "dockL" => vec![at(-20.2, H - 0.5, -4.5, 12.0), at(-20.2, H - 0.5, 4.5, 12.0)],
+        "gantryL" => vec![at(-11.0, H - 0.5, 0.0, 10.0)],
+        "gantryR" => vec![at(11.0, H - 0.5, 0.0, 10.0)],
+        "engine" => vec![at(-20.2, H - 0.5, -12.5, 11.0), at(-20.2, H - 0.5, -18.0, 11.0)],
+        "bridge" => vec![at(-9.0, H - 0.5, -16.0, 11.0), at(-2.0, H - 0.5, -16.0, 11.0)],
+        "hold" => vec![at(20.0, H - 0.5, -4.5, 12.0), at(20.0, H - 0.5, 4.5, 12.0)],
+        _ => vec![at(-15.0, 4.0, 18.0, 16.0), at(-5.0, 4.0, 18.0, 16.0), at(5.0, 4.0, 18.0, 16.0), at(15.0, 4.0, 18.0, 16.0)],
+    };
+    LightSet { ambient: [base.ambient[0] * 0.8, base.ambient[1] * 0.8, base.ambient[2] * 0.8], omni, spot: Vec::new(), fog: None }
 }
 
 /// Starts drawing into the feed target from a security camera (its own field of view); end with `gfx.feed.end()`.
@@ -1019,5 +1061,36 @@ mod tests {
         let l = state.lights(None);
         assert!(!l.omni.is_empty());
         assert!(DAY_AMBIENT.iter().all(|c| *c > 0.5 && *c < 1.0));
+    }
+
+    #[test]
+    fn no_camera_housing_or_lamp_hangs_in_front_of_its_own_lens() {
+        let ship = ship_parts();
+        let cams = ship.groups.iter().find(|g| g.name == "ShipCameras").expect("cameras");
+        for c in &map().cameras {
+            let dir = (c.target - c.pos).normalize();
+            for cube in cams.cubes.iter().filter(|q| q.name == "CamHousing" || q.name == "LedCamera") {
+                let rel = cube.pos - c.pos;
+                if rel.length() < 0.6 {
+                    // the cube's nearest point to the view direction stays behind the lens plane
+                    let reach = cube.size.length() * 0.5;
+                    assert!(rel.dot(dir) + reach <= 0.06, "{} {} is in front of the {} lens", cube.name, rel.dot(dir), c.room);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_feed_room_has_lamps_and_every_ceilinged_room_has_lamp_panels() {
+        for c in &map().cameras {
+            let l = feed_lights(&c.room);
+            assert!(!l.omni.is_empty() && l.omni.len() <= crate::gfx::MAX_OMNI, "{}", c.room);
+            assert!(l.ambient.iter().all(|a| *a > 0.5));
+        }
+        let ship = ship_parts();
+        for name in ["ShipDock", "ShipAirlock", "ShipEngine", "ShipBridge", "ShipHold"] {
+            let g = ship.groups.iter().find(|g| g.name == name).expect("group");
+            assert!(g.cubes.iter().any(|c| c.name == "CeilingPanelLamp"), "{name}");
+        }
     }
 }

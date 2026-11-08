@@ -1088,6 +1088,7 @@ impl MixedGame {
             slot.actor.visible = !pres.in_duct(&a.id);
             slot.actor.pos = a.walker.pos;
             slot.actor.yaw = a.walker.yaw;
+            slot.actor.hidden = a.walker.hidden;
             let kind = th.map(|t| t.kind);
             if kind == Some(Kind::Vent) {
                 let in_shaft = th.map(|t| t.active || t.armed).unwrap_or(false);
@@ -1339,7 +1340,7 @@ impl Mode for MixedGame {
             g.hub.draw(&ctx.gfx, &lights, pos);
             for s in g.slots.values() {
                 if s.actor.visible && s.actor.pos.distance(pos) < 70.0 {
-                    s.actor.draw(&ctx.gfx, &lights, pos);
+                    s.actor.draw_in(&ctx.gfx, &lights, pos, Actor::is_duct_room(room));
                 }
             }
         }

@@ -880,6 +880,21 @@ impl Mode for StoryGame {
             None => return,
         };
         self.draw_hunters(&*ctx.gfx, &lights, cam.pos, true);
+        // a dim backing under the task list so it reads over the bright monitors (the HUD text is drawn after this)
+        set_default_camera();
+        if !ctx.hud.monitor_up {
+            let mut w = 0.0f32;
+            let mut h = 0.0f32;
+            for p in &self.task_panels() {
+                for (s, _, size) in &p.lines {
+                    w = w.max(s.chars().count() as f32 * size * 0.45);
+                    h += size + 3.0;
+                }
+            }
+            if w > 0.0 {
+                fill(Rect::new(4.0, 76.0, w + 10.0, h + 8.0), Color::new(0.02, 0.03, 0.05, 0.72));
+            }
+        }
     }
 
     fn draw_feed(&mut self, ctx: &mut ShiftCtx, room: &str) {

@@ -39,7 +39,7 @@
 		{"id": "CAM:crawl", "kind": "camera", "room": "crawl", "p": [11.5,2.8,4.2], "cam": 5},
 		{"id": "CAM:ductL", "kind": "camera", "room": "ductL", "p": [-8.1,1.4,0.6], "cam": 6},
 		{"id": "CAM:ductR", "kind": "camera", "room": "ductR", "p": [8.1,1.4,0.6], "cam": 7},
-		{"id": "CAM:hall", "kind": "camera", "room": "hall", "p": [0,2.6,-1.9], "cam": 8},
+		{"id": "CAM:hall", "kind": "camera", "room": "hall", "p": [0,2.35,-2.3], "cam": 8},
 		{"id": "GA_W", "kind": "waypoint", "room": "ballroom", "p": [-9,0,-24]},
 		{"id": "GA_E", "kind": "waypoint", "room": "ballroom", "p": [9,0,-24]},
 		{"id": "GA_N", "kind": "waypoint", "room": "ballroom", "p": [0,0,-29]},

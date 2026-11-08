@@ -427,6 +427,7 @@ impl MaskMode {
             actor.visible = tgt.shown;
             actor.pos = agent.walker.pos;
             actor.yaw = agent.walker.yaw;
+            actor.hidden = agent.walker.hidden;
             if tgt.driven {
                 driver.reset();
                 if id == "nyxie" {

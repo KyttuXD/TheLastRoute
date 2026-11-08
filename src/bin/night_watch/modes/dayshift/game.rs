@@ -9,7 +9,7 @@
 use super::shop::{draw_shop, ShopAction, ShopState};
 use super::sim::{bot_basket, carry_from, name_of, pan_of, tun, DayEvent, DayInput, DayOpts, DayshiftSim, Over, CAST_IDS, VISITORS};
 use super::stage::{shift_setup, Stage};
-use super::world::{bar_segments, begin_feed, cam_layout, day_lights, map, set_slot, Scene, SKY};
+use super::world::{bar_segments, begin_feed, cam_layout, day_lights, feed_lights, map, set_slot, Scene, SKY};
 use crate::audio::cue_names;
 use crate::core::{
     camera_action, hour_index, rating_of, CallEvent, CallScript, EndCard, Mode, Mulberry32, Outcome, Session, ShiftCtx, CAM_NEXT, CAM_PREV,
@@ -766,12 +766,12 @@ impl Mode for DayshiftMode {
         let Some(cam) = m.camera(room).or_else(|| m.cameras.first()) else { return };
         let gfx: &Gfx = &*ctx.gfx;
         begin_feed(gfx, cam);
-        let lights = LightSet::feed();
+        let lights = feed_lights(room);
         if let Some(scene) = self.scene.as_ref() {
             scene.draw_all(gfx, &lights, cam.pos);
         }
         for h in &self.hunters {
-            h.actor.draw(gfx, &lights, cam.pos);
+            h.actor.draw_in(gfx, &lights, cam.pos, Actor::is_duct_room(room));
         }
         gfx.feed.end();
     }

@@ -116,20 +116,20 @@
 		"moon": {
 			"pos": [-0.2, 2, -1.7],
 			"color": [0.45, 0.55, 1],
-			"energy": 0.28,
-			"range": 6
+			"energy": 1.7,
+			"range": 9
 		},
 		"hall_glow": {
 			"pos": [8.5, 2.4, -0.9],
 			"color": [0.55, 0.5, 0.9],
-			"energy": 0.1,
-			"range": 5
+			"energy": 0.7,
+			"range": 7
 		},
 		"living_glow": {
 			"pos": [14.2, 2.2, -1],
 			"color": [0.5, 0.55, 0.95],
-			"energy": 0.12,
-			"range": 6
+			"energy": 0.8,
+			"range": 8
 		},
 		"hall_spot": {
 			"offset": [0.25, 0.1, 0],

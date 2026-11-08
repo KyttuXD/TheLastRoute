@@ -301,36 +301,6 @@ fn party_table(name: &str, x: f32, y: f32, z: f32, t: [f32; 3]) -> Group {
     g
 }
 
-fn performer(name: &str, x: f32, y: f32, z: f32, t: [f32; 3], kind: usize) -> Group {
-    let mut f = group(name, x, y, z);
-    bx(&mut f, "BodyPerformer", "fabric", t, [0.9, 1.1, 0.6], [0.0, 1.0, 0.0]);
-    bx(&mut f, "HeadPerformer", "fabric", t, [0.7, 0.6, 0.6], [0.0, 1.85, 0.0]);
-    for ex in [-0.16f32, 0.16] {
-        bx(&mut f, "EyePerformer", "plastic", tint(1.8, 1.8, 1.8), [0.14, 0.14, 0.04], [ex, 1.9, 0.32]);
-    }
-    bx(&mut f, "SnoutPerformer", "fabric", tint(1.8, 1.5, 1.2), [0.3, 0.2, 0.2], [0.0, 1.72, 0.38]);
-    bx(&mut f, "BowPerformer", "fabric", tint(1.9, 0.5, 0.6), [0.4, 0.14, 0.1], [0.0, 1.42, 0.32]);
-    for ax in [-0.58f32, 0.58] {
-        bx(&mut f, "ArmPerformer", "fabric", t, [0.22, 0.9, 0.3], [ax, 0.95, 0.0]);
-    }
-    for lx in [-0.25f32, 0.25] {
-        bx(&mut f, "LegPerformer", "fabric", t, [0.3, 0.6, 0.4], [lx, 0.3, 0.0]);
-    }
-    if kind == 0 {
-        for ex in [-0.3f32, 0.3] {
-            bx(&mut f, "EarPerformer", "fabric", t, [0.22, 0.22, 0.12], [ex, 2.3, 0.0]);
-        }
-    } else if kind == 1 {
-        for ex in [-0.2f32, 0.2] {
-            bx(&mut f, "EarBunny", "fabric", t, [0.14, 0.5, 0.1], [ex, 2.4, 0.0]);
-        }
-    } else {
-        bx(&mut f, "BeakPerformer", "label", tint(1.6, 1.0, 0.4), [0.3, 0.12, 0.3], [0.0, 1.82, 0.5]);
-        bx(&mut f, "CrestPerformer", "fabric", tint(1.9, 0.5, 0.5), [0.2, 0.2, 0.1], [0.0, 2.25, 0.0]);
-    }
-    f
-}
-
 fn wing(out: &mut Vec<Group>) {
     let m = map();
     let wallc = WING_WALL;
@@ -390,7 +360,7 @@ fn wing(out: &mut Vec<Group>) {
     wing_groups.push(balloons("WGameBalloonsW", c.x - 8.0, 0.0, c.z - 6.0, 4));
     wing_groups.push(balloons("WGameBalloonsE", c.x + 8.0, 0.0, c.z - 6.0, 4));
 
-    // the show stage: a platform with a step up at its front, curtains, spots and three performers
+    // the show stage: a platform with a step up at its front, curtains and spots (no performer statues)
     let c = m.centre("gallery");
     let mut st = group("WShowStage", c.x, c.y, c.z);
     bx(&mut st, "PlatformStage", "wood", tint(1.5, 1.0, 0.8), [12.0, 0.7, 5.0], [0.0, 0.35, -2.0]);
@@ -406,10 +376,7 @@ fn wing(out: &mut Vec<Group>) {
         bx(&mut st, "GlowSpot", "light", [1.0, 1.0, 1.0], [0.3, 0.1, 0.3], [x, 3.05, -1.4]);
     }
     wing_groups.push(st);
-    let perf = [tint(1.4, 0.9, 0.6), tint(0.7, 0.8, 1.5), tint(1.5, 1.5, 0.5)];
-    for i in 0..3 {
-        wing_groups.push(performer(&format!("WPerformer{i}"), c.x - 3.0 + i as f32 * 3.0, 0.7, c.z - 2.4, perf[i], i));
-    }
+    // KT 2026-11-08: no performer statues on the stage (Godot had three).
 
     // the prize corner: shelves of plush boxes behind the counter, the big music box, balloons, streamers
     let c = m.centre("music");
@@ -519,14 +486,14 @@ fn wing(out: &mut Vec<Group>) {
         let mid = (xa + xb) * 0.5;
         let len = xb - xa;
         let mut d = group(&format!("WDuct{tag}"), 0.0, 0.0, 0.0);
-        bx(&mut d, "DuctFloor", "metal", tint(0.7, 0.7, 0.75), [len, 0.1, 1.6], [mid, 0.05, 0.6]);
-        bx(&mut d, "DuctSide", "metal", tint(0.6, 0.6, 0.65), [len, 1.8, 0.1], [mid, 0.9, -0.2]);
-        bx(&mut d, "DuctSide", "metal", tint(0.6, 0.6, 0.65), [len, 1.8, 0.1], [mid, 0.9, 1.4]);
-        bx(&mut d, "DuctTop", "metal", tint(0.5, 0.5, 0.55), [len, 0.1, 1.8], [mid, 1.85, 0.6]);
-        bx(&mut d, "DuctFloor", "metal", tint(0.7, 0.7, 0.75), [1.6, 0.1, 2.0], [side * 8.0, 0.05, 2.2]);
-        bx(&mut d, "DuctEnd", "metal", tint(0.4, 0.4, 0.45), [0.1, 1.8, 1.7], [side * 8.9, 0.9, 0.6]);
+        bx(&mut d, "DuctFloor", "metal", tint(1.7, 1.7, 1.85), [len, 0.1, 1.6], [mid, 0.05, 0.6]);
+        bx(&mut d, "DuctSide", "metal", tint(1.5, 1.5, 1.65), [len, 1.8, 0.1], [mid, 0.9, -0.2]);
+        bx(&mut d, "DuctSide", "metal", tint(1.5, 1.5, 1.65), [len, 1.8, 0.1], [mid, 0.9, 1.4]);
+        bx(&mut d, "DuctTop", "metal", tint(1.3, 1.3, 1.45), [len, 0.1, 1.8], [mid, 1.85, 0.6]);
+        bx(&mut d, "DuctFloor", "metal", tint(1.7, 1.7, 1.85), [1.6, 0.1, 2.0], [side * 8.0, 0.05, 2.2]);
+        bx(&mut d, "DuctEnd", "metal", tint(1.1, 1.1, 1.25), [0.1, 1.8, 1.7], [side * 8.9, 0.9, 0.6]);
         for i in 0..5 {
-            bx(&mut d, "DuctRib", "metal", tint(0.7, 0.7, 0.75), [0.08, 0.12, 1.7], [side * (3.9 + i as f32 * 1.0), 1.75, 0.6]);
+            bx(&mut d, "DuctRib", "metal", tint(1.7, 1.7, 1.85), [0.08, 0.12, 1.7], [side * (3.9 + i as f32 * 1.0), 1.75, 0.6]);
         }
         wing_groups.push(d);
         let mut gl = group(&format!("GlintDuct{tag}"), side * 5.4, 0.9, 0.6);
@@ -597,7 +564,7 @@ pub fn feed_lights(room: &str, lit: Lit) -> LightSet {
                 l.omni.push(Omni { pos: vec3(sx * 7.5, 1.5, 0.6), color: [1.0, 0.95, 0.8], energy: 2.2, range: 7.0 });
             } else {
                 for a in l.ambient.iter_mut() {
-                    *a *= 0.1 / 1.15;
+                    *a *= 0.19 / 1.15;
                 }
             }
         }
@@ -730,7 +697,8 @@ mod tests {
         assert!(find(&p, "HallSwitch").map(|g| g.cubes.iter().any(|c| c.name == "ButtonHall")).unwrap_or(false));
         assert!(find(&p, "GaugeOffice").map(|g| g.cubes.iter().any(|c| c.name == "GlowGauge")).unwrap_or(false));
         assert_eq!(p.groups.iter().filter(|g| g.name.starts_with("WPartyRoom")).count(), 4);
-        assert_eq!(p.groups.iter().filter(|g| g.name.starts_with("WPerformer")).count(), 3);
+        // KT removed the stage statues: none may come back.
+        assert_eq!(p.groups.iter().filter(|g| g.name.starts_with("WPerformer")).count(), 0);
     }
 
     #[test]
