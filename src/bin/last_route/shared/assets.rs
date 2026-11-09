@@ -244,6 +244,8 @@ impl Assets {
             "battery",
             "stim_pack",
             "music_box",
+            "lockpick_set",
+            "revive_kit",
         ]
         .iter()
         .map(|n| asset_tex(&format!("inventory/{n}.png")).unwrap_or_else(white_texture))

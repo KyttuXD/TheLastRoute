@@ -27,7 +27,11 @@ const PERSONAS = new Set([
 const MAX_PLAYERS = 16;
 const MAX_ROOMS = 512;
 const HIDE_PHASE_MS = 30_000;
-const ITEM_LIMIT = 96;
+export const ITEM_LIMIT = 96;
+// Most item records a room keeps for one depth (matches ITEM_TOTAL_LIMIT in room_service.rs). A standard floor has
+// 5 relays and 7 batteries plus props; an Infinite chunk adds 3 relays and 4 batteries plus props, so this holds
+// hundreds of chunks. Claims for new keys past it are ignored; existing keys still update. A depth advance clears the map.
+export const ITEM_TOTAL_LIMIT = 4096;
 const DISCOVERY_LIMIT = 512;
 const DISCOVERY_TOTAL_LIMIT = 30_000;
 // Endless rooms keep more discovered cells, but bounded. Matches DISCOVERY_ENDLESS_LIMIT in room_service.rs.
@@ -203,6 +207,8 @@ function applyItemClaim(items, claim) {
   if (!id) return;
   const changes = claim.changes && typeof claim.changes === "object" ? claim.changes : {};
   const key = `${claim.kind}:${id}`;
+  // Cap the total records a room keeps: a new key past the cap is dropped, existing keys still update.
+  if (!Object.hasOwn(items, key) && Object.keys(items).length >= ITEM_TOTAL_LIMIT) return;
   const record = items[key] || { kind: claim.kind, id };
   if (changes.collected === true) record.collected = true;
   if (claim.kind === "relay" && Object.hasOwn(changes, "sabotaged")) record.sabotaged = Boolean(changes.sabotaged);

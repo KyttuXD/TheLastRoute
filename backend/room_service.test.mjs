@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRoomService, DEFAULT_ROOM_SETTINGS, MAX_DEPTH_CLAIM_STEP, depthClaimAllowed } from "./room_service.mjs";
+import { createRoomService, DEFAULT_ROOM_SETTINGS, MAX_DEPTH_CLAIM_STEP, depthClaimAllowed, ITEM_TOTAL_LIMIT, ITEM_LIMIT } from "./room_service.mjs";
 
 function serviceAt(now = 1_000_000, limits = {}) {
   let clock = now;
@@ -316,6 +316,27 @@ test("leaving hands the room to the next player, and the last one out closes it"
 
   const fresh = join(service, { room: "LEAVE1", playerId: "host", name: "Ann" });
   assert.equal(fresh.roomSize, 1);
+});
+
+test("item records are capped per room, but existing keys still update and a new depth clears them", () => {
+  const { service } = serviceAt();
+  const host = join(service, { room: "ITEMS", playerId: "host", name: "Ann" });
+  const auth = { room: "ITEMS", playerId: "host", sessionToken: host.sessionToken };
+  let next = 0, items = {};
+  while (Object.keys(items).length < ITEM_TOTAL_LIMIT) {
+    const claims = [];
+    for (let i = 0; i < ITEM_LIMIT; i++) claims.push({ kind: "battery", id: "b" + (next + i), depth: 0, changes: { collected: true } });
+    next += ITEM_LIMIT;
+    items = service.updateRoom({ ...auth, itemClaims: claims })[1].items;
+  }
+  assert.equal(Object.keys(items).length, ITEM_TOTAL_LIMIT);
+  const afterExtra = service.updateRoom({ ...auth, itemClaims: [{ kind: "battery", id: "b" + next, depth: 0, changes: { collected: true } }] })[1];
+  assert.equal(Object.keys(afterExtra.items).length, ITEM_TOTAL_LIMIT);
+  assert.equal(afterExtra.items["battery:b" + next], undefined);
+  assert.equal(service.updateRoom({ ...auth, itemClaims: [{ kind: "battery", id: "b0", depth: 0, changes: { collected: true } }] })[1].items["battery:b0"].collected, true);
+  const advanced = service.updateRoom({ ...auth, claimDepth: 1, itemClaims: [{ kind: "battery", id: "b0", depth: 1, changes: { collected: true } }] })[1];
+  assert.equal(advanced.activeDepth, 1);
+  assert.equal(Object.keys(advanced.items).length, 1);
 });
 
 test("idle players and rooms expire, and the process stops at 512 rooms", () => {

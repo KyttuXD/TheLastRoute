@@ -1669,7 +1669,7 @@ fn stair_bay_cells(world: &str, coord: Coord) -> Vec<V2> {
             for shape in [FlightShape::Straight, FlightShape::Switchback, FlightShape::Spiral] {
                 for clockwise in [false, true] {
                     let f = Flight::new(FlightKind::Stairs, shape, upper, Cell::new(anchor.0, anchor.1), run).with_clockwise(clockwise);
-                    out.extend(crate::world::flight_links::carve_cells(&f).into_iter().map(|c| V2::new(c.x, c.y)));
+                    out.extend(crate::world::flight_links::carve_cells_core(&f).into_iter().map(|c| V2::new(c.x, c.y)));
                 }
             }
         }

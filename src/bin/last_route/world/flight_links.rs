@@ -118,8 +118,13 @@ fn in_bounds(c: Cell) -> bool {
     c.x >= 1 && c.y >= 1 && c.x <= CHUNK - 2 && c.y <= CHUNK - 2
 }
 
-/// Every cell a flight needs open on one level or the other: the hole, the landing and foot, and both clear margins.
-pub fn carve_cells(f: &Flight) -> Vec<Cell> {
+/// The cells a flight physically needs open on one level or the other: the hole, the landing and foot, and both clear
+/// margins — but NOT the widened spiral apron (`vertical::spiral_keepout`). This is the FIT-and-EXCLUSION footprint:
+/// whether a bay actually fits the chunk ([`bay_fits`]) and whether a sewer room must keep off it
+/// (`route::sewer::core::stair_bay_cells`) both read this, never the apron. The apron is a decorative keep-out for
+/// props, hiding, fixtures and vents only (see [`carve_cells`]); folding it into the fit would reject a spiral whose
+/// core fits but whose apron pokes past the chunk border, and over-exclude sewer rooms.
+pub fn carve_cells_core(f: &Flight) -> Vec<Cell> {
     let fp = well_footprint(f);
     let mut out: Vec<Cell> = Vec::new();
     out.extend(fp.upper_hole.iter().copied());
@@ -127,12 +132,23 @@ pub fn carve_cells(f: &Flight) -> Vec<Cell> {
     out.extend(fp.lower_clear.iter().copied());
     out.push(fp.landing);
     out.push(fp.foot);
-    if f.shape == FlightShape::Spiral {
-        // the widened zone round both ends; none in the Godot parity scope (vertical::spiral_keepout)
-        out.extend(crate::world::vertical::spiral_keepout(&fp.upper_hole, fp.landing, fp.foot));
-    }
     out.sort();
     out.dedup();
+    out
+}
+
+/// Every cell a flight keeps clear on one level or the other: the physical core ([`carve_cells_core`]) plus, for a spiral,
+/// the widened decorative zone round both ends (props, hiding, fixtures, vents). Use [`carve_cells_core`] for any physical
+/// fit or room-exclusion test; this wider set is for decoration and prop-clearing only.
+pub fn carve_cells(f: &Flight) -> Vec<Cell> {
+    let mut out = carve_cells_core(f);
+    if f.shape == FlightShape::Spiral {
+        // the widened zone round both ends; none in the Godot parity scope (vertical::spiral_keepout)
+        let fp = well_footprint(f);
+        out.extend(crate::world::vertical::spiral_keepout(&fp.upper_hole, fp.landing, fp.foot));
+        out.sort();
+        out.dedup();
+    }
     out
 }
 
@@ -378,7 +394,9 @@ pub(crate) fn compute_bay_flight(seed: &str, cx: i32, cy: i32, upper: i32) -> Op
 /// A bay candidate fits when every carve cell is inside the chunk (1..=CHUNK-2) and the hole, landing and foot hold no
 /// water on the sewer levels it touches.
 fn bay_fits(seed: &str, cx: i32, cy: i32, f: &Flight) -> bool {
-    let cells = carve_cells(f);
+    // the physical core only: a spiral's wider decorative apron is not a fit constraint (it may poke past the border
+    // while the core sits inside), so it must not reject an otherwise-fitting bay. See `carve_cells_core`.
+    let cells = carve_cells_core(f);
     if !cells.iter().all(|c| in_bounds(*c)) {
         return false;
     }
@@ -622,6 +640,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_spiral_bay_fitting_its_core_is_not_rejected_by_the_wider_apron() {
+        // a909987 folded the decorative spiral apron (vertical::spiral_keepout) into carve_cells, which also drove the
+        // physical fit test (bay_fits) and the sewer room exclusion. A spiral whose core (hole, both ends, their margins)
+        // sits inside the chunk but whose wider apron pokes past the border must still FIT: the fit test reads
+        // carve_cells_core, decoration reads the widened carve_cells.
+        let mut found = 0;
+        for run in [(0, -1), (0, 1), (1, 0), (-1, 0)] {
+            for x in 1..CHUNK - 1 {
+                for y in 1..CHUNK - 1 {
+                    let f = Flight::new(FlightKind::Stairs, FlightShape::Spiral, -1, Cell::new(x, y), run).with_clockwise(false);
+                    let core = carve_cells_core(&f);
+                    let wide = carve_cells(&f);
+                    // the core is always a subset of the widened set (the apron only adds cells)
+                    assert!(core.iter().all(|c| wide.contains(c)), "core {:?} not within widened at {x},{y} {run:?}", f.shape);
+                    let core_fits = core.iter().all(|c| in_bounds(*c));
+                    let wide_fits = wide.iter().all(|c| in_bounds(*c));
+                    if core_fits && !wide_fits {
+                        // exactly the regression case: the core fits, the apron pokes out. The fit gate is over the core,
+                        // so such a bay is accepted (the old widened gate would have rejected it and fallen back to a switchback).
+                        found += 1;
+                        assert!(wide.len() > core.len(), "the apron must add cells beyond the core at {x},{y} {run:?}");
+                    }
+                }
+            }
+        }
+        assert!(found > 0, "no spiral with a fitting core but an out-of-bounds apron was found near the chunk edge");
     }
 
     #[test]

@@ -1055,6 +1055,9 @@ impl Brain {
         }
         let speed_scale = g.speed_scale(self);
         let leaping = self.hard_frame(dt, ctx.fac, target, &g, holds);
+        // state-leave cleanup runs every frame, before the leap guard: a pounce skips update_movement, so without
+        // this a Listen hearing boost (or a stale poi/head turn) would linger across the leap and perturb perception
+        self.leave_state_cleanup();
         if !leaping {
             self.update_movement(dt, ctx.fac, depth, relays, prof, holds, speed_scale);
         }
@@ -1453,6 +1456,22 @@ impl Brain {
         speed * prof.hunter_speed * self.water_rules.speed_scale(&self.water, (c.x, c.y))
     }
 
+    /// Drop whatever a non-Wander/Idle state has no business keeping: a goal's activity (and its hearing boost,
+    /// undone by `end_activity`) and its `poi` belong to the wander they were picked in, so chase, investigate,
+    /// search or a peek ends them; a head turn lives only in an Idle pause, so any other state cancels it (a stale
+    /// turn must never make the hunter deaf to the next noise). Runs every frame in `update`, before the leap guard,
+    /// because a leaping hunter skips `update_movement` and a stale activity/hearing boost would otherwise linger
+    /// across the pounce and perturb perception until the leap ends.
+    fn leave_state_cleanup(&mut self) {
+        if self.state != State::Wander && (self.activity.is_some() || self.poi.is_some()) {
+            self.end_activity();
+            self.poi = None;
+        }
+        if self.state != State::Idle {
+            self.idle_life.cancel();
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update_movement(
         &mut self,
@@ -1464,16 +1483,6 @@ impl Brain {
         holds: bool,
         gscale: f32,
     ) {
-        // a goal's activity belongs to the wander it was picked in: chase, investigate, search or a peek ends it
-        if self.state != State::Wander && (self.activity.is_some() || self.poi.is_some()) {
-            self.end_activity();
-            self.poi = None;
-        }
-        // a head turn lives only in an Idle pause: any other state (chase, investigation, search, peek, and a wander
-        // the director or a gimmick set) ends it at once, so a stale turn never makes the hunter deaf to the next noise
-        if self.state != State::Idle {
-            self.idle_life.cancel();
-        }
         if self.walk.is_some() {
             let speed = self.current_speed(depth, relays, prof, gscale);
             self.walk_edge(dt, fac, speed, prof);
@@ -2519,6 +2528,13 @@ impl Brain {
                 self.walk.is_some()
                     || fac.stairs.iter().any(|s| {
                         let c = s.cell.center();
+                        dist(c, self.pos) <= clear || dist(c, target.pos) <= clear
+                    })
+                    // a drop (waterfall void, level edge) has no wall, so Facility::fits lets a body
+                    // enter it and the straight sweep never blocks: the stair guard alone would launch
+                    // a pounce out over open air. Reject a pounce whose ends straddle a drop cell too.
+                    || fac.drop_cells().iter().any(|d| {
+                        let c = d.center();
                         dist(c, self.pos) <= clear || dist(c, target.pos) <= clear
                     })
             };
@@ -4921,6 +4937,9 @@ mod activity_tests {
                 let near_link = f.stairs.iter().any(|s| {
                     let c = s.cell.center();
                     dist(c, h) <= clear || dist(c, t) <= clear
+                }) || f.drop_cells().iter().any(|d| {
+                    let c = d.center();
+                    dist(c, h) <= clear || dist(c, t) <= clear
                 });
                 if !near_link
                     && f.body_fits(h.0, h.1, HUNTER_RADIUS)
@@ -5018,6 +5037,28 @@ mod activity_tests {
     }
 
     #[test]
+    fn a_drop_between_hunter_and_runner_refuses_the_pounce() {
+        // Facility::fits lets a body enter a drop and the straight sweep never blocks over one, so without a
+        // drop-aware link guard a pounce would launch the hunter out over a waterfall void. The near_link gate
+        // must reject a pounce whose line straddles a drop, exactly as it does a stair flight.
+        let mut f = fac();
+        let (h, t) = pounce_lane(&f);
+        // one cell east of the hunter, on the lane between the two ends (center 1.0 cell from h, inside link_clearance)
+        let between = Cell::new((h.0 + 1.0) as i32, h.1 as i32);
+        f.set_drop_cells(&[between]);
+        let mut b = hard_hunter(&f, "solyth", Difficulty::Hard, h, t);
+        for _ in 0..20 {
+            b.pos = h;
+            b.stun = 0.0;
+            b.state = State::Chase;
+            b.direct_visible = true;
+            b.hard_frame(SURE_DT, &f, &dark_runner(t), &Gimmick::for_id("solyth", Difficulty::Hard), false);
+            let hard = b.hard.as_ref().unwrap();
+            assert!(!hard.leaping && hard.leap_seq == 0, "a pounce launched across a drop that lies between the hunter and the runner");
+        }
+    }
+
+    #[test]
     fn a_stun_ends_a_hard_leap_for_good() {
         let f = fac();
         let (h, t) = pounce_lane(&f);
@@ -5049,6 +5090,31 @@ mod activity_tests {
         assert_eq!(b.mechanic(), Some("pounce"), "the host frame carries the leap to the guests");
         b.hard.as_mut().unwrap().cancel();
         assert_ne!(b.mechanic(), Some("pounce"));
+    }
+
+    #[test]
+    fn a_pounce_drops_a_running_activity_on_its_first_frame() {
+        // a hunter mid-Listen (its hearing boosted) flips to a chase and pounces: the leap skips update_movement,
+        // so the state-leave cleanup must still run in update() and drop the stale activity and its hearing boost,
+        // or they would linger across the leap and perturb perception until it ends.
+        let f = fac();
+        let (h, t) = pounce_lane(&f);
+        let mut b = hard_hunter(&f, "haelith", Difficulty::Hard, h, t);
+        let poi = points_of_interest(&f, Rules::get()).into_iter().find(|p| p.kind == PoiKind::RoomCentre).unwrap();
+        let base = b.hearing_scale;
+        b.start_activity(Activity::Listen, &poi, &f);
+        b.state = State::Chase; // the chase takes over in the same frame the pounce fires
+        assert!(b.hearing_scale > base, "Listen raises the hearing");
+        // launch the leap, then run one brain frame: hard_frame reports leaping, so update_movement is skipped
+        force_pounce(&mut b, h, t);
+        assert!(b.activity_view().is_some(), "the activity still lingers the instant the leap starts");
+        let prof = Difficulty::Hard.profile();
+        let mut c = ctx(&f);
+        c.diff = Difficulty::Hard;
+        b.update(1.0 / 60.0, &c, &dark_runner(t), 1, 0, &prof);
+        assert!(b.hard.as_ref().unwrap().leaping, "still mid-leap, so update_movement was skipped this frame");
+        assert!(b.activity_view().is_none(), "the leap's first frame drops the stale activity");
+        assert!((b.hearing_scale - base).abs() < 1e-4, "and restores the hearing boost: {}", b.hearing_scale);
     }
 
     #[test]

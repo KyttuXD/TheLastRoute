@@ -13,8 +13,8 @@ pub struct Loot {
     /// (item, weight)
     pub tools: Vec<(String, f32)>,
     pub backpacks: Vec<String>,
-    /// (item, chance)
-    pub aid: Vec<(String, f32)>,
+    /// (item, chance, chance_coop)
+    pub aid: Vec<(String, f32, Option<f32>)>,
 }
 
 impl Loot {
@@ -45,7 +45,20 @@ impl Loot {
             rolls: pairs("rolls", "kind", "chance"),
             tools: pairs("tools", "item", "weight"),
             backpacks: strs("backpacks"),
-            aid: pairs("aid", "item", "chance"),
+            aid: v["aid"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| {
+                            Some((
+                                e["item"].as_str()?.to_string(),
+                                e["chance"].as_f64()? as f32,
+                                e["chance_coop"].as_f64().map(|x| x as f32),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }

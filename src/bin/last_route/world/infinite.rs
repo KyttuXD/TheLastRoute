@@ -282,7 +282,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         }
     }
     // one next_float per aid entry in file order (the solo chance), as LootTables.roll_aid
-    for (item, chance) in &loot.aid {
+    for (item, chance, _) in &loot.aid {
         let hit = (rng.next_float() as f32) < *chance;
         let pickup = match item.as_str() {
             "stim_pack" => Pickup::Stim,
@@ -751,7 +751,7 @@ mod tests {
             rolls: vec![("backpack".into(), 1.0)],
             tools: vec![],
             backpacks: names(&["backpack_small", "backpack_medium", "backpack_large"]),
-            aid: vec![("stim_pack".into(), 1.0), ("revive_kit".into(), 1.0), ("mystery".into(), 1.0)],
+            aid: vec![("stim_pack".into(), 1.0, None), ("revive_kit".into(), 1.0, None), ("mystery".into(), 1.0, None)],
         };
         let loot = LootTables { route: table.clone(), sewer: table };
         // the legacy level-0 fallback and the Inferno (the sewer levels place the sewer port's own pickups);

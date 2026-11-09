@@ -127,7 +127,7 @@ fn pack_table(region: &str, l: &crate::content::loot::Loot) -> &'static Table {
         rolls: Box::leak(l.rolls.iter().map(|(k, c)| Roll { kind: leak(k), chance: *c as f64 }).collect::<Vec<_>>().into_boxed_slice()),
         tools: Box::leak(l.tools.iter().map(|(k, w)| Tool { item: leak(k), weight: *w as f64 }).collect::<Vec<_>>().into_boxed_slice()),
         backpacks: Box::leak(l.backpacks.iter().map(|s| leak(s)).collect::<Vec<_>>().into_boxed_slice()),
-        aid: Box::leak(l.aid.iter().map(|(k, c)| Aid { item: leak(k), chance: *c as f64, chance_coop: None }).collect::<Vec<_>>().into_boxed_slice()),
+        aid: Box::leak(l.aid.iter().map(|(k, c, cc)| Aid { item: leak(k), chance: *c as f64, chance_coop: cc.map(|x| x as f64) }).collect::<Vec<_>>().into_boxed_slice()),
     }));
     g.insert(key, t);
     t
@@ -240,6 +240,25 @@ mod tests {
             let ours: Vec<(&str, f64, Option<f64>)> = table.aid.iter().map(|a| (a.item, a.chance, a.chance_coop)).collect();
             assert_eq!(aid, ours, "{file} aid");
         }
+    }
+
+    #[test]
+    fn a_pack_table_carries_the_coop_aid_chance() {
+        // a pack/reload-overridden table must keep its co-op aid chance, not drop it to None
+        let (solo, coop) = (0.03f32, 0.06f32);
+        let loot = crate::content::loot::Loot {
+            id: "route".into(),
+            base: vec![],
+            rolls: vec![],
+            tools: vec![],
+            backpacks: vec![],
+            aid: vec![("revive_kit".into(), solo, Some(coop))],
+        };
+        let t = pack_table("pack-coop-test", &loot);
+        assert_eq!(t.aid.len(), 1);
+        assert_eq!(t.aid[0].item, "revive_kit");
+        assert_eq!(t.aid[0].chance, solo as f64);
+        assert_eq!(t.aid[0].chance_coop, Some(coop as f64));
     }
 
     #[test]

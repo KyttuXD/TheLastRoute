@@ -513,17 +513,7 @@ pub fn draw_hud_with_runners(
             1.0,
         );
         if let Some(sl) = slot {
-            let icon = &a.icons[match sl.item {
-                Item::Flashlight => 0,
-                Item::Taser => 1,
-                Item::Crowbar => 2,
-                Item::Axe => 3,
-                Item::Battery => 4,
-                Item::Stim => 5,
-                Item::MusicBox => 6,
-                Item::Lockpick => 2,
-                Item::ReviveKit => 5,
-            }];
+            let icon = &a.icons[item_icon_index(sl.item)];
             let (iw, ih) = (icon.width().max(1.0), icon.height().max(1.0));
             let k = (r.w / iw).min(22.0 / ih);
             let s = unit();
@@ -719,6 +709,22 @@ fn edge(v: Vec2, e: f32, col: Color) {
     fill(Rect::new(v.x - e, e, e, v.y - 2.0 * e), col);
 }
 
+/// Index into `Assets::icons` for an inventory item. Order must match the
+/// `icons` array built in `shared/assets.rs`.
+fn item_icon_index(item: Item) -> usize {
+    match item {
+        Item::Flashlight => 0,
+        Item::Taser => 1,
+        Item::Crowbar => 2,
+        Item::Axe => 3,
+        Item::Battery => 4,
+        Item::Stim => 5,
+        Item::MusicBox => 6,
+        Item::Lockpick => 7,
+        Item::ReviveKit => 8,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,6 +809,31 @@ mod tests {
         assert_eq!(interact_key_text("[E] TAKE COIN", "E"), "[E] TAKE COIN");
         assert_eq!(interact_key_text("[E] HIDE // LOCKER", "MOUSE 2"), "[MOUSE 2] HIDE // LOCKER");
         assert_eq!(interact_key_text("LOCKED IN // 3s", "R"), "LOCKED IN // 3s");
+    }
+
+    #[test]
+    fn every_item_maps_to_a_distinct_icon() {
+        let items = [
+            Item::Flashlight,
+            Item::Taser,
+            Item::Crowbar,
+            Item::Axe,
+            Item::Battery,
+            Item::Stim,
+            Item::MusicBox,
+            Item::Lockpick,
+            Item::ReviveKit,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for it in items {
+            assert!(
+                seen.insert(item_icon_index(it)),
+                "{:?} shares an icon index with an earlier item",
+                it
+            );
+        }
+        // One icon name per item, in matching order (shared/assets.rs builds the Vec).
+        assert_eq!(seen.len(), items.len());
     }
 
     #[test]

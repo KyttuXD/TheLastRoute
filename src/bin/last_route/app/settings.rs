@@ -244,12 +244,13 @@ impl Settings {
 
     /// The frame cap the FPS LIMIT row asks for: `None` is UNLIMITED. Mirrors Godot's
     /// `Settings.set_fps_limit`: a value under 15 means unlimited, anything else is rounded and
-    /// kept at 30 or more.
+    /// kept at the data floor (`frame.min_cap_fps` in data/controls.json) or more.
     pub fn frame_cap_fps(&self) -> Option<u32> {
         if self.fps_limit < 15.0 {
             None
         } else {
-            Some(self.fps_limit.round().max(30.0) as u32)
+            let floor = super::bindings::rules().frame.min_cap_fps as f32;
+            Some(self.fps_limit.round().max(floor) as u32)
         }
     }
 }
@@ -277,6 +278,16 @@ mod tests {
         assert_eq!(with_limit(144.0).frame_cap_fps(), Some(144));
         assert_eq!(with_limit(240.0).frame_cap_fps(), Some(240));
         assert_eq!(with_limit(1000.0).frame_cap_fps(), Some(1000));
+    }
+
+    #[test]
+    fn frame_cap_floor_comes_from_the_data_knob() {
+        // the clamp floor is the data knob `frame.min_cap_fps`, not a hardcoded 30
+        let floor = crate::app::bindings::rules().frame.min_cap_fps;
+        assert_eq!(with_limit(15.0).frame_cap_fps(), Some(floor));
+        assert_eq!(with_limit(floor as f32 - 1.0).frame_cap_fps(), Some(floor));
+        // a request above the floor is kept as asked
+        assert_eq!(with_limit(floor as f32 + 30.0).frame_cap_fps(), Some(floor + 30));
     }
 
     #[test]
