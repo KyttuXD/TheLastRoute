@@ -10,6 +10,7 @@ use super::menus::{wheel_notch, Ui};
 use super::style::*;
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
+use crate::audio::cues::rules::Bus;
 use crate::config::{FOV_MAX_DEG, FOV_MIN_DEG};
 use crate::content::Content;
 use macroquad::prelude::*;
@@ -27,6 +28,9 @@ const TAB_KEYS: [&[&str]; 7] = [
     &[
         "master_volume",
         "gameplay_volume",
+        "hunters_volume",
+        "ambience_volume",
+        "music_volume",
         "ui_volume",
         "voice_volume",
         "voices",
@@ -39,6 +43,12 @@ const TAB_KEYS: [&[&str]; 7] = [
     &[],
     &[],
 ];
+
+/// The AUDIO tab's rows, top to bottom (y below the panel's top): MASTER, GAMEPLAY, HUNTERS, AMBIENCE, MUSIC, MENU / UI,
+/// SPOKEN CHAT (or the web note), VOICES | SUBTITLES, SPEAK NEARBY CHAT. All in one place so the layout test can check
+/// that the last row ends above the panel's close button (y 234).
+const AUDIO_ROWS: [f32; 9] = [64.0, 82.0, 100.0, 118.0, 136.0, 154.0, 172.0, 192.0, 212.0];
+const AUDIO_ROW_H: f32 = 16.0;
 
 /// Saved keys with no row in this panel: `username` is edited on the account screens, `scheme` comes
 /// from LR_SCHEME or the saved file, and `skin` and `skin_slim` are set by APPLY on the SKIN tab (a picture, not a row).
@@ -477,61 +487,39 @@ pub fn draw_settings(
         }
         1 => {
             let pct = |v: f32| format!("{}%", (v * 100.0).round() as i32);
-            if let Some(v) = slider_row(
-                a,
-                ui,
-                1,
-                x,
-                oy + 70.0,
-                "MASTER VOLUME",
-                st.master_volume * 100.0,
-                0.0,
-                100.0,
-                &pct(st.master_volume),
-            ) {
-                st.master_volume = v.round() / 100.0;
-                changed = true;
-            }
-            if let Some(v) = slider_row(
-                a,
-                ui,
-                2,
-                x,
-                oy + 94.0,
-                "GAMEPLAY / HUNTERS",
-                st.gameplay_volume * 100.0,
-                0.0,
-                100.0,
-                &pct(st.gameplay_volume),
-            ) {
-                st.gameplay_volume = v.round() / 100.0;
-                changed = true;
-            }
-            if let Some(v) = slider_row(
-                a,
-                ui,
-                3,
-                x,
-                oy + 118.0,
-                "MENU / UI",
-                st.ui_volume * 100.0,
-                0.0,
-                100.0,
-                &pct(st.ui_volume),
-            ) {
-                st.ui_volume = v.round() / 100.0;
-                changed = true;
+            // MASTER, then the category sliders in AUDIO_BUSES order (captions from data/audio/buses.json); slider ids 1, 2, 8, 9, 10, 3
+            let sliders: [(u32, &str, f32); 6] = [
+                (1, "MASTER VOLUME", st.master_volume),
+                (2, crate::audio::bus_label(Bus::Sfx), st.gameplay_volume),
+                (8, crate::audio::bus_label(Bus::Hunters), st.hunters_volume),
+                (9, crate::audio::bus_label(Bus::Ambience), st.ambience_volume),
+                (10, crate::audio::bus_label(Bus::Music), st.music_volume),
+                (3, crate::audio::bus_label(Bus::Ui), st.ui_volume),
+            ];
+            for (n, (id, caption, value)) in sliders.into_iter().enumerate() {
+                if let Some(v) = slider_row(a, ui, id, x, oy + AUDIO_ROWS[n], caption, value * 100.0, 0.0, 100.0, &pct(value)) {
+                    let v = v.round() / 100.0;
+                    match id {
+                        1 => st.master_volume = v,
+                        2 => st.gameplay_volume = v,
+                        8 => st.hunters_volume = v,
+                        9 => st.ambience_volume = v,
+                        10 => st.music_volume = v,
+                        _ => st.ui_volume = v,
+                    }
+                    changed = true;
+                }
             }
             if is_web() {
                 // the browser build cannot speak chat yet: no dead SPOKEN CHAT / VOICES / SUBTITLES / SPEAK NEARBY CHAT rows
-                let mut ny = oy + 146.0;
+                let mut ny = oy + AUDIO_ROWS[6];
                 for l in wrap(a, F::Body, AUDIO_WEB_NOTE, 400.0, 7.0) {
                     label(a, F::Body, &l, x, ny, 7.0, p.muted);
                     ny += lh(F::Body, 7.0);
                 }
             } else {
             // SPOKEN CHAT: label 96, the slider fills, readout 34 (separation 4)
-            let y = oy + 142.0;
+            let y = oy + AUDIO_ROWS[6];
             label_vc(a, F::Body, "SPOKEN CHAT", x, y, 16.0, setting_label_u(), p.body);
             if let Some(v) = slider(
                 ui,
@@ -557,7 +545,7 @@ pub fn draw_settings(
             let bw = (400.0 - 4.0) * 0.5;
             if state_toggle(
                 a,
-                Rect::new(x, oy + 166.0, bw, 16.0),
+                Rect::new(x, oy + AUDIO_ROWS[7], bw, AUDIO_ROW_H),
                 "VOICES",
                 st.voices,
                 false,
@@ -568,7 +556,7 @@ pub fn draw_settings(
             }
             if state_toggle(
                 a,
-                Rect::new(x + bw + 4.0, oy + 166.0, bw, 16.0),
+                Rect::new(x + bw + 4.0, oy + AUDIO_ROWS[7], bw, AUDIO_ROW_H),
                 "SUBTITLES",
                 st.subtitles,
                 false,
@@ -579,7 +567,7 @@ pub fn draw_settings(
             }
             if state_toggle(
                 a,
-                Rect::new(x, oy + 190.0, 400.0, 16.0),
+                Rect::new(x, oy + AUDIO_ROWS[8], 400.0, AUDIO_ROW_H),
                 "SPEAK NEARBY CHAT",
                 st.speech_enabled,
                 false,
@@ -934,6 +922,20 @@ mod tests {
             };
             assert_eq!(shown, expected, "{key} should appear in {expected} tab(s)");
         }
+    }
+
+    #[test]
+    fn the_audio_tab_has_a_slider_for_every_bus_and_fits_the_panel() {
+        // every bus has its saved key on the AUDIO tab, and the captions come from data/audio/buses.json in upper case
+        for key in ["master_volume", "gameplay_volume", "hunters_volume", "ambience_volume", "music_volume", "ui_volume"] {
+            assert!(TAB_KEYS[1].contains(&key), "{key} has a row on the AUDIO tab");
+        }
+        for bus in Bus::ALL {
+            let label = crate::audio::bus_label(bus);
+            assert!(!label.is_empty() && label == label.to_uppercase(), "{label}");
+        }
+        assert!(AUDIO_ROWS.windows(2).all(|w| w[1] - w[0] >= AUDIO_ROW_H), "rows do not overlap");
+        assert!(AUDIO_ROWS[8] + AUDIO_ROW_H <= 232.0, "the last row ends above the CLOSE button");
     }
 
     #[test]

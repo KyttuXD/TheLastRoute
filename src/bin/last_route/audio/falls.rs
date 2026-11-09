@@ -62,12 +62,12 @@ pub fn gains(cfg: &WaterfallCfg, pos: [f32; 3], eye: [f32; 3], right: [f32; 3], 
 }
 
 /// Keeps the falls loop playing from `pos` (the nearest fall in range), or stops it for `None`. A positional loop on the
-/// Master bus: the engine applies Master (and re-applies it when it changes), so the gains here are the positional ones.
+/// AMBIENCE bus: the engine applies the bus gain (and re-applies it when a slider changes), so the gains here are the positional ones.
 pub fn update(pos: Option<[f32; 3]>, eye: [f32; 3], right: [f32; 3], up: [f32; 3], forward: [f32; 3]) {
     let cfg = config();
     with(|e| {
         let base = pos.map(|p| gains(cfg, p, eye, right, up, forward));
-        e.set_loop(cfg.sound_key.as_str(), Bus::Master, base, || loop_frames(&cfg.sound));
+        e.set_loop(cfg.sound_key.as_str(), Bus::Ambience, base, || loop_frames(&cfg.sound));
     });
 }
 

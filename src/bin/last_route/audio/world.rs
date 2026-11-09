@@ -8,8 +8,9 @@ use std::collections::HashMap;
 
 use super::cues::music_box::{RunClock, RunRender};
 use super::cues::AmbienceMixer;
-use super::cues::positional::HUM;
-use super::cues::rules::{self, Bus, HunterStepClock};
+use super::cues::positional::{Emitter3D, HUM};
+use super::cues::rules::{self, Bus, HunterStepClock, HunterStepHearing};
+use super::hunter_ambient::HunterAmbient;
 use super::cues::stride::{preferred_clip, HunterGait};
 use super::engine::with;
 
@@ -153,12 +154,12 @@ pub fn ambience(dt: f32, region: Option<&str>, duck: f32) {
             let out = w.ambience.step_ducked(dt, shown, duck);
             for (n, (voice, slot)) in AMBIENCE_VOICES.iter().zip(out.iter()).enumerate() {
                 if w.ambience_playing[n].is_some() && w.ambience_playing[n] != slot.bed {
-                    e.set_loop(*voice, Bus::Sfx, None, Vec::new);
+                    e.set_loop(*voice, Bus::Ambience, None, Vec::new);
                 }
                 w.ambience_playing[n] = slot.bed;
                 match slot.bed {
-                    Some(id) => e.set_loop(*voice, Bus::Sfx, Some((slot.gain, slot.gain)), || bed_frames(id)),
-                    None => e.set_loop(*voice, Bus::Sfx, None, Vec::new),
+                    Some(id) => e.set_loop(*voice, Bus::Ambience, Some((slot.gain, slot.gain)), || bed_frames(id)),
+                    None => e.set_loop(*voice, Bus::Ambience, None, Vec::new),
                 }
             }
         });
@@ -195,7 +196,13 @@ pub fn set_hunter_floor(id: &str, floor_kind: &str) {
 /// loudness from her offset to the runner, like a footstep. Silent when she is out of earshot.
 pub fn hunter_event_at(name: &str, hunter_pos: (f32, f32), l: &Listener) {
     let offset = ((hunter_pos.0 - l.pos.0) as f64, (hunter_pos.1 - l.pos.1) as f64);
-    if let Some((pan, volume)) = rules::hunter_step_pan_volume(offset, (l.facing.0 as f64, l.facing.1 as f64)) {
+    // a sniff is a quiet idle sound: tuned by data/audio/hunter_ambient.json; any other hunter event keeps the step figure
+    let hearing = if name == "hunter_sniff" {
+        HunterAmbient::get().sniff_hearing(HunterStepHearing::get())
+    } else {
+        HunterStepHearing::get()
+    };
+    if let Some((pan, volume)) = rules::hunter_step_pan_volume_with(&hearing, offset, (l.facing.0 as f64, l.facing.1 as f64)) {
         super::sound::event(name, pan as f32, volume as f32);
     }
 }
@@ -216,8 +223,8 @@ fn box_budget() -> std::time::Duration {
 /// when the box is wound: the same samples, with no hand-over between a steady loop and a slowing one, on the browser
 /// build (where loops decode asynchronously) as on desktop. The run starts again if the box is wound again, or the game
 /// stood still while it played (paused). Not positional: the box is in the pack, so there is no source to hear it from.
-/// Called every frame with the seconds left and the wound time (game/mod.rs `run_music_box`). On the Master bus (the tune
-/// is an AudioStreamPlayer3D in the original), so Master reaches it live.
+/// Called every frame with the seconds left and the wound time (game/mod.rs `run_music_box`). On the MUSIC bus (MASTER x GAMEPLAY x
+/// MUSIC), re-gained live when a slider moves.
 pub fn music_box(left: f32, wound: f32) {
     use super::cues::music_box as mb;
     WORLD.with(|w| {
@@ -230,7 +237,7 @@ pub fn music_box(left: f32, wound: f32) {
                 // empty: the tune stops (the run is silent from here anyway)
                 w.box_render = None;
                 if w.box_run.take().is_some() {
-                    e.set_loop(BOX_VOICE, Bus::Master, None, Vec::new);
+                    e.set_loop(BOX_VOICE, Bus::Music, None, Vec::new);
                 }
                 return;
             }
@@ -240,7 +247,7 @@ pub fn music_box(left: f32, wound: f32) {
             if restart {
                 // the run is a few million frames: it is rendered a slice a frame (below), not in this one. What played
                 // before no longer matches the box clock, so it stops now and the new run starts when it is ready.
-                e.set_loop(BOX_VOICE, Bus::Master, None, Vec::new);
+                e.set_loop(BOX_VOICE, Bus::Music, None, Vec::new);
                 w.box_render = Some(RunRender::new(wound, wound - left));
             }
             if let Some(render) = w.box_render.as_mut() {
@@ -255,7 +262,7 @@ pub fn music_box(left: f32, wound: f32) {
                         // the box clock ran on while the run rendered: join it where it is now, as a run started now would
                         let tune = crate::game::music_box::rules().tune_gain;
                         let frames = render.finish_at(wound - left);
-                        e.play_frames(BOX_VOICE, Bus::Master, frames, (tune, tune), left);
+                        e.play_frames(BOX_VOICE, Bus::Music, frames, (tune, tune), left);
                     }
                 }
             }
@@ -319,17 +326,21 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                 let clip =
                     preferred_clip(h.chasing, !h.chasing && !h.idle, h.direct_visible, h.winded);
                 w.gaits[i].update(h.id, h.pos, dt, clip, h.active && !h.stunned && !h.in_vent);
-                // Glyra's hum: positional loop on Master while she is active and her box plays. The engine applies the
-                // Master gain (and re-applies it on every master change), so the base gains here are the positional ones.
+                // Glyra's hum: positional loop on the HUNTERS bus while she is active and her box plays. The engine applies
+                // the bus gain (and re-applies it on every slider change), so the base gains here are the positional ones,
+                // toned down by data/audio/hunter_ambient.json (a shorter reach and a lower gain than Godot's HUM).
                 if h.id == "glyra" {
+                    let tune = HunterAmbient::get();
+                    let hum = Emitter3D { max_distance: tune.hum_max_distance.unwrap_or(HUM.max_distance), ..HUM };
                     let gains = (h.active && h.glyra_humming).then(|| {
-                        HUM.gains_from([h.pos.0, 0.0, h.pos.1], l.eye, l.right, l.up, l.forward)
+                        let g = hum.gains_from([h.pos.0, 0.0, h.pos.1], l.eye, l.right, l.up, l.forward);
+                        (g.0 * tune.hum_gain, g.1 * tune.hum_gain)
                     });
-                    e.set_loop("glyra_hum", Bus::Master, gains, super::cues::music_box::glyra_hum);
+                    e.set_loop("glyra_hum", Bus::Hunters, gains, super::cues::music_box::glyra_hum);
                 }
             }
             if !hunters.iter().any(|h| h.id == "glyra") {
-                e.set_loop("glyra_hum", Bus::Master, None, Vec::new);
+                e.set_loop("glyra_hum", Bus::Hunters, None, Vec::new);
             }
             if pursued && !w.was_pursued {
                 e.play(&rules::chase_start());
@@ -341,7 +352,11 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                 pursued,
                 l.in_safe_zone,
             );
-            if let Some(p) = e.front.heartbeat(danger, now) {
+            if let Some(mut p) = e.front.heartbeat(danger, now) {
+                // near but not after you: the calm heartbeat is toned down (data/audio/hunter_ambient.json)
+                if !pursued {
+                    p.gain *= HunterAmbient::get().calm_heartbeat_gain;
+                }
                 e.play(&p);
             }
             let rate = stepping
@@ -356,8 +371,14 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             let (i, _) = stepping.unwrap();
             let h = &hunters[i];
             let offset = ((h.pos.0 - l.pos.0) as f64, (h.pos.1 - l.pos.1) as f64);
+            // a chasing hunter keeps the full figure (cues.json hunter_step); a wandering one is quieter and carries less far
+            let hearing = if h.chasing {
+                HunterStepHearing::get()
+            } else {
+                HunterAmbient::get().step_hearing(HunterStepHearing::get())
+            };
             if let Some((pan, volume)) =
-                rules::hunter_step_pan_volume(offset, (l.facing.0 as f64, l.facing.1 as f64))
+                rules::hunter_step_pan_volume_with(&hearing, offset, (l.facing.0 as f64, l.facing.1 as f64))
             {
                 let surface = w.surfaces.get(h.id).map(String::as_str).unwrap_or("");
                 let p = e.front.hunter_footstep(pan, volume, surface);

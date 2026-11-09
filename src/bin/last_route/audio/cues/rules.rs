@@ -8,25 +8,125 @@
 
 use super::render::{cache_key, snapped};
 
-/// The audio bus a cue plays on (default_bus_layout.tres). Every `Sound.<method>()` cue is SFX except the menu blip, which
-/// is UI. `Master` is for the positional node players (the music box tune and its wind-down, Glyra's hum, the falls):
-/// Godot's AudioStreamPlayer3D defaults to the Master bus, so only the Master slider applies to them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The volume bus a sound plays on. Every sound has one (there is no bus that skips the sliders): `bus_for_cue` picks it
+/// from data/audio/buses.json, the loops name theirs, and `bus_gain` turns it into the gain. `Sfx` is GAMEPLAY.
+/// `Hunters`, `Ambience` and `Music` sit under GAMEPLAY; `Ui` is MASTER only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Bus {
-    Master,
     Sfx,
+    Hunters,
+    Ambience,
+    Music,
     Ui,
 }
 
-/// The settings' bus gains, as the engine applies them: `Master` x the bus slider (`Sfx` or `Ui`), each 0..1.
-/// `Engine::bus_gain` is the only place this is computed at run time.
-pub fn bus_gain(bus: Bus, master: f32, sfx: f32, ui: f32) -> f32 {
-    master
-        * match bus {
-            Bus::Master => 1.0,
-            Bus::Sfx => sfx,
-            Bus::Ui => ui,
+impl Bus {
+    pub const ALL: [Bus; 5] = [Bus::Sfx, Bus::Hunters, Bus::Ambience, Bus::Music, Bus::Ui];
+
+    /// The key buses.json uses for this bus.
+    pub fn key(self) -> &'static str {
+        match self {
+            Bus::Sfx => "sfx",
+            Bus::Hunters => "hunters",
+            Bus::Ambience => "ambience",
+            Bus::Music => "music",
+            Bus::Ui => "ui",
         }
+    }
+
+    pub fn from_key(key: &str) -> Option<Bus> {
+        Bus::ALL.into_iter().find(|b| b.key() == key)
+    }
+}
+
+/// The settings' volume sliders as linear gains 0..1. MASTER scales everything; GAMEPLAY scales `Sfx` and the three buses
+/// under it (HUNTERS, AMBIENCE, MUSIC); MENU / UI scales `Ui` alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Volumes {
+    pub master: f32,
+    pub gameplay: f32,
+    pub hunters: f32,
+    pub ambience: f32,
+    pub music: f32,
+    pub ui: f32,
+}
+
+impl Default for Volumes {
+    fn default() -> Self {
+        Volumes { master: 1.0, gameplay: 1.0, hunters: 1.0, ambience: 1.0, music: 1.0, ui: 1.0 }
+    }
+}
+
+/// The gain of `bus`: MASTER x its slider (x GAMEPLAY for the buses under it). The only place this is computed.
+pub fn bus_gain(bus: Bus, v: &Volumes) -> f32 {
+    let c = |x: f32| x.clamp(0.0, 1.0);
+    c(v.master)
+        * match bus {
+            Bus::Sfx => c(v.gameplay),
+            Bus::Hunters => c(v.gameplay) * c(v.hunters),
+            Bus::Ambience => c(v.gameplay) * c(v.ambience),
+            Bus::Music => c(v.gameplay) * c(v.music),
+            Bus::Ui => c(v.ui),
+        }
+}
+
+struct BusMap {
+    default: Bus,
+    exact: std::collections::HashMap<String, Bus>,
+    /// Longest prefix first.
+    prefix: Vec<(String, Bus)>,
+    labels: [String; 5],
+}
+
+fn parse_bus_map(text: &str) -> BusMap {
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+    let bus_of = |x: &serde_json::Value| x.as_str().and_then(Bus::from_key);
+    let mut exact = std::collections::HashMap::new();
+    if let Some(o) = v["exact"].as_object() {
+        for (k, b) in o {
+            if let Some(b) = bus_of(b) {
+                exact.insert(k.clone(), b);
+            }
+        }
+    }
+    let mut prefix: Vec<(String, Bus)> = vec![];
+    if let Some(o) = v["prefix"].as_object() {
+        for (k, b) in o {
+            if let Some(b) = bus_of(b) {
+                prefix.push((k.clone(), b));
+            }
+        }
+    }
+    prefix.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
+    let labels = Bus::ALL.map(|b| v["labels"][b.key()].as_str().unwrap_or(b.key()).to_uppercase());
+    BusMap { default: bus_of(&v["default"]).unwrap_or(Bus::Sfx), exact, prefix, labels }
+}
+
+fn bus_map() -> &'static BusMap {
+    static M: std::sync::OnceLock<BusMap> = std::sync::OnceLock::new();
+    M.get_or_init(|| parse_bus_map(include_str!("../../data/audio/buses.json")))
+}
+
+/// The bus a cue plays on (data/audio/buses.json): exact name, else the longest prefix, else the default (GAMEPLAY).
+pub fn bus_for_cue(cue: &str) -> Bus {
+    let m = bus_map();
+    if let Some(b) = m.exact.get(cue) {
+        return *b;
+    }
+    m.prefix.iter().find(|(p, _)| cue.starts_with(p.as_str())).map(|(_, b)| *b).unwrap_or(m.default)
+}
+
+/// The settings caption of a bus, upper case (data/audio/buses.json `labels`).
+pub fn bus_label(bus: Bus) -> &'static str {
+    let i = Bus::ALL.iter().position(|b| *b == bus).unwrap_or(0);
+    bus_map().labels[i].as_str()
+}
+
+/// The raw buses.json text and its parse, for the regression tests.
+#[cfg(test)]
+pub(crate) fn bus_map_entries() -> (Vec<(String, Bus)>, Vec<(String, Bus)>) {
+    let m = bus_map();
+    (m.exact.iter().map(|(k, b)| (k.clone(), *b)).collect(), m.prefix.clone())
 }
 
 pub fn db_to_linear(db: f32) -> f32 {
@@ -64,7 +164,7 @@ fn named(cue: &str, pan: f64, intensity: f64) -> Play {
         pan,
         intensity,
         gain: 1.0,
-        bus: Bus::Sfx,
+        bus: bus_for_cue(cue),
     }
 }
 
@@ -75,7 +175,7 @@ fn scaled(cue: &str, pan: f64, intensity: f64) -> Play {
         pan: snapped(pan.clamp(-1.0, 1.0), SCALED_PAN_STEP),
         intensity: 1.0,
         gain: intensity.clamp(0.05, 4.0) as f32,
-        bus: Bus::Sfx,
+        bus: bus_for_cue(cue),
     }
 }
 
@@ -311,7 +411,7 @@ impl Default for SoundFront {
             last_struggle_usec: -2_000_000,
             last_menu_usec: -2_000_000,
             footstep_index: 0,
-            footstep_bus: Bus::Sfx,
+            footstep_bus: bus_for_cue("footstep_walk"),
         }
     }
 }
@@ -328,10 +428,7 @@ impl SoundFront {
             return None;
         }
         self.last_menu_usec = now_usec;
-        Some(Play {
-            bus: Bus::Ui,
-            ..named("menu", 0.0, 1.0)
-        })
+        Some(named("menu", 0.0, 1.0))
     }
 
     /// `Sound.heartbeat(danger)` (sound.gd 395): silent under 0.04; the gap shrinks from 1.08 s to 0.32 s with danger.

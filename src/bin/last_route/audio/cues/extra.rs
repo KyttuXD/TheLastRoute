@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 use super::render::{noise, thump, tone, Component};
-use super::rules::{Bus, Play};
+use super::rules::{bus_for_cue, Play};
 
 struct Part {
     kind: String,
@@ -147,10 +147,10 @@ pub fn event(name: &str, pan: f64, volume: f64) -> Option<Play> {
             pan: super::rules::snap_scaled_pan(pan),
             intensity: 1.0,
             gain: (volume / 0.05).clamp(0.1, 2.0) as f32 * e.gain,
-            bus: Bus::Sfx,
+            bus: bus_for_cue(&e.cue),
         });
     }
-    Some(Play { cue: e.cue.clone(), pan: pan.clamp(-1.0, 1.0), intensity: e.intensity, gain: e.gain, bus: Bus::Sfx })
+    Some(Play { cue: e.cue.clone(), pan: pan.clamp(-1.0, 1.0), intensity: e.intensity, gain: e.gain, bus: bus_for_cue(&e.cue) })
 }
 
 /// The cue an event plays, for a test or a hook that wants to pre-load it.

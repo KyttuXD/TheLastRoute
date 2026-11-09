@@ -202,11 +202,14 @@ pub fn tool_swing(tool: SwingTool, hit: bool) {
 /// A hunter lingering at the runner's locker (hunter_view_3d.gd 1537-1558): one breath (Nyxie two, 1.1 s apart) when
 /// she is within 3.5 m of the camera. `side` = metres of her offset along the camera's right, `gap` = her distance.
 pub fn inspect_breath(side: f32, gap: f32, two_breaths: bool) {
-    if gap > 3.5 {
+    // a lingering hunter's breath is a quiet idle sound: shorter reach and lower gain from data/audio/hunter_ambient.json
+    let tune = super::hunter_ambient::HunterAmbient::get();
+    if gap > tune.breath_range.unwrap_or(3.5).min(3.5) {
         return;
     }
     let intensity = (1.0 - gap as f64 / 3.5 * 0.5) * if two_breaths { 1.15 } else { 1.0 };
-    let p = rules::nw("breath", (side as f64).clamp(-1.0, 1.0), intensity);
+    let mut p = rules::nw("breath", (side as f64).clamp(-1.0, 1.0), intensity);
+    p.gain *= tune.breath_gain;
     with(|e| {
         e.play(&p);
         if two_breaths {
@@ -280,7 +283,7 @@ pub fn placed_music_boxes(requests: &[crate::game::music_box::TuneRequest]) {
         for (i, voice) in PLACED_TUNE_VOICES.iter().enumerate() {
             let req = requests.iter().find(|r| r.tune as usize % PLACED_TUNE_VOICES.len() == i);
             let tune = i as u32;
-            e.set_loop(*voice, rules::Bus::Master, req.map(|r| r.gains), || {
+            e.set_loop(*voice, rules::Bus::Music, req.map(|r| r.gains), || {
                 tune_at_rate(crate::game::music_box::tune_rate(tune))
             });
         }

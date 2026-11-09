@@ -2126,10 +2126,10 @@ mod knock_tuning_tests {
     #[test]
     fn the_embedded_knock_data_holds_the_standard_values() {
         let (base, falloff) = parse_knock_rules(include_str!("../data/hunters/knock_sound.json"));
-        assert_eq!((base, falloff), (0.05, 20.0));
-        assert!((knock_volume(0.0) - 0.05).abs() < 1e-6);
-        assert!((knock_volume(10.0) - 0.025).abs() < 1e-6);
-        assert_eq!(knock_volume(20.0), 0.0);
+        assert_eq!((base, falloff), (0.03, 12.0));
+        assert!((knock_volume(0.0) - 0.03).abs() < 1e-6);
+        assert!((knock_volume(6.0) - 0.015).abs() < 1e-6);
+        assert_eq!(knock_volume(12.0), 0.0);
         assert_eq!(knock_volume(50.0), 0.0);
     }
 

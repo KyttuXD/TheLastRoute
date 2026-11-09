@@ -281,7 +281,7 @@ pub fn build(os: Os, program: &str, text: &str, vol: f64, c: &Config) -> Invocat
             }
         }
         Os::Mac => {
-            // `say` has no volume option, so on macOS the speech is at the system level: Master and SPOKEN CHAT do not reach it.
+            // `say` has no volume option, so on macOS the speech is at the system level: partial Master / SPOKEN CHAT levels do not reach it (zero does: `speak_line` starts no speech then).
             let mut args = vec!["-r".to_string(), c.rate[1].to_string()];
             if !c.voices[1].is_empty() {
                 args.extend(["-v".into(), c.voices[1].clone()]);
@@ -418,6 +418,11 @@ impl Speaker {
             return;
         }
         let d: f64 = (0..3).map(|i| (line.world[i] - listener_world[i]).powi(2)).sum::<f64>().sqrt();
+        // MASTER or SPOKEN CHAT at zero is silence on every OS: macOS `say` has no volume option, so it must not be started at all
+        let level = speech_volume(d, c.radius, c.volume_floor, master, spoken_chat_pct);
+        if level <= 0.0 {
+            return;
+        }
         self.recent.retain(|(_, at)| now_ms - *at < c.duplicate_window_ms);
         self.recent.push((t.clone(), now_ms));
         match self.waiting.lock() {
@@ -429,7 +434,7 @@ impl Speaker {
             Err(_) => return,
         }
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = tx.send((t, speech_volume(d, c.radius, c.volume_floor, master, spoken_chat_pct), line.peer_id));
+        let _ = tx.send((t, level, line.peer_id));
     }
 }
 

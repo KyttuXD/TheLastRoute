@@ -5,6 +5,7 @@
 
 use super::cues::rules::{self, Play};
 use super::engine::with;
+use super::hunter_ambient::HunterAmbient;
 use super::world::Listener;
 use crate::hunters::secret_creatures::{Rules, ViewRules};
 use crate::world::rng::Rng;
@@ -78,15 +79,23 @@ impl CreatureClock {
         let moving = c.active && speed > view.moving_speed;
         if self.skitter_left <= 0.0 && moving {
             self.skitter_left = if c.hunting { view.skitter_every_run } else { view.skitter_every_walk };
-            if distance < view.skitter_radius {
-                out.push(rules::spider_skitter(pan, (1.3 - distance / view.skitter_radius).clamp(0.15, 1.3) as f64));
+            // a chasing spider keeps its full skitter and range; only the walking (ambient) one is toned down
+            let radius = if c.hunting { view.skitter_radius_run } else { view.skitter_radius };
+            if distance < radius {
+                let mut p = rules::spider_skitter(pan, (1.3 - distance / radius).clamp(0.15, 1.3) as f64);
+                if !c.hunting {
+                    p.gain *= HunterAmbient::get().skitter_gain;
+                }
+                out.push(p);
             }
         }
         if self.crackle_left <= 0.0 {
             let (lo, hi) = view.crackle_every;
             self.crackle_left = lo + (hi - lo) * self.rng.next_f32();
             if distance < view.lair_radius {
-                out.push(rules::inferno_crackle(pan, (1.2 - distance / view.lair_radius).clamp(0.15, 1.2) as f64));
+                let mut p = rules::inferno_crackle(pan, (1.2 - distance / view.lair_radius).clamp(0.15, 1.2) as f64);
+                p.gain *= HunterAmbient::get().crackle_gain;
+                out.push(p);
             }
         }
         out
@@ -188,8 +197,26 @@ mod tests {
             n
         };
         assert_eq!(count(false, 0.0), 0, "standing still makes no skitter");
-        let (walk, run) = (count(false, 1.0), count(true, 5.0));
+        let (walk, run) = (count(false, 5.0), count(true, 5.0));
         assert!(walk > 0 && run > walk, "walk {walk}, run {run}");
+    }
+
+    #[test]
+    fn a_chasing_skitter_is_full_gain_and_only_the_walking_one_is_toned_down() {
+        let v = view();
+        let first_skitter = |hunting: bool| -> Play {
+            let mut clock = CreatureClock::new(0);
+            clock.tick(0.02, &creature((10.0, 0.0), 0, hunting, false), &ears(), &v);
+            let plays = clock.tick(0.02, &creature((10.1, 0.0), 0, hunting, false), &ears(), &v);
+            plays.into_iter().find(|p| p.cue == "spider_skitter").expect("a skitter in range")
+        };
+        let d = 10.1_f32;
+        let full = |radius: f32| rules::spider_skitter(1.0, (1.3 - d / radius).clamp(0.15, 1.3) as f64).gain;
+        let (chase, walk) = (first_skitter(true), first_skitter(false));
+        let tone = HunterAmbient::get().skitter_gain;
+        assert!(tone < 1.0, "the ambient skitter is toned down: {tone}");
+        assert!((chase.gain - full(v.skitter_radius_run)).abs() < 1.0e-4, "chasing is not scaled by skitter_gain: {}", chase.gain);
+        assert!((walk.gain - full(v.skitter_radius) * tone).abs() < 1.0e-4, "walking is scaled by skitter_gain: {}", walk.gain);
     }
 
     #[test]
@@ -200,7 +227,7 @@ mod tests {
             (0..3000).map(|_| clock.tick(0.02, &creature(at, 0, false, false), &ears(), &v).iter().filter(|p| p.cue == "inferno_crackle").count()).sum()
         };
         let near = crackles((20.0, 0.0));
-        assert!((4..=14).contains(&near), "60 s near the lair: {near} crackles");
+        assert!((2..=8).contains(&near), "60 s near the lair: {near} crackles");
         assert_eq!(crackles((200.0, 0.0)), 0, "out of earshot");
     }
 }

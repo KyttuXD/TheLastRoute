@@ -1,5 +1,6 @@
 //! Looping positional emitters at water and lava features (waterfall, flood, lava). Pure maths: the caller (app loop)
 //! lists the emitter cells near the runner and plays the bed `bed_of` names at the gains `stereo` returns.
+//! Volume: when these are first played they MUST use `Bus::Ambience` (AMBIENCE slider); audio/cues/bus_tests.rs fails any loop call without a `Bus::`.
 //! Tuning: `data/audio/emitters.json`. No sound asset ships for these; each kind loops an existing ambience bed.
 
 use super::cues::positional::Emitter3D;

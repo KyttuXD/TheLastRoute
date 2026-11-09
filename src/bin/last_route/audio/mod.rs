@@ -8,7 +8,7 @@
 //! - `world::update(dt, &listener, &hunters)` once per game frame: main_3d's `_update_local_audio` (heartbeat by danger,
 //!   chase_start, Nyxie's wake cue, hunter footsteps on the nearest hunter's real footfall cadence, panned) and Glyra's
 //!   positional hum loop;
-//! - `set_volumes(master, sfx, ui)`: the Master / SFX / UI buses (linear, like settings.gd `linear_to_db(pct / 100)`).
+//! - `set_volumes(Volumes)`: MASTER, GAMEPLAY, HUNTERS, AMBIENCE, MUSIC and MENU / UI (linear, like settings.gd `linear_to_db(pct / 100)`).
 //!
 //! `Sounds` and `play` are the old fixed bank, kept only so call sites not migrated yet still build.
 #![allow(dead_code)] // ported API kept ahead of its callers (these items were the lib's pub API); prune as the port settles
@@ -19,6 +19,7 @@ pub mod cues;
 pub mod emitters;
 mod engine;
 pub mod falls;
+pub mod hunter_ambient;
 pub mod sound;
 pub mod tts;
 pub mod world;
@@ -26,15 +27,21 @@ pub mod world;
 use macroquad::audio::{play_sound, PlaySoundParams, Sound};
 
 use cues::rules::Bus;
+pub use cues::rules::{bus_label, Volumes};
 
-/// The bus volumes as linear gains 0..1: Master (everything), SFX (every cue but the menu blip), UI (the menu blip).
-/// The positional loops (the music box tune, Glyra's hum, the falls) play on Master only, like the original's
-/// AudioStreamPlayer3D. Loops that already play are re-gained here, so a slider moved in the pause menu applies at once.
-pub fn set_volumes(master: f32, sfx: f32, ui: f32) {
+/// The volume sliders as linear gains 0..1 (see `Volumes`): MASTER scales every sound; GAMEPLAY the game's sounds, with
+/// HUNTERS, AMBIENCE and MUSIC each under it; MENU / UI the menu blip. Every sound plays on one bus (data/audio/buses.json),
+/// so none skips a slider. Loops that already play are re-gained here, so a slider moved in the pause menu applies at once.
+pub fn set_volumes(v: Volumes) {
     engine::with(|e| {
-        e.master = master.clamp(0.0, 1.0);
-        e.sfx = sfx.clamp(0.0, 1.0);
-        e.ui = ui.clamp(0.0, 1.0);
+        e.vol = Volumes {
+            master: v.master.clamp(0.0, 1.0),
+            gameplay: v.gameplay.clamp(0.0, 1.0),
+            hunters: v.hunters.clamp(0.0, 1.0),
+            ambience: v.ambience.clamp(0.0, 1.0),
+            music: v.music.clamp(0.0, 1.0),
+            ui: v.ui.clamp(0.0, 1.0),
+        };
         e.refresh_loops();
     });
 }
@@ -47,7 +54,7 @@ pub fn tick() {
 
 /// Legacy: one volume for everything (treated as Master, SFX and UI at 100 %). Prefer `set_volumes`.
 pub fn set_volume(v: f32) {
-    set_volumes(v, 1.0, 1.0);
+    set_volumes(Volumes { master: v, ..Volumes::default() });
 }
 
 /// Stops every queued cue and loop (a run ends, the floor changes): Sound.reset_run_effects / stop_all.
@@ -126,7 +133,7 @@ impl Sounds {
 }
 
 #[allow(dead_code)]
-/// Legacy: plays a bank sound at `volume` x Master x SFX (the engine's bus gain). Migrated call sites use `sound::*`.
+/// Legacy: plays a bank sound at `volume` x Master x GAMEPLAY (the engine's SFX bus gain). Migrated call sites use `sound::*`.
 pub fn play(s: &Option<Sound>, volume: f32) {
     let Some(s) = s else { return };
     let volume = engine::with(|e| if e.ready { volume * e.bus_gain(Bus::Sfx) } else { 0.0 });

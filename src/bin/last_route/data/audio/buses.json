@@ -1,0 +1,35 @@
+{
+	"schema": "lr.buses/1",
+	"_note": "Which volume slider every sound plays under. A cue name is looked up in 'exact' first, then by the longest matching 'prefix', else it plays on 'default'. Every bus is scaled by MASTER; HUNTERS, AMBIENCE and MUSIC also sit under GAMEPLAY (sfx); UI is master only. 'labels' are the settings captions (shown in upper case). A new cue needs no entry unless it belongs to a bus other than the default; audio/cues/bus_tests.rs fails if an entry names a bus that does not exist.",
+	"default": "sfx",
+	"labels": {
+		"sfx": "GAMEPLAY",
+		"hunters": "HUNTERS",
+		"ambience": "AMBIENCE",
+		"music": "MUSIC",
+		"ui": "MENU / UI"
+	},
+	"exact": {
+		"menu": "ui",
+		"music_box_wind": "sfx",
+		"music_box_jam": "sfx",
+		"music_box": "music",
+		"music_box_tune": "music",
+		"carnival_carousel_tune": "music",
+		"glyra_hum": "hunters",
+		"hide_search": "hunters",
+		"nw_breath": "hunters",
+		"water_drip": "ambience",
+		"inferno_crackle": "ambience",
+		"pit_rumble": "ambience"
+	},
+	"prefix": {
+		"step:hunter:": "hunters",
+		"hunter_": "hunters",
+		"nyxie_": "hunters",
+		"xivvy_": "hunters",
+		"spider_": "hunters",
+		"mimic": "hunters",
+		"music_": "music"
+	}
+}

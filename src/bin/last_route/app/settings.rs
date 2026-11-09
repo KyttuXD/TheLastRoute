@@ -17,6 +17,10 @@ use std::path::PathBuf;
 pub struct Settings {
     pub master_volume: f32,
     pub gameplay_volume: f32,
+    /// HUNTERS, AMBIENCE and MUSIC sit under GAMEPLAY (audio/cues/rules.rs `bus_gain`). 0..1, default 1.
+    pub hunters_volume: f32,
+    pub ambience_volume: f32,
+    pub music_volume: f32,
     pub ui_volume: f32,
     /// 0..100, steps of 5 (SPOKEN CHAT). Scales spoken chat with Master once the speaker is connected (audio/tts.rs).
     pub voice_volume: f32,
@@ -70,6 +74,9 @@ impl Default for Settings {
         Settings {
             master_volume: 1.0,
             gameplay_volume: 1.0,
+            hunters_volume: 1.0,
+            ambience_volume: 1.0,
+            music_volume: 1.0,
             ui_volume: 1.0,
             voice_volume: 80.0,
             voices: true,
@@ -143,6 +150,9 @@ impl Settings {
         let b = |k: &str, d: bool| v[k].as_bool().unwrap_or(d);
         s.master_volume = f("master_volume", 1.0).clamp(0.0, 1.0);
         s.gameplay_volume = f("gameplay_volume", 1.0).clamp(0.0, 1.0);
+        s.hunters_volume = f("hunters_volume", 1.0).clamp(0.0, 1.0);
+        s.ambience_volume = f("ambience_volume", 1.0).clamp(0.0, 1.0);
+        s.music_volume = f("music_volume", 1.0).clamp(0.0, 1.0);
         s.ui_volume = f("ui_volume", 1.0).clamp(0.0, 1.0);
         s.voice_volume = f("voice_volume", 80.0).clamp(0.0, 100.0);
         s.voices = b("voices", true);
@@ -202,6 +212,7 @@ impl Settings {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "master_volume": self.master_volume, "gameplay_volume": self.gameplay_volume,
+            "hunters_volume": self.hunters_volume, "ambience_volume": self.ambience_volume, "music_volume": self.music_volume,
             "ui_volume": self.ui_volume, "voice_volume": self.voice_volume, "voices": self.voices,
             "subtitles": self.subtitles, "fov": self.fov, "sensitivity": self.sensitivity,
             "fullscreen": self.fullscreen, "vsync": self.vsync, "fps_limit": self.fps_limit,
@@ -317,6 +328,9 @@ mod tests {
         let mut expected: Vec<String> = [
             "master_volume",
             "gameplay_volume",
+            "hunters_volume",
+            "ambience_volume",
+            "music_volume",
             "ui_volume",
             "voice_volume",
             "voices",
@@ -354,6 +368,9 @@ mod tests {
         let saved = Settings {
             master_volume: 0.4,
             gameplay_volume: 0.6,
+            hunters_volume: 0.7,
+            ambience_volume: 0.5,
+            music_volume: 0.3,
             ui_volume: 0.2,
             voice_volume: 45.0,
             voices: false,
@@ -419,6 +436,16 @@ mod tests {
         assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "gl" })).graphics_api, "OPENGL");
         assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "metal" })).graphics_api, "METAL");
         assert_eq!(Settings::from_json(&serde_json::json!({ "graphics_api": "vulkan" })).graphics_api, "AUTO");
+    }
+
+    #[test]
+    fn a_file_from_before_the_category_sliders_loads_them_at_full() {
+        let old = serde_json::json!({ "master_volume": 0.5, "gameplay_volume": 0.4, "ui_volume": 0.3 });
+        let s = Settings::from_json(&old);
+        assert_eq!((s.hunters_volume, s.ambience_volume, s.music_volume), (1.0, 1.0, 1.0));
+        assert_eq!((s.master_volume, s.gameplay_volume, s.ui_volume), (0.5, 0.4, 0.3));
+        let wild = Settings::from_json(&serde_json::json!({ "hunters_volume": 7.0, "music_volume": -1.0 }));
+        assert_eq!((wild.hunters_volume, wild.music_volume), (1.0, 0.0), "clamped to 0..1");
     }
 
     #[test]

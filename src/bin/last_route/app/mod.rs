@@ -650,7 +650,7 @@ pub async fn run(
     }
     let mut loading: Option<Loading> = None;
     let mut frame = 0u32;
-    let mut audio_volumes = (f32::NAN, f32::NAN, f32::NAN);
+    let mut audio_volumes: Option<audio::Volumes> = None;
     // the admin tools: the signed-in admin's account (KYTTU or AYTTU) only, like Build.tools_enabled
     let mut admin = crate::ui::admin::Admin::new();
     let mut hub: Option<crate::ui::admin::HubPanel> = None;
@@ -783,18 +783,17 @@ pub async fn run(
         tg = targets_scaled(Some(tg), live.render_scale);
         // a narrower lamp variant is compiled the first frame it is needed; do it here, not mid-draw
         w.mat.prewarm(crate::render::shader::lamp_cap());
-        let next_audio_volumes = (
-            settings.master_volume,
-            settings.gameplay_volume,
-            settings.ui_volume,
-        );
-        if next_audio_volumes != audio_volumes {
-            audio::set_volumes(
-                next_audio_volumes.0,
-                next_audio_volumes.1,
-                next_audio_volumes.2,
-            );
-            audio_volumes = next_audio_volumes;
+        let next_audio_volumes = audio::Volumes {
+            master: settings.master_volume,
+            gameplay: settings.gameplay_volume,
+            hunters: settings.hunters_volume,
+            ambience: settings.ambience_volume,
+            music: settings.music_volume,
+            ui: settings.ui_volume,
+        };
+        if audio_volumes != Some(next_audio_volumes) {
+            audio::set_volumes(next_audio_volumes);
+            audio_volumes = Some(next_audio_volumes);
         }
         // delayed cues and timed loops run on every frame, paused or on the report screen too (game `update` is skipped then)
         audio::tick();

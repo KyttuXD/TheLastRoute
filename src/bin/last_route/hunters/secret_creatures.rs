@@ -95,6 +95,8 @@ pub struct ViewRules {
     pub moving_speed: f32,
     pub bark_cue_radius: f32,
     pub skitter_radius: f32,
+    /// How far a CHASING spider's skitter carries (its run cadence); the walking radius above is the toned-down ambient one.
+    pub skitter_radius_run: f32,
     pub lair_radius: f32,
     pub skitter_every_walk: f32,
     pub skitter_every_run: f32,
@@ -219,6 +221,7 @@ impl Rules {
                 moving_speed: num(view, "moving_speed")?,
                 bark_cue_radius: num(view, "bark_cue_radius")?,
                 skitter_radius: num(view, "skitter_radius")?,
+                skitter_radius_run: num(view, "skitter_radius_run").unwrap_or(30.0),
                 lair_radius: num(view, "lair_radius")?,
                 skitter_every_walk: num(view, "skitter_every_walk")?,
                 skitter_every_run: num(view, "skitter_every_run")?,

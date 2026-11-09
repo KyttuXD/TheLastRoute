@@ -151,6 +151,8 @@ pub fn cue_names() -> &'static [&'static str] {
 }
 
 #[cfg(test)]
+mod bus_tests;
+#[cfg(test)]
 mod data_tests;
 #[cfg(test)]
 mod tests;

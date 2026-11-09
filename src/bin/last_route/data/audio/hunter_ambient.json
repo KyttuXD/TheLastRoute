@@ -1,0 +1,10 @@
+{
+	"schema": "lr.hunter_ambient/1",
+	"_note": "How loud and how far the QUIET hunter sounds carry: a hunter that is not chasing (wandering, investigating, searching, lingering). Chase, jump-scare, capture and grab cues never read this file. Every gain multiplies the sound's normal loudness (1.0 = unchanged); every range is in cells/metres and replaces the normal reach (silent past it). The hunter_step block in cues.json stays the chase figure (9 / 4.5 / 0.09).",
+	"step": { "gain": 0.5, "range": 6.0 },
+	"sniff": { "gain": 0.5, "range": 5.0 },
+	"breath": { "gain": 0.6, "range": 2.5 },
+	"hum": { "gain": 0.5, "max_distance": 9.0 },
+	"creature": { "skitter_gain": 0.5, "crackle_gain": 0.5 },
+	"heartbeat": { "calm_gain": 0.7 }
+}

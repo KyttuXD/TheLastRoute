@@ -1,7 +1,7 @@
 //! The playing side: what the original's Sound autoload does with a rendered cue (sound.gd 725-785). Renders are cached
 //! by the original's cache key (`cue|pan|intensity`, pan and intensity snapped to 0.05), so every play of a key is the
 //! same bytes, like the original. A play's volume is the player's gain (1 for `_play_named`, the loudness for
-//! `_play_scaled`) times the bus: Master x SFX, or Master x UI for the menu blip.
+//! `_play_scaled`) times the bus: MASTER x its slider (data/audio/buses.json says which bus a cue plays on).
 //!
 //! Every gain goes through `Engine::bus_gain` (rules::bus_gain underneath). A one-shot takes it when it starts. A loop
 //! keeps its base gains (the caller's positional attenuation, the tune's gain) and gets the bus gain applied here, so a
@@ -99,9 +99,8 @@ pub(crate) struct Engine {
     pub ready: bool,
     cache: HashMap<String, Sound>,
     pub front: SoundFront,
-    pub master: f32,
-    pub sfx: f32,
-    pub ui: f32,
+    /// The settings' volume sliders (rules::Volumes); `bus_gain` is the only reader.
+    pub vol: rules::Volumes,
     /// (play at, cue): delayed cues (the tool impact, Nyxie's second breath).
     pending: Vec<(f64, Play)>,
     loops: HashMap<&'static str, LoopVoice>,
@@ -120,9 +119,7 @@ impl Default for Engine {
             ready: false,
             cache: HashMap::new(),
             front: SoundFront::new(),
-            master: 1.0,
-            sfx: 1.0,
-            ui: 1.0,
+            vol: rules::Volumes::default(),
             pending: vec![],
             loops: HashMap::new(),
             inflight: HashSet::new(),
@@ -290,9 +287,9 @@ impl Engine {
         });
     }
 
-    /// The gain of `bus` now: Master x the bus slider (`Master` alone for the positional loops).
+    /// The gain of `bus` now: MASTER x its slider (x GAMEPLAY for the buses under it).
     pub fn bus_gain(&self, bus: Bus) -> f32 {
-        rules::bus_gain(bus, self.master, self.sfx, self.ui)
+        rules::bus_gain(bus, &self.vol)
     }
 
     /// The volume a one-shot plays at: its player gain times its bus, read when it starts. A one-shot already playing
@@ -422,9 +419,9 @@ impl Engine {
     /// Re-applies every bus gain to the loops that play (called when a bus slider moves), so a playing loop follows Master
     /// at once and does not wait for its caller's next frame.
     pub fn refresh_loops(&mut self) {
-        let (master, sfx, ui) = (self.master, self.sfx, self.ui);
+        let vol = self.vol;
         for v in self.loops.values_mut() {
-            let gain = rules::bus_gain(v.bus, master, sfx, ui);
+            let gain = rules::bus_gain(v.bus, &vol);
             let base = v.gains.base;
             if let Some((l, r)) = v.gains.retarget(base, gain) {
                 set_sound_volume(&v.left, l);
@@ -535,37 +532,37 @@ mod tests {
 
     #[test]
     fn a_loop_follows_a_master_change_through_its_bus() {
-        // the music box tune: base gain on the Master bus, started at master 1
+        // the music box tune: base gain on the Music bus, started at master 1
         let mut e = Engine::default();
-        let mut g = LoopGains::new((0.8, 0.8), e.bus_gain(Bus::Master));
+        let mut g = LoopGains::new((0.8, 0.8), e.bus_gain(Bus::Music));
         assert!(near(g.applied, (0.8, 0.8)));
-        e.master = 0.5;
+        e.vol.master = 0.5;
         let base = g.base;
-        let gain = e.bus_gain(Bus::Master);
+        let gain = e.bus_gain(Bus::Music);
         assert!(near(g.retarget(base, gain).unwrap(), (0.4, 0.4)), "half master halves the loop");
         assert_eq!(g.retarget(base, gain), None, "nothing to set when nothing moved");
-        e.master = 0.0;
-        assert!(near(g.retarget(base, e.bus_gain(Bus::Master)).unwrap(), (0.0, 0.0)), "master 0 silences it");
+        e.vol.master = 0.0;
+        assert!(near(g.retarget(base, e.bus_gain(Bus::Music)).unwrap(), (0.0, 0.0)), "master 0 silences it");
     }
 
     #[test]
     fn a_positional_loop_keeps_its_stereo_balance_when_master_moves() {
         // the hum and the falls: left and right differ, and both scale with master
         let mut e = Engine::default();
-        let mut g = LoopGains::new((0.9, 0.3), e.bus_gain(Bus::Master));
-        e.master = 0.25;
+        let mut g = LoopGains::new((0.9, 0.3), e.bus_gain(Bus::Ambience));
+        e.vol.master = 0.25;
         let base = g.base;
-        assert!(near(g.retarget(base, e.bus_gain(Bus::Master)).unwrap(), (0.225, 0.075)));
+        assert!(near(g.retarget(base, e.bus_gain(Bus::Ambience)).unwrap(), (0.225, 0.075)));
     }
 
     #[test]
-    fn master_bus_loops_ignore_the_sfx_and_ui_sliders() {
+    fn every_bus_follows_master_and_its_own_slider() {
         let mut e = Engine::default();
-        e.master = 0.5;
-        e.sfx = 0.1;
-        e.ui = 0.2;
-        assert_eq!(e.bus_gain(Bus::Master), 0.5);
-        assert!((e.bus_gain(Bus::Sfx) - 0.05).abs() < 1e-6);
+        e.vol = rules::Volumes { master: 0.5, gameplay: 0.5, hunters: 0.5, ambience: 0.4, music: 0.2, ui: 0.2 };
+        assert!((e.bus_gain(Bus::Sfx) - 0.25).abs() < 1e-6);
+        assert!((e.bus_gain(Bus::Hunters) - 0.125).abs() < 1e-6);
+        assert!((e.bus_gain(Bus::Ambience) - 0.1).abs() < 1e-6);
+        assert!((e.bus_gain(Bus::Music) - 0.05).abs() < 1e-6);
         assert!((e.bus_gain(Bus::Ui) - 0.1).abs() < 1e-6);
     }
 
@@ -574,14 +571,14 @@ mod tests {
         let mut e = Engine::default();
         let cue = rules::collect();
         assert_eq!(cue.bus, Bus::Sfx);
-        e.master = 0.5;
-        e.sfx = 0.8;
+        e.vol.master = 0.5;
+        e.vol.gameplay = 0.8;
         assert!((e.play_volume(&cue) - cue.gain * 0.4).abs() < 1e-6);
-        e.master = 0.25;
+        e.vol.master = 0.25;
         assert!((e.play_volume(&cue) - cue.gain * 0.2).abs() < 1e-6, "halving master again halves the cue");
         let blip = SoundFront::new().menu_blip(0).unwrap();
         assert_eq!(blip.bus, Bus::Ui);
-        e.ui = 0.5;
+        e.vol.ui = 0.5;
         assert!((e.play_volume(&blip) - blip.gain * 0.125).abs() < 1e-6, "the UI cue uses the UI slider, under master");
     }
 }
