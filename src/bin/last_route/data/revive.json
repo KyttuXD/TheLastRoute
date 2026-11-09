@@ -8,5 +8,6 @@
 	"npc_catch_radius": 1.0,
 	"kit_hold_scale": 0.35,
 	"escape_loop_seconds": 0.6,
-	"escape_knockback_seconds": 0.4
+	"escape_knockback_seconds": 0.4,
+	"max_bot_revives": 2
 }

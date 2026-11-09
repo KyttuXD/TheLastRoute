@@ -257,6 +257,9 @@ pub struct Game {
     escape_cooldown: f32,
     escape_cooldown_scale: f32,
     escape_grace: f32,
+    /// How many times this run's runner has been stood back up (game/revive.rs). Caps the solo-with-a-bot auto-revive
+    /// loop: once it reaches `max_bot_revives`, a solo capture ends the run instead of downing the runner again.
+    down_revives: u32,
     locker_cooldown: Vec<f32>,
     hide_check: Option<(usize, usize, f32)>,
     /// The look the runner had on entering a hiding spot and the glide's progress 0..1: the view eases out of the spot.
@@ -421,6 +424,7 @@ impl Game {
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,
+            down_revives: 0,
             locker_cooldown: vec![],
             hide_check: None,
             hide_ease: None,
@@ -575,6 +579,7 @@ impl Game {
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,
+            down_revives: 0,
             locker_cooldown: vec![],
             hide_check: None,
             hide_ease: None,

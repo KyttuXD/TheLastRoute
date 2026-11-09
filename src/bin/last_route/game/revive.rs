@@ -38,6 +38,8 @@ pub struct Rules {
     pub escape_loop_seconds: f32,
     /// Seconds a hunter is knocked back after a struggle is won.
     pub escape_knockback_seconds: f32,
+    /// How many times a solo runner with only an NPC bot reviver can be stood back up before a capture ends the run.
+    pub max_bot_revives: u32,
 }
 
 impl Rules {
@@ -59,6 +61,7 @@ impl Rules {
             kit_hold_scale: num("kit_hold_scale").unwrap_or(0.35).min(1.0),
             escape_loop_seconds: num("escape_loop_seconds").unwrap_or(0.6),
             escape_knockback_seconds: num("escape_knockback_seconds").unwrap_or(0.4),
+            max_bot_revives: num("max_bot_revives").unwrap_or(2.0) as u32,
         })
     }
 
@@ -112,22 +115,21 @@ impl Game {
     }
 
     /// The brief immunity a runner gets the instant it stands back up (a hold-revive in `tick_revives`, or a revive kit
-    /// in `game/items.rs`): the same `escape_grace` window and hunter stun/search-shove the struggle-win path grants at
-    /// `game/hunting.rs:623-645`, so the hunter still standing over the body cannot re-grab it on the very next frame
-    /// (`resolve_capture` bails while `escape_grace > 0`, hunting.rs:526-528). Without it an adjacent hunter re-enters an
-    /// escapable grab at once, the escape flips None->Some, and the "<HUNTER> HAS THE HOST" notice re-fires forever
-    /// (net/hunter_events.rs). This is the TODO 714 capture-immunity behaviour (game/capture_immunity_tests.rs).
-    pub(super) fn grant_post_revive_grace(&mut self, hunter: usize) {
+    /// in `game/items.rs`): the `escape_grace` window the struggle-win path grants at `game/hunting.rs:623-645`, so the
+    /// hunter still standing over the body cannot re-grab it on the very next frame (`resolve_capture` bails while
+    /// `escape_grace > 0`, hunting.rs:526-528). Without it an adjacent hunter re-enters an escapable grab at once, the
+    /// escape flips None->Some, and the "<HUNTER> HAS THE HOST" notice re-fires forever (net/hunter_events.rs). This is
+    /// the TODO 714 capture-immunity behaviour (game/capture_immunity_tests.rs).
+    ///
+    /// The catcher is NOT re-stunned or shoved into a search here: `go_down` already staggered it once when the runner
+    /// first went down, and re-stunning + relocating it on every revive froze the chaser and sent it wandering off.
+    /// Each revive is also counted (`down_revives`): once a solo runner with only a bot reviver has spent the bot-revive
+    /// budget, the next capture ends the run instead of downing again (`go_down`).
+    pub(super) fn grant_post_revive_grace(&mut self, _hunter: usize) {
         // no struggle is in flight for a runner that just stood up, and the grace blocks the next grab for a moment
         self.escape = None;
         self.escape_grace = crate::config::ESCAPE_GRACE;
-        // stun the catching hunter and send it searching from the body, the way a won struggle does (hunting.rs:642-643).
-        // the index came from the catch; the active list may have shifted since, so a stale index is simply skipped.
-        if self.hunters.get(hunter).is_some() {
-            let pos = self.p.pos;
-            self.hunters[hunter].enter_search_from(pos, 1.8, &self.fac);
-            self.hunters[hunter].apply_stun(rules().hunter_stun_seconds, false);
-        }
+        self.down_revives += 1;
     }
 
     /// The runner would die: it goes down instead when someone could revive it ([`Game::runner_has_reviver`]). Returns
@@ -140,6 +142,12 @@ impl Game {
         }
         // nobody could revive the runner: the capture ends the run at once (end_run then writes the report)
         if !self.runner_has_reviver() {
+            return false;
+        }
+        // solo with only a bot reviver: once the bot-revive budget is spent, the capture ends the run instead of downing
+        // again (an ever-present bot auto-revives, so without this cap the runner is immortal). Co-op (a human teammate in
+        // the room) keeps its unlimited down/revive mechanic.
+        if self.room_teammates == 0 && self.down_revives >= rules().max_bot_revives {
             return false;
         }
         let r = rules();
@@ -629,7 +637,9 @@ mod tests {
         assert!(g.escape.is_none(), "no struggle is in flight the instant the runner stands up");
         assert!(g.escape_grace > 0.0, "the just-revived runner is briefly immune to a re-grab");
         if had_hunter {
-            assert!(g.hunters[0].stun > 0.0, "the hunter over the body is stunned, as a won struggle stuns it");
+            // the stagger comes only from go_down's stun when the runner first went down; grant_post_revive_grace no
+            // longer re-stuns the catcher, and tick_revives does not decrement stun, so it is still up here
+            assert!(g.hunters[0].stun > 0.0, "the hunter over the body is still staggered from the down");
         }
         // one hunter step with the grace up does not start a new grab (resolve_capture bails while escape_grace > 0)
         let prof = g.prof();
@@ -660,5 +670,71 @@ mod tests {
         assert!(!g.runner_downed(), "nobody to revive: no down");
         assert!(g.report.is_some(), "the capture ends the run at once");
         assert_eq!(g.escape_grace, 0.0, "a run that simply ends grants no post-revive grace");
+    }
+
+    /// Single player with only an NPC bot reviver (the a2e142e regression). The bot stands the runner up a fixed number
+    /// of times (`max_bot_revives`), then the next capture ENDS the run instead of downing again (Change B — no more
+    /// immortal auto-revive loop). Each revive leaves the chasing hunter that caught the runner in its chase, NOT frozen
+    /// or shoved into a search (Change A — the "hunters standing still" / "instantly stun on collision" regression).
+    /// Fails before the fix: the catcher would be in `State::Search`, and the final capture would down again (no report).
+    #[test]
+    fn a_bot_revive_budget_ends_the_run_and_leaves_the_chaser_chasing() {
+        use crate::hunters::brain::State;
+        let (mut g, _) = game();
+        // solo: no human teammate, only a joined bot can revive
+        g.room_teammates = 0;
+        g.npcs[0].joined = true;
+        assert!(g.runner_has_reviver(), "the joined bot is a reviver");
+        let id = g.npcs[0].id;
+        let budget = rules().max_bot_revives;
+        assert!(budget >= 1, "the fixture needs at least one bot revive");
+        for _ in 0..budget {
+            let (level, pos) = (g.runner_level(), g.p.pos);
+            let had_hunter = chase_at(&mut g, level, pos);
+            g.end_run(0, "contact");
+            assert!(g.runner_downed() && g.report.is_none(), "with a bot reviver the capture downs the runner");
+            // the bot stands beside the runner and holds the three-second revive
+            beside_runner(&mut g, id);
+            for _ in 0..31 {
+                g.tick_revives(0.1, &idle());
+            }
+            assert!(!g.runner_downed(), "the bot's hold stands the runner back up");
+            assert!(g.escape_grace > 0.0, "the revive grants the re-grab grace");
+            if had_hunter {
+                assert!(
+                    matches!(g.hunters[0].state, State::Chase),
+                    "the catcher keeps chasing: the revive does not freeze it or shove it into a search"
+                );
+            }
+        }
+        // the bot-revive budget is spent: the next capture ends the run instead of downing the runner again
+        let level = g.runner_level();
+        let pos = g.p.pos;
+        chase_at(&mut g, level, pos);
+        g.end_run(0, "contact");
+        assert!(!g.runner_downed(), "the spent bot-revive budget stops another down");
+        assert!(g.report.is_some(), "the grab now ends the run");
+    }
+
+    /// Contrast with the budget test: in co-op (a human teammate in the room) the repeated down/revive is never capped —
+    /// the teammate down mechanic stays unlimited, so the bot-revive cap applies only to the solo-with-a-bot case.
+    #[test]
+    fn co_op_down_and_revive_is_not_capped_by_the_bot_budget() {
+        let (mut g, _) = game();
+        g.room_teammates = 1;
+        g.npcs[0].joined = true;
+        let id = g.npcs[0].id;
+        let rounds = rules().max_bot_revives + 2;
+        for _ in 0..rounds {
+            g.end_run(0, "contact");
+            assert!(g.runner_downed() && g.report.is_none(), "co-op downs the runner, it never ends the run here");
+            beside_runner(&mut g, id);
+            for _ in 0..31 {
+                g.tick_revives(0.1, &idle());
+            }
+            assert!(!g.runner_downed(), "the hold stands the runner back up");
+        }
+        g.end_run(0, "contact");
+        assert!(g.runner_downed() && g.report.is_none(), "past the bot budget, co-op still downs and never ends");
     }
 }
