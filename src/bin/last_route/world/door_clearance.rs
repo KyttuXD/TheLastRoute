@@ -865,8 +865,8 @@ mod tests {
             }
         }
         assert!(chunks > 300, "the sweep built {chunks} chunks");
-        // level 0 is the concept map: the 5 x 5 chunks round the spawn show the apartment, greenhouse, hospital, mall,
-        // maze and prison areas (Godot's draw used to give nine or more types there)
+        // level 0 shows at least six facility types in the 5 x 5 chunks round the spawn (Godot's draw gives nine or more; the
+        // concept map, when switched on, gives the apartment, greenhouse, hospital, mall, maze and prison areas)
         assert!(regions_seen.len() >= 6, "facility types in the sweep: {regions_seen:?}");
         assert!(doors > 500 && wide > 20, "doors {doors}, wide doors {wide}");
         assert!(lockers > 300 && vents > 100, "lockers {lockers}, vents {vents}: the sweep must still place fixtures");

@@ -444,7 +444,7 @@ pub fn is_safe_chunk(world: &str, cx: i32, cy: i32) -> bool {
 /// of it. Under the Godot region draw (`layout::with_godot_regions`) no chunk is hollow, so this is the pure roll.
 pub fn is_live_safe_chunk(world: &str, cx: i32, cy: i32) -> bool {
     is_safe_chunk(world, cx, cy)
-        && (layout::godot_regions() || super::concept_map::chunk_class(world, cx, cy) != super::concept_map::ChunkClass::Hollow)
+        && (!layout::concept_layout() || super::concept_map::chunk_class(world, cx, cy) != super::concept_map::ChunkClass::Hollow)
 }
 
 /// The safe room of a level-0 chunk as the Godot `safe_room_data` dictionary (streamed_route_generator.gd:1416),
@@ -794,6 +794,7 @@ mod tests {
     /// but the live safe room (and the layout) never puts a room there.
     #[test]
     fn a_hollow_chunk_never_holds_a_safe_room() {
+        super::super::concept_map::concept_for_this_test();
         use super::super::concept_map::{chunk_class, ChunkClass};
         let mut hollow_rolls = 0;
         for i in 0..40 {

@@ -1,5 +1,6 @@
 {
 	"schema": "lr.concept_settings/1",
+	"enabled": false,
 	"scale": 3,
 	"spacing": 2,
 	"tunnel_width": 3,

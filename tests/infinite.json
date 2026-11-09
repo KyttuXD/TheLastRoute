@@ -29,9 +29,9 @@
       "name": "the window recentres when the runner leaves the middle chunk",
       "start_run": { "no_target": true },
       "steps": [
-        { "cmd": "teleport", "x": 38.5, "z": 67.5, "_note": "the concept map walls the whole east chunk beside spawn on level 0, so the runner leaves by the west corridor" },
+        { "cmd": "teleport", "x": 96.5, "z": 67.5 },
         { "cmd": "step", "frames": 2, "observe": false },
-        { "expect": [ { "path": "run.window_center", "value": [-1, 0] }, { "path": "run.chunks_visited", "op": ">=", "value": 9 }, { "path": "player.pos.0", "op": ">", "value": 45 } ] }
+        { "expect": [ { "path": "run.window_center", "value": [1, 0] }, { "path": "run.chunks_visited", "op": ">=", "value": 9 }, { "path": "player.pos.0", "op": "<", "value": 90 } ] }
       ]
     },
     {

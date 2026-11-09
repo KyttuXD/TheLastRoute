@@ -105,11 +105,12 @@ fn pick(level: i32, choices: &[&'static str], rng: &mut Rng) -> &'static str {
     pool[rng.next_index(pool.len())]
 }
 
-/// The region of chunk (cx, cz) on `level` in the world with seed text `world`. Level 0 is read from the concept
-/// map (`concept_map`): the spawn chunk is the maze, every other chunk takes the region of the map under it, and a
-/// chunk of solid rock or tunnel counts as "maze". Every other level keeps Godot's draw (`godot_region_for`).
+/// The region of chunk (cx, cz) on `level` in the world with seed text `world`. While the concept map is enabled
+/// (`concept_map::enabled`) level 0 is read from it (`concept_map`): the spawn chunk is the maze, every other chunk takes the region of the map under it, and a
+/// chunk of solid rock or tunnel counts as "maze". Every other level, and level 0 with the map off, keeps Godot's draw
+/// (`godot_region_for`).
 pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
-    if level == 0 {
+    if level == 0 && super::concept_map::enabled() {
         return super::concept_map::region_of_chunk(world, cx, cz);
     }
     godot_region_for(world, cx, cz, level)
@@ -176,7 +177,7 @@ pub fn is_spawn_block(cx: i32, cz: i32, level: i32) -> bool {
     level == 0 && cx.div_euclid(REGION_SIZE_CHUNKS) == 0 && cz.div_euclid(REGION_SIZE_CHUNKS) == 0
 }
 
-/// The region of the spawn chunk (0, 0) on level 0, where the run starts: always the maze (the concept map).
+/// The region of the spawn chunk (0, 0) on level 0, where the run starts: the maze under the concept map, Godot's draw otherwise.
 pub fn spawn_region(world: &str) -> &'static str {
     region_for(world, 0, 0, 0)
 }
@@ -311,14 +312,16 @@ mod tests {
 
     #[test]
     fn spawn_block_is_maze_or_a_non_maze_region() {
-        // the concept map makes the spawn chunk the maze for every seed; Godot's draw still gives the old 60/40 mix
+        // with the concept map on the spawn chunk is the maze for every seed; with it off (the shipped state) it is
+        // Godot's draw, which still gives the old 60/40 mix
         let mut godot_maze = 0;
         for i in 0..400 {
             let world = format!("ROOM-SPAWN{i:03}-0000{i:04X}");
             assert!(is_spawn_block(0, 0, 0));
-            assert_eq!(spawn_region(&world), "maze");
             let g = godot_region_for(&world, 0, 0, 0);
             assert!(NAMES.contains(&g));
+            assert_eq!(spawn_region(&world), g);
+            super::super::concept_map::with_concept(true, || assert_eq!(spawn_region(&world), "maze"));
             if g == "maze" {
                 godot_maze += 1;
             }
@@ -328,7 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn with_the_concept_map_off_level_zero_is_godots_draw() {
+        assert!(!super::super::concept_map::enabled());
+        for i in 0..20 {
+            let world = format!("OFF-{i}");
+            for cx in -12..12 {
+                for cz in -12..12 {
+                    assert_eq!(region_for(&world, cx, cz, 0), godot_region_for(&world, cx, cz, 0), "{world} {cx},{cz}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn level_zero_reads_the_concept_map_and_other_levels_keep_the_draw() {
+        super::super::concept_map::concept_for_this_test();
         use super::super::concept_map::{chunk_class, ChunkClass};
         let world = "31337";
         let mut seen = std::collections::BTreeSet::new();

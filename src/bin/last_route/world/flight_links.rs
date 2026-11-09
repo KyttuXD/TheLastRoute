@@ -75,7 +75,7 @@ type SewerKey = (String, i32, i32, i32);
 /// Godot's region draw and one laid out from the concept map differ, so a parity test must not leave its chunks in
 /// the cache for a test of the played layout (or the other way round).
 fn scoped(seed: &str) -> String {
-    format!("{seed}\u{0}{}", layout::godot_regions())
+    format!("{seed}\u{0}{}{}", layout::godot_regions(), layout::concept_layout())
 }
 
 /// What the flight choice needs of the sewer chunk at (cx, level, cy): its grid and its wells. Memoized (a sewer chunk

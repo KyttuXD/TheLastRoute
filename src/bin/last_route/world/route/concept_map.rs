@@ -48,6 +48,8 @@ pub struct Legend {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    /// False lays level 0 out as before the concept map (Godot's region draw: no rock, no tunnels). Missing means true.
+    pub enabled: bool,
     pub scale: i32,
     pub spacing: i32,
     pub tunnel_width: i32,
@@ -193,6 +195,11 @@ pub fn parse_settings(file: &str, text: &str) -> Result<Settings, String> {
     if v.get("schema").and_then(Value::as_str) != Some(SETTINGS_SCHEMA) {
         return Err(format!("{file}: \"schema\" must be \"{SETTINGS_SCHEMA}\""));
     }
+    let enabled = match v.get("enabled") {
+        None => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(format!("{file}: \"enabled\" must be true or false")),
+    };
     let spawn = v
         .get("spawn_pixel")
         .and_then(Value::as_array)
@@ -231,6 +238,7 @@ pub fn parse_settings(file: &str, text: &str) -> Result<Settings, String> {
         legend.insert(ch, Legend { region, label });
     }
     Ok(Settings {
+        enabled,
         scale: int(&v, file, "scale", 1)?,
         spacing: int(&v, file, "spacing", 0)?,
         tunnel_width: int(&v, file, "tunnel_width", 1)?,
@@ -428,6 +436,42 @@ impl Concept {
     }
 }
 
+/// Whether level 0 is laid out from the concept map (`"enabled"` in data/concept/concept_settings.json). Off, level 0
+/// keeps Godot's region draw. Reads only the settings file, so it never builds the map while off.
+pub fn enabled() -> bool {
+    #[cfg(test)]
+    if let Some(f) = FORCE.with(std::cell::Cell::get) {
+        return f;
+    }
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let (sf, st) = embedded::data_under("concept/")
+            .find(|(p, _)| p.ends_with("concept_settings.json"))
+            .unwrap_or_else(|| panic!("concept map: concept_settings.json is not embedded"));
+        parse_settings(sf, st).unwrap_or_else(|e| panic!("concept map: {e}")).enabled
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests only: turns the concept map on for the rest of this test's thread (each test has its own).
+#[cfg(test)]
+pub fn concept_for_this_test() {
+    FORCE.with(|f| f.set(Some(true)));
+}
+
+/// Tests only: runs `f` with the concept map forced on or off, then restores the earlier state.
+#[cfg(test)]
+pub fn with_concept<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let old = FORCE.with(|c| c.replace(Some(on)));
+    let r = f();
+    FORCE.with(|c| c.set(old));
+    r
+}
+
 /// The embedded concept. A broken built-in file is a build error, so this panics with the message.
 pub fn concept() -> &'static Concept {
     static CELL: OnceLock<Concept> = OnceLock::new();
@@ -446,6 +490,9 @@ pub fn concept() -> &'static Concept {
 
 /// The class of the level 0 chunk (cx, cz) in the world with seed text `world`.
 pub fn chunk_class(world: &str, cx: i32, cz: i32) -> ChunkClass {
+    if !enabled() {
+        return ChunkClass::Region(super::regions::godot_region_for(world, cx, cz, 0));
+    }
     let c = concept();
     c.classify_chunk(c.orient_of(world), cx, cz)
 }
@@ -460,6 +507,9 @@ pub fn region_of_chunk(world: &str, cx: i32, cz: i32) -> &'static str {
 
 /// The player-facing label of the concept area under a world cell (upper case), for a map or a region banner.
 pub fn label_at_cell(world: &str, wx: i32, wz: i32) -> Option<String> {
+    if !enabled() {
+        return None;
+    }
     let c = concept();
     let k = c.pixel_of_cell(c.orient_of(world), wx, wz);
     c.settings.legend.get(&k).map(|l| l.label.clone())
@@ -519,7 +569,45 @@ mod tests {
     }
 
     #[test]
+    fn the_shipped_map_is_switched_off_and_forcing_it_on_works() {
+        let (sf, st) = embedded::data_under("concept/").find(|(p, _)| p.ends_with("concept_settings.json")).unwrap();
+        assert!(!parse_settings(sf, st).unwrap().enabled);
+        assert!(!enabled());
+        with_concept(true, || assert!(enabled()));
+        assert!(!enabled());
+        concept_for_this_test();
+        assert!(enabled());
+    }
+
+    #[test]
+    fn the_enabled_key_is_a_bool_and_defaults_to_on() {
+        assert!(test_settings(1, 0).enabled);
+        let text = r#"{"schema":"lr.concept_settings/1","enabled":"no","scale":1,"spacing":0,"tunnel_width":3,"spawn_pixel":[2,2],
+            "outside":"tile","min_region_share":0.25,"legend":{}}"#;
+        assert!(parse_settings("t", text).unwrap_err().contains("enabled"));
+    }
+
+    #[test]
+    fn switched_off_no_chunk_is_hollow_and_every_region_is_godots_draw() {
+        assert!(!enabled());
+        for i in 0..10 {
+            let world = format!("{}", 500 + i * 13);
+            for cx in -15..15 {
+                for cz in -15..15 {
+                    assert_eq!(
+                        chunk_class(&world, cx, cz),
+                        ChunkClass::Region(super::super::regions::godot_region_for(&world, cx, cz, 0)),
+                        "{world} {cx},{cz}"
+                    );
+                }
+            }
+            assert_eq!(label_at_cell(&world, 10, 10), None);
+        }
+    }
+
+    #[test]
     fn the_spawn_chunk_is_maze_for_every_seed() {
+        concept_for_this_test();
         for i in 0..60 {
             let world = format!("{}", 1000 + i * 37);
             assert_eq!(chunk_class(&world, 0, 0), ChunkClass::Region("maze"));
@@ -636,6 +724,7 @@ mod tests {
 
     #[test]
     fn the_map_has_regions_and_hollow_chunks_and_never_ends() {
+        concept_for_this_test();
         let mut regions: std::collections::BTreeSet<&str> = Default::default();
         let mut hollow = 0;
         for cx in -40..40 {

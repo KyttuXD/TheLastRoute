@@ -61,6 +61,13 @@ pub(crate) fn godot_regions() -> bool {
     GODOT_REGIONS.with(Cell::get)
 }
 
+/// True when level 0 is laid out from the concept map: not the Godot scope, and the map switched on
+/// (`concept_map::enabled`). Gates the rock, the tunnels and their dressing; hall shapes and the data room tables
+/// follow `godot_regions` only.
+pub(crate) fn concept_layout() -> bool {
+    !godot_regions() && concept_map::enabled()
+}
+
 /// Cells per chunk side (`CHUNK_SIZE`, streamed_route_generator.gd:15 via StreamedRouteGenerator).
 pub const CHUNK: i32 = 45;
 const N: usize = 45;
@@ -1613,7 +1620,7 @@ impl<'a> Gen<'a> {
 
     /// A level 0 chunk the concept map leaves as solid rock (only mineshaft tunnels run through it).
     fn hollow(&self, c: Coord) -> bool {
-        c.y == 0 && !godot_regions() && concept_map::chunk_class(self.world, c.x, c.z) == ChunkClass::Hollow
+        c.y == 0 && concept_layout() && concept_map::chunk_class(self.world, c.x, c.z) == ChunkClass::Hollow
     }
 
     /// `is_safe_room` (line 1403) on the private route (`public_route` false): a seeded chance scaled by
@@ -2480,7 +2487,7 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
         parts.corridors.extend(edge_corridors);
     }
     // the mineshaft tunnels of the concept map join the regions: cut through whatever the chunk holds
-    if !godot_regions() {
+    if concept_layout() {
         carve_concept_tunnels(&mut grid, &mut parts.circulation, world, c, &[]);
     }
     // the level-0 stairwell (_build_chunk 984): one well down to the sewer, or none
@@ -2508,12 +2515,12 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     // the threshold and doorway restores above re-wall room edges a tunnel crossed: cut the tunnels again so they stay
     // open, but never into a stairwell (its walled box, one cell round it, and its lane), which keeps its own walls
     let keep: Vec<Rect> = stairwells.iter().flat_map(|w| [w.bbox.grow(1), stairwell_lane(w)]).collect();
-    if !godot_regions() && !hollow {
+    if concept_layout() && !hollow {
         carve_concept_tunnels(&mut grid, &mut parts.circulation, world, c, &keep);
     }
     // the mineshaft dressing (data/region_rooms/tunnels.json `tunnel_dressing`), hollow chunks too; never on the Godot
     // parity layout
-    let region_props = if godot_regions() {
+    let region_props = if !concept_layout() {
         region_props
     } else {
         let mut props_out = region_props.unwrap_or_default();
@@ -2829,6 +2836,7 @@ mod tests {
 
     #[test]
     fn the_spawn_chunk_is_maze() {
+        concept_map::concept_for_this_test();
         for world in ["1", "22", "333", "4444"] {
             let layout = chunk_layout(world, Coord::new(0, 0, 0)).expect("the spawn chunk has a layout");
             assert_eq!(layout.region, "maze");
@@ -2838,6 +2846,7 @@ mod tests {
 
     #[test]
     fn a_hollow_chunk_is_rock_with_only_the_tunnel_cut_through() {
+        concept_map::concept_for_this_test();
         let world = "2024";
         let c = hollow_tunnel_chunk(world).expect("a hollow chunk with a tunnel");
         let layout = chunk_layout(world, c).expect("a hollow chunk still has a layout");
@@ -2867,6 +2876,7 @@ mod tests {
 
     #[test]
     fn tunnels_reach_a_region_chunk_and_the_same_seed_gives_the_same_chunk() {
+        concept_map::concept_for_this_test();
         let world = "2024";
         let concept = concept_map::concept();
         let o = concept.orient_of(world);
@@ -2931,6 +2941,7 @@ mod tests {
     /// closes that gap.
     #[test]
     fn the_concept_tunnels_keep_every_district_reachable() {
+        concept_map::concept_for_this_test();
         let concept = concept_map::concept();
         let (build, core) = (6, 4);
         let in_core = |x: i32, z: i32| {
@@ -3026,6 +3037,7 @@ mod tests {
     /// path still runs its whole length), and never reaches the Godot parity layout.
     #[test]
     fn tunnels_get_their_dressing_and_stay_passable() {
+        concept_map::concept_for_this_test();
         let world = "2024";
         let concept = concept_map::concept();
         let o = concept.orient_of(world);
@@ -3079,6 +3091,7 @@ mod tests {
     /// checked on seeds that turn the map with `swap` and without `flip_z` (where the vote can make it rock).
     #[test]
     fn the_primary_hunter_chunk_spawns_its_two_hunters() {
+        concept_map::concept_for_this_test();
         let concept = concept_map::concept();
         let c = Coord::new(1, 0, 0);
         let mut checked = 0;
@@ -3110,6 +3123,7 @@ mod tests {
     /// (`grid::carve_safe_room`) is never cut into the rock, and live agrees (`live::is_live_safe_chunk`).
     #[test]
     fn a_hollow_chunk_is_never_a_safe_room() {
+        concept_map::concept_for_this_test();
         let mut seen = 0;
         for i in 0..20 {
             let world = format!("{}", 2024 + i * 11);
@@ -3139,8 +3153,34 @@ mod tests {
         assert!(seen > 0, "no hollow chunk rolled a safe room in the sample");
     }
 
+    /// The shipped state (concept map off) lays level 0 out as before the concept map: Godot's region per chunk, no
+    /// rock, no tunnels. Forcing the map on still gives the concept layout.
+    #[test]
+    fn with_the_concept_map_off_level_zero_is_the_godot_draw() {
+        assert!(!concept_map::enabled());
+        for world in ["1", "2024", "ROOM-A-0000BEEF"] {
+            for cx in -12..13 {
+                for cz in -12..13 {
+                    let c = Coord::new(cx, 0, cz);
+                    let l = chunk_layout(world, c).expect("every level 0 chunk has a layout");
+                    assert_eq!(l.region, regions::godot_region_for(world, cx, cz, 0), "{world} {c:?}");
+                    assert!(!l.rooms.is_empty() || !l.corridors.is_empty(), "{world} {c:?} is rock");
+                    let godot = chunk_layout_godot(world, c).expect("godot layout");
+                    assert_eq!(l.region_props.is_some(), godot.region_props.is_some(), "{world} {c:?}");
+                    let tunnel = l.region_props.iter().flatten().any(|p| p.id.contains(":TUNNEL:"));
+                    assert!(!tunnel, "{world} {c:?} has tunnel dressing");
+                }
+            }
+        }
+        concept_map::with_concept(true, || {
+            let hollow = (-12..13).any(|cx| (-12..13).any(|cz| concept_map::chunk_class("2024", cx, cz) == ChunkClass::Hollow));
+            assert!(hollow, "the concept map has no hollow chunk when forced on");
+        });
+    }
+
     #[test]
     fn godot_regions_are_scoped_to_the_call() {
+        concept_map::concept_for_this_test();
         let world = "2024";
         let c = Coord::new(3, 0, 2);
         let concept_region = chunk_layout(world, c).map(|l| l.region);

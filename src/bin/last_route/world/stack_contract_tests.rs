@@ -51,7 +51,7 @@ type Key = (String, i32, i32, i32);
 fn built(seed: &str, cx: i32, cy: i32, level: i32) -> Arc<Built> {
     static CACHE: OnceLock<Mutex<HashMap<Key, Arc<Built>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key: Key = (format!("{seed}:godot={}", crate::world::route::layout::godot_regions()), cx, cy, level);
+    let key: Key = (format!("{seed}:godot={}:concept={}", crate::world::route::layout::godot_regions(), crate::world::route::layout::concept_layout()), cx, cy, level);
     if let Some(b) = cache.lock().unwrap().get(&key) {
         return b.clone();
     }
