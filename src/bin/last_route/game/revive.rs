@@ -4,15 +4,17 @@
 //! living teammate in the room or a joined NPC bot that is not down ([`Game::runner_has_reviver`]). With nobody, the
 //! capture ends the run at once with a report. A downed runner lies still: no
 //! move, no interact, no ladder, and the hunters that caught it cannot catch it again. A teammate revives it by holding
-//! interact beside it for `hold_seconds`: a bot standing within `reach` on the same floor does it on its own, and the
-//! runner revives a downed bot the same way by holding interact (`Controls::interact_held`). A downed body that nobody
+//! interact beside it for `hold_seconds`: a bot standing within `reach` on the same floor does it on its own, a remote
+//! human teammate does it by holding interact beside the body (its client publishes `revive` in its sample, see
+//! [`ReviveNet`]), and the runner revives a downed bot the same way by holding interact (`Controls::interact_held`). A downed body that nobody
 //! revives within `timeout_seconds` dies: the runner's run ends ([`Game::finish_run`]), a bot is taken off the floor.
 //!
 //! A hunter in a chase that reaches a joined bot on its floor puts it down the same way ([`Game::npc_catches`]): the
 //! hunter is stunned, a hidden bot is out of reach. A bot walks to a downed teammate in range (the "revive" intent,
 //! npc.rs) and holds the revive; a bot hidden in a locker cannot.
 
-use super::{pdist, Controls, Game};
+use super::{guest_gate, pdist, Controls, Game};
+use crate::net::world_sync::ReviveSignal;
 use serde_json::Value;
 use std::sync::OnceLock;
 
@@ -40,6 +42,10 @@ pub struct Rules {
     pub escape_knockback_seconds: f32,
     /// How many times a solo runner with only an NPC bot reviver can be stood back up before a capture ends the run.
     pub max_bot_revives: u32,
+    /// Seconds a remote teammate's newest sample may be old and still count as a holding helper.
+    pub remote_sample_max_age_s: f32,
+    /// Metres of height a remote helper may differ from the downed runner and still reach it.
+    pub reach_height: f32,
 }
 
 impl Rules {
@@ -62,6 +68,8 @@ impl Rules {
             escape_loop_seconds: num("escape_loop_seconds").unwrap_or(0.6),
             escape_knockback_seconds: num("escape_knockback_seconds").unwrap_or(0.4),
             max_bot_revives: num("max_bot_revives").unwrap_or(2.0) as u32,
+            remote_sample_max_age_s: num("remote_sample_max_age_s").unwrap_or(0.5),
+            reach_height: num("reach_height").unwrap_or(1.5),
         })
     }
 
@@ -87,6 +95,27 @@ pub fn rules() -> &'static Rules {
     })
 }
 
+/// What this client knows of the other human runners for the revive rule. The app fills it each frame before the game
+/// steps (app/mod.rs): `me` is the local peer id, `peers` the other runners' newest samples. `reviving` is the peer this
+/// runner is holding a revive on this frame (published in its sample as `revive`; `tick_revives` sets it).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ReviveNet {
+    pub me: u32,
+    pub peers: Vec<ReviveSignal>,
+    pub reviving: Option<u32>,
+}
+
+/// True when the remote runner `s` is holding a revive on peer `me` right now: a fresh sample, up and free, not itself
+/// downed, naming `me`, within `reach` on the floor and `reach_height` in height of the body at `at`, height `y`.
+fn peer_holds(s: &ReviveSignal, me: u32, at: (f32, f32), y: f32, r: &Rules) -> bool {
+    s.age <= r.remote_sample_max_age_s
+        && s.free
+        && !s.downed
+        && s.reviving == Some(me)
+        && pdist(s.at, at) <= r.reach
+        && (s.h - y).abs() <= r.reach_height
+}
+
 /// A downed body: the seconds left before it dies, the seconds of revive hold so far, and (for the runner) the hunter
 /// that caught it, for the run report.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -108,8 +137,10 @@ impl Game {
     /// at once.
     ///
     /// Co-op note: `room_teammates` counts the room's remote human runners, who go down for them too (the gate is the
-    /// same on every client). A downed runner stands back up by a local helper's hold, a revive kit, or — when a remote
-    /// teammate attends it over the wire — a host-reported revive; nobody near, it dies at the timeout (`tick_revives`).
+    /// same on every client). A downed runner stands back up by a joined bot's hold, a revive kit, or a remote human
+    /// teammate who holds interact within `reach` and `reach_height`. That teammate's client publishes `revive` (this
+    /// runner's peer id) in its sample, and this client counts it while the sample is fresh (`Game::revive_net`, set each
+    /// frame by app/mod.rs). Nobody near, it dies at the timeout (`tick_revives`).
     pub fn runner_has_reviver(&self) -> bool {
         self.room_teammates > 0 || self.npcs.iter().any(|n| n.joined && !self.downed_npcs.contains_key(&n.id))
     }
@@ -210,12 +241,46 @@ impl Game {
         }
     }
 
+    /// The revive state this runner publishes in its sample: whether it lies downed, and the peer whose revive it is
+    /// holding. The target is hidden while downed or after a report (`tick_revives` does not run on a finished run, so
+    /// the stored value could be stale).
+    pub fn revive_wire(&self) -> (bool, Option<u32>) {
+        let downed = self.runner_downed();
+        let reviving = if downed || self.report.is_some() { None } else { self.revive_net.reviving };
+        (downed, reviving)
+    }
+
+    /// The downed remote teammate this runner is holding a revive on this frame, if any: the nearest fresh downed peer
+    /// within reach while interact is held and the runner is free to act. Ties go to the lowest peer id.
+    fn revive_target(&self, c: &Controls) -> Option<u32> {
+        let r = rules();
+        let free = c.interact_held
+            && self.downed.is_none()
+            && self.report.is_none()
+            && self.escape.is_none()
+            && self.p.hidden.is_none()
+            && self.ladder.is_none()
+            && self.p.stun <= 0.0
+            && !guest_gate::input_blocked(self, self.world_in);
+        if !free {
+            return None;
+        }
+        let (at, y) = (self.p.pos, self.p.y());
+        self.revive_net
+            .peers
+            .iter()
+            .filter(|s| s.downed && s.age <= r.remote_sample_max_age_s && pdist(s.at, at) <= r.reach && (s.h - y).abs() <= r.reach_height)
+            .min_by(|a, b| pdist(a.at, at).total_cmp(&pdist(b.at, at)).then(a.peer.cmp(&b.peer)))
+            .map(|s| s.peer)
+    }
+
     /// The revive of every downed body, one frame: the holds and the timeouts. Called every frame before the runner's
     /// own step, so a downed runner is revived or dies here too.
     pub(super) fn tick_revives(&mut self, dt: f32, c: &Controls) {
         let r = rules();
         let level = self.runner_level();
         let at = self.p.pos;
+        self.revive_net.reviving = self.revive_target(c);
         // the teammates who can hold a revive: joined bots that are not down and not hidden in a locker
         let helpers: Vec<(u32, i32, (f32, f32))> = self
             .npcs
@@ -226,6 +291,9 @@ impl Game {
 
         if let Some(mut d) = self.downed {
             let helped = helpers.iter().any(|&(_, lv, p)| lv == level && pdist(p, at) <= r.reach);
+            // a remote human teammate holding interact beside the body counts as a helper too
+            let human = self.revive_net.peers.iter().any(|s| peer_holds(s, self.revive_net.me, at, self.p.y(), r));
+            let helped = helped || human;
             d.held = if helped { d.held + dt } else { 0.0 };
             d.remaining -= dt;
             if d.held >= r.hold_seconds {
@@ -736,5 +804,188 @@ mod tests {
         }
         g.end_run(0, "contact");
         assert!(g.runner_downed() && g.report.is_none(), "past the bot budget, co-op still downs and never ends");
+    }
+    /// A remote teammate's signal beside the runner, holding a revive on peer 9 (the local peer in these tests).
+    fn helper(g: &Game) -> ReviveSignal {
+        ReviveSignal { peer: 4, at: g.p.pos, h: g.p.y(), age: 0.0, downed: false, free: true, reviving: Some(9) }
+    }
+
+    /// The co-op fixture with only the human path acting: no bot joined, the local peer is 9.
+    fn human_only() -> Game {
+        let (mut g, _) = game();
+        for n in g.npcs.iter_mut() {
+            n.joined = false;
+        }
+        g.revive_net.me = 9;
+        g
+    }
+
+    fn hold(g: &mut Game, secs: f32) {
+        let steps = (secs / 0.1).round() as usize;
+        for _ in 0..steps {
+            g.tick_revives(0.1, &idle());
+        }
+    }
+
+    #[test]
+    fn a_remote_helper_in_reach_holding_for_hold_seconds_revives() {
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        assert!(g.runner_downed());
+        g.revive_net.peers = vec![helper(&g)];
+        hold(&mut g, 2.5);
+        assert!(g.runner_downed(), "not yet: the hold is three seconds");
+        hold(&mut g, 0.6);
+        assert!(!g.runner_downed() && g.report.is_none(), "the teammate's hold stood the runner back up");
+        assert!(g.escape_grace > 0.0, "the post-revive grace is set");
+    }
+
+    #[test]
+    fn a_remote_helper_out_of_reach_or_not_holding_does_not_revive() {
+        let r = rules();
+        let cases: Vec<(&str, Box<dyn Fn(&mut ReviveSignal)>)> = vec![
+            ("out of reach", Box::new(move |s: &mut ReviveSignal| s.at.0 += r.reach + 1.0)),
+            ("not holding", Box::new(|s: &mut ReviveSignal| s.reviving = None)),
+            ("holding another peer", Box::new(|s: &mut ReviveSignal| s.reviving = Some(10))),
+            ("too far above", Box::new(move |s: &mut ReviveSignal| s.h += r.reach_height + 1.0)),
+        ];
+        for (why, f) in cases {
+            let mut g = human_only();
+            g.end_run(0, "contact");
+            let mut s = helper(&g);
+            f(&mut s);
+            g.revive_net.peers = vec![s];
+            hold(&mut g, 5.0);
+            assert!(g.runner_downed(), "{why}: no revive");
+        }
+        // letting go mid-hold resets the timer
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        g.revive_net.peers = vec![helper(&g)];
+        hold(&mut g, 2.0);
+        g.revive_net.peers[0].reviving = None;
+        hold(&mut g, 0.1);
+        g.revive_net.peers[0].reviving = Some(9);
+        hold(&mut g, 2.0);
+        assert!(g.runner_downed(), "releasing for a frame restarts the hold");
+    }
+
+    #[test]
+    fn a_downed_remote_cannot_revive() {
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        let mut s = helper(&g);
+        s.downed = true;
+        s.free = false;
+        g.revive_net.peers = vec![s];
+        hold(&mut g, 5.0);
+        assert!(g.runner_downed());
+    }
+
+    #[test]
+    fn a_stale_remote_sample_does_not_count() {
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        let mut s = helper(&g);
+        s.age = rules().remote_sample_max_age_s + 0.1;
+        g.revive_net.peers = vec![s];
+        hold(&mut g, 5.0);
+        assert!(g.runner_downed());
+    }
+
+    #[test]
+    fn no_remote_signals_leaves_the_timeout_behaviour_unchanged() {
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        assert!(g.revive_net.peers.is_empty());
+        g.tick_revives(rules().timeout_seconds + 1.0, &idle());
+        assert!(g.report.is_some() && !g.runner_downed(), "nobody near: the timeout ends the run");
+    }
+
+    fn down_signal(g: &Game, peer: u32, dx: f32) -> ReviveSignal {
+        ReviveSignal { peer, at: (g.p.pos.0 + dx, g.p.pos.1), h: g.p.y(), age: 0.0, downed: true, free: false, reviving: None }
+    }
+
+    #[test]
+    fn the_helper_side_picks_the_nearest_downed_peer_while_interact_is_held() {
+        let mut g = human_only();
+        g.revive_net.peers = vec![down_signal(&g, 5, 1.0), down_signal(&g, 6, 0.5)];
+        let held = Controls { interact_held: true, ..Controls::default() };
+        g.tick_revives(0.1, &idle());
+        assert_eq!(g.revive_net.reviving, None, "not holding");
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_net.reviving, Some(6), "the nearest downed peer");
+        assert_eq!(g.revive_wire(), (false, Some(6)));
+        // a tie goes to the lowest peer id
+        g.revive_net.peers = vec![down_signal(&g, 8, 0.5), down_signal(&g, 7, 0.5)];
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_net.reviving, Some(7));
+        // a peer that is not downed, or out of reach, is no target
+        g.revive_net.peers[0].downed = false;
+        g.revive_net.peers[1].downed = false;
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_net.reviving, None);
+        g.revive_net.peers = vec![down_signal(&g, 5, rules().reach + 1.0)];
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_net.reviving, None);
+    }
+
+    #[test]
+    fn a_downed_runner_reviving_nobody_and_a_report_hide_the_target() {
+        let mut g = human_only();
+        g.revive_net.peers = vec![down_signal(&g, 5, 0.5)];
+        let held = Controls { interact_held: true, ..Controls::default() };
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_wire().1, Some(5));
+        g.report = None;
+        g.end_run(0, "contact");
+        assert!(g.runner_downed());
+        g.tick_revives(0.1, &held);
+        assert_eq!(g.revive_net.reviving, None, "a downed runner helps nobody");
+        assert_eq!(g.revive_wire(), (true, None));
+        // a finished run publishes no target even when the stored value is stale
+        g.tick_revives(rules().timeout_seconds + 1.0, &idle());
+        g.revive_net.reviving = Some(5);
+        assert!(g.report.is_some());
+        assert_eq!(g.revive_wire(), (false, None));
+    }
+
+    #[test]
+    fn a_human_revive_in_co_op_is_not_capped_by_the_bot_budget() {
+        let mut g = human_only();
+        for _ in 0..(rules().max_bot_revives + 2) {
+            g.end_run(0, "contact");
+            assert!(g.runner_downed() && g.report.is_none());
+            g.revive_net.peers = vec![helper(&g)];
+            hold(&mut g, 3.2);
+            assert!(!g.runner_downed(), "the teammate's hold stands the runner back up");
+        }
+        g.end_run(0, "contact");
+        assert!(g.runner_downed() && g.report.is_none(), "co-op never runs out of human revives");
+    }
+
+    /// The whole chain the app runs: a teammate's `reviving` sample is sent as JSON, parsed, read into signals and
+    /// handed to the downed runner (peer 9), who is held for `hold_seconds`. Returns whether the runner stood up.
+    fn revived_over_the_wire(reviving: Option<u32>) -> bool {
+        let mut g = human_only();
+        g.end_run(0, "contact");
+        assert!(g.runner_downed());
+        let origin = g.window_origin();
+        let max_age = std::time::Duration::from_secs_f32(rules().remote_sample_max_age_s);
+        let at = crate::net::world_sync::to_absolute(g.p.pos, origin);
+        g.revive_net.peers = crate::net::world_sync::tests::signals_over_the_wire(4, reviving, at, g.p.y(), origin, max_age);
+        assert_eq!(g.revive_net.peers.len(), 1, "the sample made one signal");
+        hold(&mut g, rules().hold_seconds + 0.6);
+        !g.runner_downed()
+    }
+
+    #[test]
+    fn a_sample_reviving_me_sent_as_json_stands_the_runner_back_up() {
+        assert!(revived_over_the_wire(Some(9)), "a hold on the local peer revives");
+    }
+
+    #[test]
+    fn a_sample_reviving_another_peer_sent_as_json_does_not() {
+        assert!(!revived_over_the_wire(Some(10)), "a hold on someone else revives nobody here");
     }
 }

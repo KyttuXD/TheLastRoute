@@ -147,6 +147,30 @@ pub struct Sample {
     /// `"emote_seq"`, both sent only while an emote plays; an older peer never sends or reads them.
     pub emote: Option<EmoteTag>,
     pub emote_seq: Option<u32>,
+    /// The runner lies downed (not dead: a dead runner sends `game_over`). Wire: `"downed"`, sent only while true; an
+    /// older peer never sends it, which reads as false.
+    pub downed: bool,
+    /// The peer id of the downed teammate this runner is holding a revive on (interact held beside it). Wire:
+    /// `"revive"`, sent only while holding; absent or malformed reads as None.
+    pub reviving: Option<u32>,
+}
+
+/// What the revive rule needs of another runner, from its NEWEST raw sample (see [`NetSession::revive_signals`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReviveSignal {
+    pub peer: u32,
+    /// The runner's cells in this window.
+    pub at: (f32, f32),
+    /// The runner's feet height (an old client's sample gives `depth * STOREY`).
+    pub h: f32,
+    /// Seconds since its last sample.
+    pub age: f32,
+    /// The sample says it lies downed.
+    pub downed: bool,
+    /// It is up and able to help: not downed, over, spectating, in a struggle, hidden, or shown lying down.
+    pub free: bool,
+    /// The peer it says it is reviving.
+    pub reviving: Option<u32>,
 }
 
 /// An emote id on the wire, held inline so a [`Sample`] stays `Copy`: 1 to [`EmoteTag::MAX`] ASCII letters, digits, `_` or `-`.
@@ -204,7 +228,16 @@ impl Sample {
             look_pitch: p.pitch,
             emote: None,
             emote_seq: None,
+            downed: false,
+            reviving: None,
         }
+    }
+
+    /// The sample with the revive state: whether this runner is downed, and the peer it is reviving.
+    pub fn with_revive(mut self, downed: bool, reviving: Option<u32>) -> Sample {
+        self.downed = downed;
+        self.reviving = reviving;
+        self
     }
 
     /// The sample with the item the runner holds.
@@ -280,6 +313,13 @@ impl Sample {
             if self.look_pitch != 0.0 {
                 o.insert("look".into(), json!(self.look_pitch));
             }
+            // the revive state is optional too: sent only while downed or while holding a revive on a teammate
+            if self.downed {
+                o.insert("downed".into(), json!(true));
+            }
+            if let Some(peer) = self.reviving {
+                o.insert("revive".into(), json!(peer));
+            }
             // an emote that plays: its id and start counter (both optional on the wire)
             if let Some(tag) = self.emote {
                 o.insert("emote".into(), json!(tag.as_str()));
@@ -324,6 +364,8 @@ impl Sample {
             look_pitch: num("look").unwrap_or(0.0).clamp(-LOOK_PITCH_LIMIT, LOOK_PITCH_LIMIT),
             emote: o.get("emote").and_then(Value::as_str).and_then(EmoteTag::new),
             emote_seq: o.get("emote_seq").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
+            downed: flag("downed"),
+            reviving: o.get("revive").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
         })
     }
 }
@@ -1989,6 +2031,37 @@ impl NetSession {
         self.remotes_where(origin, |_| true)
     }
 
+    /// What the revive rule needs of every other runner whose newest raw sample is younger than `max_age`, in peer
+    /// order. Read from `Remote::sample` (not the interpolated, late-played one): "is the helper holding now". Not
+    /// filtered by floor; the rule compares heights itself.
+    pub fn revive_signals(&self, origin: (i32, i32), max_age: Duration) -> Vec<ReviveSignal> {
+        let now = Instant::now();
+        let mut out: Vec<ReviveSignal> = self
+            .remotes
+            .iter()
+            .filter(|(_, r)| now.duration_since(r.last_seen) < max_age)
+            .map(|(peer, r)| {
+                let s = &r.sample;
+                ReviveSignal {
+                    peer: *peer,
+                    at: to_window((s.x, s.y), origin),
+                    h: s.h.unwrap_or(s.depth as f32 * STOREY),
+                    age: now.duration_since(r.last_seen).as_secs_f32(),
+                    downed: s.downed,
+                    free: !s.downed
+                        && !s.game_over
+                        && !s.spectating
+                        && !s.escape_active
+                        && s.hide.is_none()
+                        && s.clip != Some(Pose::Down),
+                    reviving: s.reviving,
+                }
+            })
+            .collect();
+        out.sort_by_key(|r| r.peer);
+        out
+    }
+
     /// Seconds since each other runner's last sample, by peer, for the map pins and markers (`ui::markers::with_ages`).
     pub fn remote_ages(&self) -> Vec<(u32, f32)> {
         let now = Instant::now();
@@ -2500,6 +2573,8 @@ impl NetSession {
                     || s.clip != last.clip
                     || s.hide.is_some() != last.hide.is_some()
                     || s.held != last.held
+                    || s.downed != last.downed
+                    || s.reviving != last.reviving
             }
             (Some(_), None) => true,
             _ => false,
@@ -2655,7 +2730,7 @@ pub fn draw_remotes(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn a_failed_public_beat_retries_at_once_and_a_stalled_beat_delays_the_next_by_its_timeout_only() {
         let t0 = Instant::now();
@@ -2705,6 +2780,8 @@ mod tests {
             look_pitch: 0.0,
             emote: None,
             emote_seq: None,
+            downed: false,
+            reviving: None,
         }
     }
 
@@ -2754,6 +2831,109 @@ mod tests {
         s.send_due(Some(sample(0, 0.0, 0.0).with_held(None)), ms(45));
         assert_eq!(s.seq, 3, "putting it away is an early send too");
         assert_eq!(s.last_sent.unwrap().1.held, None);
+    }
+
+    #[test]
+    fn send_due_sends_early_when_the_revive_state_changes() {
+        interp::secs(Instant::now());
+        let base = Instant::now();
+        let ms = |n: u64| base + Duration::from_millis(n);
+        let mut s = offline_session(false, "GUEST");
+        s.send_due(Some(sample(0, 0.0, 0.0)), ms(0));
+        assert_eq!(s.seq, 1);
+        s.send_due(Some(sample(0, 0.0, 0.0).with_revive(true, None)), ms(20));
+        assert_eq!(s.seq, 2, "going down goes out ahead of the step");
+        s.send_due(Some(sample(0, 0.0, 0.0).with_revive(false, None)), ms(25));
+        assert_eq!(s.seq, 2, "the minimum gap still holds");
+        s.send_due(Some(sample(0, 0.0, 0.0).with_revive(false, None)), ms(45));
+        assert_eq!(s.seq, 3, "standing back up is an early send too");
+        s.send_due(Some(sample(0, 0.0, 0.0).with_revive(false, Some(4))), ms(70));
+        assert_eq!(s.seq, 4, "starting a revive hold is early");
+        assert_eq!(s.last_sent.unwrap().1.reviving, Some(4));
+        s.send_due(Some(sample(0, 0.0, 0.0).with_revive(false, None)), ms(95));
+        assert_eq!(s.seq, 5, "letting go is early");
+    }
+
+    #[test]
+    fn the_revive_keys_are_omitted_when_idle_and_old_json_reads_as_false() {
+        let idle = sample(1, 1.0, 2.0).to_json();
+        assert!(idle.get("downed").is_none() && idle.get("revive").is_none());
+        let on = sample(1, 1.0, 2.0).with_revive(true, Some(5)).to_json();
+        assert_eq!((on["downed"].clone(), on["revive"].clone()), (json!(true), json!(5)));
+        let old = Sample::from_json(&json!({"seq": 1, "depth": 0, "x": 1.0, "y": 2.0})).unwrap();
+        assert_eq!((old.downed, old.reviving), (false, None));
+    }
+
+    #[test]
+    fn with_revive_round_trips_through_the_json_the_app_sends() {
+        for (down, target) in [(false, None), (true, None), (false, Some(9)), (true, Some(3))] {
+            let s = sample(2, 1.0, 2.0).with_revive(down, target);
+            let back = Sample::from_json(&s.to_json()).expect("the sample parses back");
+            assert_eq!((back.downed, back.reviving), (down, target), "down={down} target={target:?}");
+            assert_eq!(back, s);
+        }
+    }
+
+    /// A runner at absolute (`x`, `y`) and height `h` holding a revive on `reviving`, sent as JSON, parsed back, set as
+    /// remote `peer` of a session and read as the signals the revive rule gets. For the end-to-end test in `game::revive`.
+    pub(crate) fn signals_over_the_wire(
+        peer: u32,
+        reviving: Option<u32>,
+        (x, y): (f32, f32),
+        h: f32,
+        origin: (i32, i32),
+        max_age: Duration,
+    ) -> Vec<ReviveSignal> {
+        let mut sent = sample(1, x, y).with_revive(false, reviving);
+        sent.h = Some(h);
+        let parsed = Sample::from_json(&sent.to_json()).expect("the wire sample parses");
+        let mut s = offline_session(true, "HOST");
+        s.remotes.insert(peer, Remote::new(parsed, Instant::now(), None));
+        let got = s.revive_signals(origin, max_age);
+        s.coop.close();
+        got
+    }
+
+    #[test]
+    fn a_hostile_revive_value_reads_as_none() {
+        for bad in [json!(-1), json!("x"), json!(1e12), json!(1u64 << 40), json!(2.5), json!(true), json!(null)] {
+            let mut v = sample(1, 1.0, 2.0).to_json();
+            v["revive"] = bad.clone();
+            assert_eq!(Sample::from_json(&v).unwrap().reviving, None, "{bad}");
+        }
+        let mut v = sample(1, 1.0, 2.0).to_json();
+        v["downed"] = json!("yes");
+        assert!(!Sample::from_json(&v).unwrap().downed, "a non-bool is false");
+    }
+
+    #[test]
+    fn revive_signals_are_fresh_raw_and_in_peer_order() {
+        let now = Instant::now();
+        let mut s = offline_session(true, "HOST");
+        let mut fresh = sample(1, 10.0, 20.0).with_revive(false, Some(1));
+        fresh.h = Some(2.0);
+        let mut hidden = sample(1, 1.0, 1.0);
+        hidden.hide = Some(HideSpot { cell: (1, 1), facing: (0, 1) });
+        let mut over = sample(1, 2.0, 2.0);
+        over.game_over = true;
+        let lying = sample(1, 3.0, 3.0).with_body(Pose::Down, 0.0, false, None);
+        let downed = sample(1, 4.0, 4.0).with_revive(true, None);
+        let stale_at = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+        s.remotes.insert(9, Remote::new(fresh, now, None));
+        s.remotes.insert(3, Remote::new(hidden, now, None));
+        s.remotes.insert(4, Remote::new(over, now, None));
+        s.remotes.insert(5, Remote::new(lying, now, None));
+        s.remotes.insert(6, Remote::new(downed, now, None));
+        s.remotes.insert(7, Remote::new(sample(1, 5.0, 5.0), stale_at, None));
+        let got = s.revive_signals((4, 6), Duration::from_millis(500));
+        assert_eq!(got.iter().map(|r| r.peer).collect::<Vec<_>>(), vec![3, 4, 5, 6, 9], "peer order, the old sample dropped");
+        let by = |p: u32| got.iter().find(|r| r.peer == p).unwrap();
+        assert!(!by(3).free && !by(4).free && !by(5).free && !by(6).free, "hidden, over, lying and downed runners cannot help");
+        assert!(by(6).downed && !by(9).downed);
+        assert!(by(9).free && by(9).reviving == Some(1));
+        assert_eq!(by(9).at, to_window((10.0, 20.0), (4, 6)), "moved into this window");
+        assert_eq!(by(9).h, 2.0);
+        s.coop.close();
     }
 
     #[test]
@@ -2858,6 +3038,8 @@ mod tests {
             look_pitch: 0.3,
             emote: EmoteTag::new("wave"),
             emote_seq: Some(7),
+            downed: true,
+            reviving: Some(3),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");

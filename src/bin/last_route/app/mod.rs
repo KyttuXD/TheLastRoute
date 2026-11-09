@@ -1103,9 +1103,12 @@ pub async fn run(
 
         // the open room: pump it, send this runner's sample while a route runs, and act on what the others sent
         let sample = match (playing.as_ref(), loading.is_none()) {
-            (Some(g), true) => Some(
+            (Some(g), true) => Some({
+                // down, and the teammate this runner is holding a revive on (game/revive.rs): peers draw and count it
+                let (down, reviving) = g.revive_wire();
                 world_sync::Sample::of(&g.p, g.depth, g.window_origin())
                     .with_run_state(g.report.is_some(), g.escape.is_some())
+                    .with_revive(down, reviving)
                     .with_held(g.selected_item())
                     .with_emote(g.emote.wire())
                     .with_body(
@@ -1113,8 +1116,8 @@ pub async fn run(
                         g.p.vy(),
                         worn.get().slim,
                         crate::net::runner_figure::local_hide(g),
-                    ),
-            ),
+                    )
+            }),
             _ => None,
         };
         // this runner's own waypoint rides in its sample (absolute cells and metres); none when not playing an Infinite route
@@ -1193,6 +1196,19 @@ pub async fn run(
                 None if rejoining => g.room_teammates,
                 None => 0,
             };
+            // what the other runners' newest samples say about reviving (game/revive.rs): this runner's own peer id and
+            // the fresh teammates with their down and hold state. No net (or the rejoin window): nobody can help.
+            match net.as_ref() {
+                Some(n) => {
+                    let max_age = std::time::Duration::from_secs_f32(crate::game::revive::rules().remote_sample_max_age_s);
+                    g.revive_net.me = n.local_peer_id() as u32;
+                    g.revive_net.peers = n.revive_signals(g.window_origin(), max_age);
+                }
+                None => {
+                    g.revive_net.me = 0;
+                    g.revive_net.peers.clear();
+                }
+            }
         }
         // a guest that joined a running route is told how many relays the host has sabotaged (the late joiner's snapshot)
         if loading.is_none() {

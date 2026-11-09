@@ -1,6 +1,6 @@
 {
 	"schema": "lr.revive/1",
-	"_about": "Downed runners and NPC teammates (game/revive.rs). A runner who would die goes down instead, and a downed body is revived by a teammate holding interact beside it. No item is needed. Distances are metres on the floor, times are seconds.",
+	"_about": "Downed runners and NPC teammates (game/revive.rs). A runner who would die goes down instead, and a downed body is revived by a teammate holding interact beside it. No item is needed. A remote human teammate counts as a helper while its newest sample (at most remote_sample_max_age_s old) says it holds interact on this runner within reach and within reach_height metres of height. Distances are metres on the floor, times are seconds.",
 	"reach": 1.7,
 	"hold_seconds": 3.0,
 	"timeout_seconds": 45.0,
@@ -9,5 +9,7 @@
 	"kit_hold_scale": 0.35,
 	"escape_loop_seconds": 0.6,
 	"escape_knockback_seconds": 0.4,
-	"max_bot_revives": 2
+	"max_bot_revives": 2,
+	"remote_sample_max_age_s": 0.5,
+	"reach_height": 1.5
 }

@@ -343,6 +343,8 @@ mod tests {
             look_pitch: 0.0,
             emote: None,
             emote_seq: None,
+            downed: false,
+            reviving: None,
         }
     }
 

@@ -252,6 +252,8 @@ pub struct Game {
     pub room_teammates: usize,
     /// The bots that are down, by `Npc::id` (game/revive.rs).
     pub downed_npcs: std::collections::BTreeMap<u32, revive::Downed>,
+    /// What this client knows of the other human runners for the revive rule (game/revive.rs; the app fills it each frame).
+    pub revive_net: revive::ReviveNet,
     /// The spectator state of a downed or dead runner (game/spectate.rs): Some while it watches another runner.
     pub spectate: Option<spectate::Spectate>,
     escape_cooldown: f32,
@@ -420,6 +422,7 @@ impl Game {
             downed_hunter: None,
             room_teammates: 0,
             downed_npcs: std::collections::BTreeMap::new(),
+            revive_net: revive::ReviveNet::default(),
             spectate: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
@@ -575,6 +578,7 @@ impl Game {
             downed_hunter: None,
             room_teammates: 0,
             downed_npcs: std::collections::BTreeMap::new(),
+            revive_net: revive::ReviveNet::default(),
             spectate: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
