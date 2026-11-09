@@ -14,8 +14,10 @@
 //! same levels are equal. Coordinates of a path point are `[x, z, y_abs]` (grid metres, then height in the vertical frame).
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::f32::consts::SQRT_2;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
@@ -33,6 +35,14 @@ pub const FLIGHTS_PATH: &str = "hunters/flights.json";
 
 /// Metres between the points of a walked flight route (`walk_path`).
 const WALK_STEP: f32 = 0.25;
+
+/// Metres of one grid cell (`Cell::center` is cell + 0.5): the unit `EdgeWalk::shift` moves by.
+const CELL_M: f32 = 1.0;
+
+/// The longest gap (m) between two consecutive points of an edge's polyline. A ladder's shaft and a drop's fall are one
+/// long segment in the route; the points inserted on them lie on the same line, so the length, the cost and the walk
+/// speed are unchanged, but the polyline is continuous for a consumer that samples its points.
+const MAX_POINT_GAP: f32 = 0.5;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Rules (data/hunters/flights.json)
@@ -68,6 +78,22 @@ pub struct FlightEdgeRules {
     pub edge_stuck_seconds: f32,
     /// Simulated hunters per resident floor beside the active one.
     pub resident_hunter_cap: u32,
+    /// The most cells one `StackNav::find_path` may expand before it gives up and returns an empty route.
+    pub search_expansions: u32,
+    /// Cells a goal on a closed cell (a stair tread) may move to reach the nearest open one (`StackNav::open_goal`).
+    pub goal_snap_radius: f32,
+    /// Seconds between two re-plans of a walker that is crossing levels.
+    pub cross_repath_seconds: f32,
+    /// Seconds a hunter keeps following a target that left its level before it gives up.
+    pub follow_cross_seconds: f32,
+    /// Chance (0 to 1) that a wandering hunter or bot picks a goal on another level.
+    pub wander_cross_chance: f32,
+    /// Chance (0 to 1) that a searching hunter picks a goal on another level.
+    pub search_cross_chance: f32,
+    /// Largest offset (m) from the centre of a landing cell a hunter is set down at (clamped to keep the body in the cell).
+    pub land_spread: f32,
+    /// How far (cells) from a hunter a stair is looked for when it picks a goal on another level.
+    pub cross_wander_radius: f32,
 }
 
 fn num(v: &Value, key: &str, lo: f32, hi: f32) -> Result<f32, String> {
@@ -97,6 +123,10 @@ impl FlightEdgeRules {
         if cap.fract() != 0.0 {
             return Err(format!("flights.json: `resident_hunter_cap` = {cap} must be a whole number"));
         }
+        let expansions = num(&v, "search_expansions", 1.0, 1_000_000.0)?;
+        if expansions.fract() != 0.0 {
+            return Err(format!("flights.json: `search_expansions` = {expansions} must be a whole number"));
+        }
         Ok(FlightEdgeRules {
             ladder_speed_scale: num(&v, "ladder_speed_scale", 0.1, 5.0)?,
             drop_allowed: flag(&v, "drop_allowed")?,
@@ -111,6 +141,14 @@ impl FlightEdgeRules {
             edge_fit_radius: num(&v, "edge_fit_radius", 0.05, 0.6)?,
             edge_stuck_seconds: num(&v, "edge_stuck_seconds", 0.5, 60.0)?,
             resident_hunter_cap: cap as u32,
+            search_expansions: expansions as u32,
+            goal_snap_radius: num(&v, "goal_snap_radius", 0.0, 16.0)?,
+            cross_repath_seconds: num(&v, "cross_repath_seconds", 0.05, 30.0)?,
+            follow_cross_seconds: num(&v, "follow_cross_seconds", 0.1, 120.0)?,
+            wander_cross_chance: num(&v, "wander_cross_chance", 0.0, 1.0)?,
+            search_cross_chance: num(&v, "search_cross_chance", 0.0, 1.0)?,
+            land_spread: num(&v, "land_spread", 0.0, 0.4)?,
+            cross_wander_radius: num(&v, "cross_wander_radius", 1.0, 256.0)?,
         })
     }
 
@@ -177,6 +215,11 @@ pub struct LevelGrid {
     pub rows: i32,
     /// Open ground (`Facility::hunter_open`).
     pub open: Vec<bool>,
+    /// Connected component of each cell (4-way over the open cells): 0 for a closed cell, else 1 up to `comps`. More
+    /// than `u16::MAX` components share the last id, which only ever makes `StackNav::reachable` say yes.
+    pub comp: Vec<u16>,
+    /// How many component ids `comp` uses.
+    pub comps: u32,
 }
 
 impl LevelGrid {
@@ -189,7 +232,8 @@ impl LevelGrid {
                 open.push(fac.hunter_open(c));
             }
         }
-        LevelGrid { level: fac.level, cols: fac.cols, rows: fac.rows, open }
+        let (comp, comps) = flood_components(&open, fac.cols, fac.rows);
+        LevelGrid { level: fac.level, cols: fac.cols, rows: fac.rows, open, comp, comps }
     }
 
     fn index(&self, c: Cell) -> Option<usize> {
@@ -200,6 +244,37 @@ impl LevelGrid {
     pub fn is_open(&self, c: Cell) -> bool {
         self.index(c).is_some_and(|i| self.open[i])
     }
+}
+
+/// 4-way flood fill of the open cells: the component id of each cell (0 closed) and how many ids were used. Build time only.
+fn flood_components(open: &[bool], cols: i32, rows: i32) -> (Vec<u16>, u32) {
+    let mut comp = vec![0u16; open.len()];
+    let mut next = 0u32;
+    let mut stack: Vec<u32> = Vec::new();
+    for start in 0..open.len() {
+        if !open[start] || comp[start] != 0 {
+            continue;
+        }
+        next = (next + 1).min(u16::MAX as u32);
+        let id = next as u16;
+        comp[start] = id;
+        stack.push(start as u32);
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i as i32 % cols, i as i32 / cols);
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= cols || ny >= rows {
+                    continue;
+                }
+                let j = (ny * cols + nx) as usize;
+                if open[j] && comp[j] == 0 {
+                    comp[j] = id;
+                    stack.push(j as u32);
+                }
+            }
+        }
+    }
+    (comp, next)
 }
 
 /// A step of a route: the node reached and the edge used to reach it (`None` for a step on the same level's grid, and for
@@ -220,14 +295,138 @@ pub struct Hop {
     pub steps: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Where one level's cells sit in the dense search arrays (`offset + y * cols + x`) and its first global component id.
+#[derive(Clone, Copy, Debug, Default)]
+struct Slot {
+    level: i32,
+    offset: usize,
+    cols: i32,
+    rows: i32,
+    comp_base: u32,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct StackNav {
     grids: BTreeMap<i32, LevelGrid>,
     out: BTreeMap<Node, Vec<Edge>>,
     by_key: BTreeMap<EdgeKey, Edge>,
+    /// Unique per `build` (0 for an empty graph): a consumer that caches a hop against it drops the cache on a rebuild.
     version: u64,
     /// The rules the graph was built with (`None` for an empty graph: the embedded rules apply).
     rules: Option<FlightEdgeRules>,
+    /// The levels in ascending order with their array offsets (derived from `grids`).
+    slots: Vec<Slot>,
+    total_cells: usize,
+    /// Directed links between global component ids, one list per component (derived from `out`).
+    comp_adj: Vec<Vec<u32>>,
+}
+
+/// Two graphs are equal when they hold the same grids, edges and rules; `version` (a build id) and the derived search
+/// tables are not part of that.
+impl PartialEq for StackNav {
+    fn eq(&self, o: &StackNav) -> bool {
+        self.grids == o.grids && self.out == o.out && self.by_key == o.by_key && self.rules == o.rules
+    }
+}
+
+static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
+
+/// One open-list entry of the A*: ordered so the lowest `f` pops first, ties by node (deterministic).
+#[derive(PartialEq)]
+struct Item {
+    f: f32,
+    node: Node,
+}
+impl Eq for Item {}
+impl PartialOrd for Item {
+    fn partial_cmp(&self, o: &Item) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for Item {
+    fn cmp(&self, o: &Item) -> Ordering {
+        o.f.total_cmp(&self.f).then_with(|| o.node.cmp(&self.node))
+    }
+}
+
+/// The reused arrays of one thread's searches. A cell's entry is valid only when its stamp equals `gen`, so a search
+/// starts without clearing anything and allocates nothing once the arrays have grown to the nav's size.
+#[derive(Default)]
+struct Scratch {
+    gen: u32,
+    seen: Vec<u32>,
+    closed: Vec<u32>,
+    g: Vec<f32>,
+    came: Vec<(Node, Option<EdgeKey>)>,
+    heap: BinaryHeap<Item>,
+    // component search
+    comp_seen: Vec<u32>,
+    comp_gen: u32,
+    queue: Vec<u32>,
+}
+
+impl Scratch {
+    fn begin(&mut self, cells: usize) {
+        if self.seen.len() < cells {
+            self.seen.resize(cells, 0);
+            self.closed.resize(cells, 0);
+            self.g.resize(cells, 0.0);
+            self.came.resize(cells, (Node { level: 0, cell: Cell::new(0, 0) }, None));
+        }
+        self.gen = self.gen.wrapping_add(1);
+        if self.gen == 0 {
+            self.seen.fill(0);
+            self.closed.fill(0);
+            self.gen = 1;
+        }
+        self.heap.clear();
+    }
+
+    fn begin_comps(&mut self, comps: usize) {
+        if self.comp_seen.len() < comps {
+            self.comp_seen.resize(comps, 0);
+        }
+        self.comp_gen = self.comp_gen.wrapping_add(1);
+        if self.comp_gen == 0 {
+            self.comp_seen.fill(0);
+            self.comp_gen = 1;
+        }
+        self.queue.clear();
+    }
+
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        self.seen.capacity() + self.closed.capacity() + self.g.capacity() + self.came.capacity() + self.heap.capacity()
+            + self.comp_seen.capacity() + self.queue.capacity()
+    }
+}
+
+thread_local! {
+    static SCRATCH: RefCell<Scratch> = RefCell::new(Scratch::default());
+}
+
+/// The summed capacity of this thread's search arrays: a second identical search must not grow it.
+#[cfg(test)]
+pub(crate) fn scratch_capacity() -> usize {
+    SCRATCH.with(|s| s.borrow().capacity())
+}
+
+/// Splits every segment of `p` longer than `max_gap` into equal pieces on the same line.
+fn densify(p: Vec<[f32; 3]>, max_gap: f32) -> Vec<[f32; 3]> {
+    let mut out: Vec<[f32; 3]> = Vec::with_capacity(p.len());
+    for (i, b) in p.iter().enumerate() {
+        if i > 0 {
+            let a = p[i - 1];
+            let d = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            let n = (d / max_gap).ceil() as usize;
+            for k in 1..n {
+                let t = k as f32 / n as f32;
+                out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]);
+            }
+        }
+        out.push(*b);
+    }
+    out
 }
 
 fn octile(a: Cell, b: Cell) -> f32 {
@@ -237,20 +436,6 @@ fn octile(a: Cell, b: Cell) -> f32 {
 
 fn path_len_3d(p: &[[f32; 3]]) -> f32 {
     p.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2) + (w[1][2] - w[0][2]).powi(2)).sqrt()).sum()
-}
-
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Fnv {
-        Fnv(0xcbf2_9ce4_8422_2325)
-    }
-    fn put(&mut self, v: u64) {
-        for b in v.to_le_bytes() {
-            self.0 ^= b as u64;
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
 }
 
 const NEIGHBOURS: [(i32, i32); 8] = [(0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (1, 1), (-1, 1), (-1, -1)];
@@ -290,8 +475,119 @@ impl StackNav {
                 }
             }
         }
-        nav.version = nav.hash();
+        nav.index();
+        nav.version = NEXT_VERSION.fetch_add(1, AtomicOrdering::Relaxed);
         nav
+    }
+
+    /// Fills the derived search tables (level slots and the component graph) once the grids and edges are in.
+    fn index(&mut self) {
+        let (mut offset, mut comp_base) = (0usize, 0u32);
+        self.slots.clear();
+        for (level, g) in &self.grids {
+            self.slots.push(Slot { level: *level, offset, cols: g.cols, rows: g.rows, comp_base });
+            offset += (g.cols * g.rows).max(0) as usize;
+            comp_base += g.comps;
+        }
+        self.total_cells = offset;
+        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); comp_base as usize];
+        for edges in self.out.values() {
+            for e in edges {
+                if let (Some(a), Some(b)) = (self.comp_of(e.from), self.comp_of(e.to)) {
+                    if a != b && !adj[a as usize].contains(&b) {
+                        adj[a as usize].push(b);
+                    }
+                }
+            }
+        }
+        self.comp_adj = adj;
+    }
+
+    fn slot(&self, level: i32) -> Option<&Slot> {
+        self.slots.binary_search_by_key(&level, |s| s.level).ok().map(|i| &self.slots[i])
+    }
+
+    /// The dense array index of a cell inside its level's grid.
+    fn index_of(&self, n: Node) -> Option<usize> {
+        let s = self.slot(n.level)?;
+        (n.cell.x >= 0 && n.cell.y >= 0 && n.cell.x < s.cols && n.cell.y < s.rows)
+            .then(|| s.offset + (n.cell.y * s.cols + n.cell.x) as usize)
+    }
+
+    /// The global component id of an open cell, or `None` for a closed or missing cell.
+    fn comp_of(&self, n: Node) -> Option<u32> {
+        let s = self.slot(n.level)?;
+        let g = self.grids.get(&n.level)?;
+        if n.cell.x < 0 || n.cell.y < 0 || n.cell.x >= s.cols || n.cell.y >= s.rows {
+            return None;
+        }
+        match g.comp[(n.cell.y * s.cols + n.cell.x) as usize] {
+            0 => None,
+            c => Some(s.comp_base + c as u32 - 1),
+        }
+    }
+
+    /// A cheap early-out for [`StackNav::find_path`]: `false` only when no route can exist, i.e. when both cells are
+    /// open and the component of `to` cannot be reached from the component of `from` over the level grids and the
+    /// edges. `true` otherwise, also when either cell is closed or missing (the exact search decides). With every step
+    /// allowed it equals "a route exists". No allocation after the first call on a thread.
+    pub fn reachable(&self, from: Node, to: Node) -> bool {
+        let (Some(a), Some(b)) = (self.comp_of(from), self.comp_of(to)) else { return true };
+        if a == b {
+            return true;
+        }
+        SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut sc) => self.components_reach(&mut sc, a, b),
+            Err(_) => self.components_reach(&mut Scratch::default(), a, b),
+        })
+    }
+
+    fn components_reach(&self, sc: &mut Scratch, a: u32, b: u32) -> bool {
+        sc.begin_comps(self.comp_adj.len());
+        let gen = sc.comp_gen;
+        sc.comp_seen[a as usize] = gen;
+        sc.queue.push(a);
+        let mut head = 0;
+        while head < sc.queue.len() {
+            let c = sc.queue[head];
+            head += 1;
+            if c == b {
+                return true;
+            }
+            for &n in &self.comp_adj[c as usize] {
+                if sc.comp_seen[n as usize] != gen {
+                    sc.comp_seen[n as usize] = gen;
+                    sc.queue.push(n);
+                }
+            }
+        }
+        false
+    }
+
+    /// `cell` when it is open on `level`, else the nearest open cell within the `goal_snap_radius` rule (a goal that
+    /// stands on a stair tread: the hunter grid closes the well cells). `None` when the level has no grid or nothing
+    /// is open that close.
+    pub fn open_goal(&self, level: i32, cell: Cell) -> Option<Cell> {
+        let grid = self.grids.get(&level)?;
+        if grid.is_open(cell) {
+            return Some(cell);
+        }
+        let radius = self.rules().goal_snap_radius;
+        let near = nearest_open(grid, cell, radius.ceil() as i32)?;
+        let (dx, dy) = ((near.x - cell.x) as f32, (near.y - cell.y) as f32);
+        (dx * dx + dy * dy <= radius * radius + 1e-4).then_some(near)
+    }
+
+    /// The edges that start on `level` with their entrance within `radius` metres of `(x, z)`, in a stable order
+    /// (by entrance cell, then the order the edges were added). A two-way edge appears on both of its levels, each time
+    /// as the record that starts there. No allocation.
+    pub fn edges_near(&self, level: i32, x: f32, z: f32, radius: f32) -> impl Iterator<Item = &Edge> {
+        let lo = Node { level, cell: Cell::new(i32::MIN, i32::MIN) };
+        let hi = Node { level, cell: Cell::new(i32::MAX, i32::MAX) };
+        self.out.range(lo..=hi).flat_map(|(_, v)| v.iter()).filter(move |e| {
+            let p = e.path.first().copied().unwrap_or([f32::INFINITY; 3]);
+            (p[0] - x).hypot(p[1] - z) <= radius
+        })
     }
 
     fn add(&mut self, e: Edge) {
@@ -320,7 +616,8 @@ impl StackNav {
         let land = nearest_open(lower, c, 8)?;
         let (uy, ly) = (fac.level as f32 * STOREY, (fac.level - 1) as f32 * STOREY);
         let (bc, cc, lc) = (bank.center(), c.center(), land.center());
-        let path: Arc<[[f32; 3]]> = vec![[bc.0, bc.1, uy], [cc.0, cc.1, uy], [cc.0, cc.1, ly], [lc.0, lc.1, ly]].into();
+        let path: Arc<[[f32; 3]]> =
+            densify(vec![[bc.0, bc.1, uy], [cc.0, cc.1, uy], [cc.0, cc.1, ly], [lc.0, lc.1, ly]], MAX_POINT_GAP).into();
         let from = Node { level: fac.level, cell: bank };
         let to = Node { level: fac.level - 1, cell: land };
         let len = path_len_3d(&path);
@@ -333,29 +630,6 @@ impl StackNav {
             len,
             one_way: true,
         })
-    }
-
-    fn hash(&self) -> u64 {
-        let mut h = Fnv::new();
-        for (l, g) in &self.grids {
-            h.put(*l as i64 as u64);
-            h.put(g.cols as u64);
-            h.put(g.rows as u64);
-            for chunk in g.open.chunks(64) {
-                h.put(chunk.iter().enumerate().fold(0u64, |a, (i, b)| a | ((*b as u64) << i)));
-            }
-        }
-        for (k, e) in &self.by_key {
-            h.put(k.upper_level as i64 as u64);
-            h.put(k.cell.x as i64 as u64);
-            h.put(k.cell.y as i64 as u64);
-            h.put(k.kind as u64);
-            h.put(e.from.level as i64 as u64);
-            h.put(e.to.level as i64 as u64);
-            h.put(e.cost.to_bits() as u64);
-            h.put(e.path.len() as u64);
-        }
-        h.0
     }
 
     /// The rules this graph was built with, so a walk on its edges uses the same data the costs were made from (the
@@ -377,7 +651,8 @@ impl StackNav {
         self.grids.get(&level)
     }
 
-    /// A hash of the grids and edges: equal for two identical builds, different once a cell opens or an edge changes.
+    /// A number unique to this build (a counter, 0 for an empty graph): two builds never share one, even over identical
+    /// levels, so a hop cached against it is dropped when the graph is rebuilt.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -411,7 +686,9 @@ impl StackNav {
     /// A* over the union of the level grids and the edges: 8-way, no corner cutting, an octile heuristic that stays
     /// admissible because an edge costs at least its horizontal run. `step_cost(level, from, to)` is a multiplier on the
     /// step's length (water; values under 1 are taken as 1) or `None` when that step is not allowed. The route includes
-    /// `from` (via `None`); empty when `from` or `to` is not open or no route exists. A one-way edge is never walked backwards.
+    /// `from` (via `None`); empty when `from` or `to` is not open, no route exists, [`StackNav::reachable`] says no, or
+    /// the search spent the `search_expansions` rule. A one-way edge is never walked backwards. The search runs on dense
+    /// arrays kept per thread (stamped, never cleared), so after warm-up a call allocates only the route it returns.
     pub fn find_path(&self, from: Node, to: Node, step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>) -> Vec<RouteStep> {
         if !self.is_open(from) || !self.is_open(to) {
             return vec![];
@@ -419,45 +696,50 @@ impl StackNav {
         if from == to {
             return vec![RouteStep { node: from, via: None }];
         }
-        #[derive(PartialEq)]
-        struct Item {
-            f: f32,
-            node: Node,
+        if !self.reachable(from, to) {
+            return vec![];
         }
-        impl Eq for Item {}
-        impl PartialOrd for Item {
-            fn partial_cmp(&self, o: &Item) -> Option<Ordering> {
-                Some(self.cmp(o))
-            }
-        }
-        impl Ord for Item {
-            fn cmp(&self, o: &Item) -> Ordering {
-                o.f.total_cmp(&self.f).then_with(|| o.node.cmp(&self.node))
-            }
-        }
+        SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut sc) => self.search(&mut sc, from, to, step_cost),
+            Err(_) => self.search(&mut Scratch::default(), from, to, step_cost),
+        })
+    }
+
+    fn search(&self, sc: &mut Scratch, from: Node, to: Node, step_cost: &dyn Fn(i32, Cell, Cell) -> Option<f32>) -> Vec<RouteStep> {
+        let (Some(fi), Some(_)) = (self.index_of(from), self.index_of(to)) else { return vec![] };
+        let cap = self.rules().search_expansions;
+        sc.begin(self.total_cells);
+        let gen = sc.gen;
         let h = |n: Node| octile(n.cell, to.cell);
-        let mut g: BTreeMap<Node, f32> = BTreeMap::new();
-        let mut came: BTreeMap<Node, (Node, Option<EdgeKey>)> = BTreeMap::new();
-        let mut closed: BTreeSet<Node> = BTreeSet::new();
-        let mut heap = BinaryHeap::new();
-        g.insert(from, 0.0);
-        heap.push(Item { f: h(from), node: from });
+        sc.g[fi] = 0.0;
+        sc.seen[fi] = gen;
+        sc.heap.push(Item { f: h(from), node: from });
+        let mut expanded = 0u32;
         let mut found = false;
-        while let Some(Item { node: cur, .. }) = heap.pop() {
+        while let Some(Item { node: cur, .. }) = sc.heap.pop() {
             if cur == to {
                 found = true;
                 break;
             }
-            if !closed.insert(cur) {
+            let Some(ci) = self.index_of(cur) else { continue };
+            if sc.closed[ci] == gen {
                 continue;
             }
-            let gc = g[&cur];
-            let grid = &self.grids[&cur.level];
-            let mut relax = |n: Node, ng: f32, via: Option<EdgeKey>, heap: &mut BinaryHeap<Item>| {
-                if g.get(&n).map_or(true, |old| ng < *old) {
-                    g.insert(n, ng);
-                    came.insert(n, (cur, via));
-                    heap.push(Item { f: ng + h(n), node: n });
+            sc.closed[ci] = gen;
+            expanded += 1;
+            if expanded > cap {
+                sc.heap.clear();
+                return vec![];
+            }
+            let gc = sc.g[ci];
+            let Some(grid) = self.grids.get(&cur.level) else { continue };
+            let offset = self.slot(cur.level).map_or(0, |s| s.offset);
+            let relax = |sc: &mut Scratch, i: usize, n: Node, ng: f32, via: Option<EdgeKey>| {
+                if sc.seen[i] != gen || ng < sc.g[i] {
+                    sc.seen[i] = gen;
+                    sc.g[i] = ng;
+                    sc.came[i] = (cur, via);
+                    sc.heap.push(Item { f: ng + h(n), node: n });
                 }
             };
             for (dx, dy) in NEIGHBOURS {
@@ -474,26 +756,34 @@ impl StackNav {
                 }
                 let Some(factor) = step_cost(cur.level, cur.cell, nb) else { continue };
                 let step = if diag { SQRT_2 } else { 1.0 } * factor.max(1.0);
-                relax(Node { level: cur.level, cell: nb }, gc + step, None, &mut heap);
+                let i = offset + (nb.y * grid.cols + nb.x) as usize;
+                relax(sc, i, Node { level: cur.level, cell: nb }, gc + step, None);
             }
             for e in self.edges_from(cur) {
                 if self.is_open(e.to) {
-                    relax(e.to, gc + e.cost, Some(e.key), &mut heap);
+                    if let Some(i) = self.index_of(e.to) {
+                        relax(sc, i, e.to, gc + e.cost, Some(e.key));
+                    }
                 }
             }
         }
+        sc.heap.clear();
         if !found {
             return vec![];
         }
         let mut route = vec![];
         let mut at = to;
         loop {
-            let (prev, via) = match came.get(&at) {
-                Some(p) => *p,
-                None => (at, None),
+            if at == from {
+                route.push(RouteStep { node: at, via: None });
+                break;
+            }
+            let (prev, via) = match self.index_of(at) {
+                Some(i) if sc.seen[i] == gen => sc.came[i],
+                _ => (at, None),
             };
             route.push(RouteStep { node: at, via });
-            if at == from {
+            if prev == at {
                 break;
             }
             at = prev;
@@ -515,7 +805,7 @@ impl StackNav {
 }
 
 /// The open cell of `grid` nearest to `c` within `reach` cells (ties in scan order), or `None`.
-fn nearest_open(grid: &LevelGrid, c: Cell, reach: i32) -> Option<Cell> {
+pub(crate) fn nearest_open(grid: &LevelGrid, c: Cell, reach: i32) -> Option<Cell> {
     let mut best: Option<(i32, Cell)> = None;
     for dy in -reach..=reach {
         for dx in -reach..=reach {
@@ -576,7 +866,7 @@ fn stair_edge(fac: &Facility, s: &Stair, rules: &FlightEdgeRules) -> Option<Edge
         from,
         to,
         cost: cost.max(octile(from.cell, to.cell)),
-        path: path.into(),
+        path: densify(path, MAX_POINT_GAP).into(),
         len,
         one_way: false,
     })
@@ -619,6 +909,28 @@ impl EdgeWalk {
     /// The share of the edge walked so far, 0 to 1.
     pub fn fraction(&self) -> f32 {
         if self.len > 1e-6 { (self.s / self.len).clamp(0.0, 1.0) } else { 1.0 }
+    }
+
+    /// Whether both walks follow the same edge in the same direction (same ends and key): the collision pass uses it to
+    /// make a walker queue behind the one ahead.
+    pub fn shares_edge(&self, other: &EdgeWalk) -> bool {
+        self.from == other.from && self.to == other.to && self.key == other.key
+    }
+
+    /// Moves the whole walk by `dx_cells` and `dz_cells` whole cells (1 m each): the polyline, the end cells and the key
+    /// cell. For a window recentre, so a walker in the middle of an edge keeps walking instead of snapping. The new
+    /// polyline is a fresh `Arc`: this is the only allocation, and it happens on this call alone.
+    pub fn shift(&mut self, dx_cells: i32, dz_cells: i32) {
+        if dx_cells == 0 && dz_cells == 0 {
+            return;
+        }
+        let (dx, dz) = (dx_cells as f32 * CELL_M, dz_cells as f32 * CELL_M);
+        let moved: Vec<[f32; 3]> = self.path.iter().map(|p| [p[0] + dx, p[1] + dz, p[2]]).collect();
+        self.path = moved.into();
+        for c in [&mut self.from.cell, &mut self.to.cell, &mut self.key.cell] {
+            c.x += dx_cells;
+            c.y += dz_cells;
+        }
     }
 
     /// The speed (m/s) a walker of `hunter_speed` moves along this edge on its flat parts: the hunter's own speed on a
@@ -1072,12 +1384,21 @@ mod tests {
         assert_eq!(&r, rules());
         assert!(!r.drop_allowed && r.edge_cost_scale >= 1.0 && r.hear_adjacent_scale > 0.0 && r.hear_adjacent_scale <= 1.0);
         assert!(r.capture_height > 0.0 && r.edge_stuck_seconds > 0.0 && r.resident_hunter_cap > 0);
+        assert_eq!((r.search_expansions, r.goal_snap_radius), (6000, 4.0));
+        assert!(approx(r.cross_repath_seconds, 0.9) && approx(r.follow_cross_seconds, 12.0));
+        assert!(approx(r.wander_cross_chance, 0.15) && approx(r.search_cross_chance, 0.25));
         let bad = [
             ("\"capture_height\": 1.2", "\"capture_height\": 99.0"),
             ("\"same_layer_eps\": 0.5", "\"same_layer_eps\": 5.0"),
             ("\"edge_cost_scale\": 1.0", "\"edge_cost_scale\": 0.5"),
             ("\"hear_adjacent_scale\": 0.5", "\"hear_adjacent_scale\": -0.1"),
             ("\"resident_hunter_cap\": 8", "\"resident_hunter_cap\": 2.5"),
+            ("\"search_expansions\": 6000", "\"search_expansions\": 6000.5"),
+            ("\"search_expansions\": 6000", "\"search_expansions\": 0"),
+            ("\"wander_cross_chance\": 0.15", "\"wander_cross_chance\": 1.5"),
+            ("\"search_cross_chance\": 0.25", "\"search_cross_chance\": -0.5"),
+            ("\"cross_repath_seconds\": 0.9", "\"cross_repath_seconds\": 0.0"),
+            ("\"goal_snap_radius\": 4,", ""),
             ("\"drop_allowed\": false", "\"drop_allowed\": 0"),
             ("\"ladder_speed_scale\": 1.0,", ""),
             ("lr.hunter_flights/1", "lr.hunter_flights/2"),
@@ -1094,15 +1415,258 @@ mod tests {
         for (shape, ladder) in [(FlightShape::Switchback, false), (FlightShape::Spiral, false), (FlightShape::Straight, true)] {
             let (a, upper, lower) = test_nav(shape, ladder);
             let b = test_nav_of(&upper, &lower, rules());
-            assert_eq!(a, b);
-            assert_eq!(a.version(), b.version());
+            assert_eq!(a, b, "equal content");
+            assert_ne!(a.version(), b.version(), "but each build has its own id");
             assert_eq!(a.levels(), vec![-1, 0]);
             assert!(a.has_level(0) && !a.has_level(1));
         }
         // a changed cost gives a new version
         let (upper, lower) = Facility::test_levels(FlightShape::Switchback, false);
         let heavy = FlightEdgeRules { edge_cost_scale: 3.0, ..rules().clone() };
-        assert_ne!(test_nav_of(&upper, &lower, &heavy).version(), test_nav_of(&upper, &lower, rules()).version());
+        assert_ne!(test_nav_of(&upper, &lower, &heavy), test_nav_of(&upper, &lower, rules()), "a changed cost is a changed graph");
         assert_eq!(StackNav::empty().levels(), Vec::<i32>::new());
+    }
+
+    // --- nav3d: the 3D layer other systems consume ---
+
+    /// The three stair shapes of the test stages: a spiral, a switchback and a ladder, with the edge kind each makes.
+    const STAGES: [(FlightShape, bool, EdgeKind); 3] = [
+        (FlightShape::Spiral, false, EdgeKind::Flight),
+        (FlightShape::Switchback, false, EdgeKind::Flight),
+        (FlightShape::Switchback, true, EdgeKind::Ladder),
+    ];
+
+    fn gap3(a: &[f32; 3], b: &[f32; 3]) -> f32 {
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn nav3d_finds_a_path_down_a_spiral_a_switchback_and_a_ladder() {
+        for (shape, ladder, kind) in STAGES {
+            let (nav, _, _) = test_nav(shape, ladder);
+            let from = Node { level: 0, cell: Cell::new(6, 6) };
+            let to = Node { level: -1, cell: Cell::new(22, 22) };
+            let route = nav.find_path(from, to, &free);
+            assert!(!route.is_empty(), "{shape:?} ladder={ladder}: a route down");
+            assert_eq!((route.first().unwrap().node, route.last().unwrap().node), (from, to));
+            let vias: Vec<EdgeKey> = route.iter().filter_map(|s| s.via).collect();
+            assert_eq!(vias.len(), 1, "{shape:?}: one edge");
+            assert_eq!(vias[0].kind, kind, "{shape:?}: the edge kind");
+            let e = nav.edge(vias[0]).expect("the edge is in the graph");
+            assert!(e.path.len() >= 2);
+            for w in e.path.windows(2) {
+                assert!(w[1][2] <= w[0][2] + 1e-4, "{shape:?}: y rises going down: {:?} then {:?}", w[0], w[1]);
+                assert!(gap3(&w[0], &w[1]) <= 0.6, "{shape:?}: a gap of {} m in the polyline", gap3(&w[0], &w[1]));
+            }
+            assert!(approx(e.path[0][2], 0.0) && approx(e.path.last().unwrap()[2], -STOREY), "{shape:?}: from floor to floor");
+            // the walk and the route agree, and the way back up is a route too
+            assert!(approx(e.len, e.path.windows(2).map(|w| gap3(&w[0], &w[1])).sum::<f32>()));
+            assert!(!nav.find_path(to, from, &free).is_empty(), "{shape:?}: and back up");
+        }
+    }
+
+    #[test]
+    fn open_goal_moves_a_tread_goal_to_open_ground_within_the_radius() {
+        let radius = rules().goal_snap_radius;
+        for (shape, ladder, _) in STAGES {
+            let (nav, upper, _) = test_nav(shape, ladder);
+            let wells = upper.stairs[0].well_cells();
+            let mut snapped = 0;
+            for c in wells {
+                let got = nav.open_goal(0, c).unwrap_or_else(|| panic!("{shape:?}: a goal for tread {c:?}"));
+                assert!(nav.is_open(Node { level: 0, cell: got }), "{shape:?}: {got:?} is open");
+                let d = (((got.x - c.x).pow(2) + (got.y - c.y).pow(2)) as f32).sqrt();
+                assert!(d <= radius + 1e-3, "{shape:?}: {got:?} is {d} cells from {c:?}");
+                if nav.is_open(Node { level: 0, cell: c }) {
+                    assert_eq!(got, c, "an open cell is its own goal");
+                } else {
+                    snapped += 1;
+                }
+            }
+            if !ladder {
+                assert!(snapped > 0, "{shape:?}: some tread of the well is closed ground");
+            }
+        }
+        let (nav, _, _) = test_nav(FlightShape::Switchback, false);
+        assert_eq!(nav.open_goal(0, Cell::new(20, 20)), Some(Cell::new(20, 20)));
+        assert_eq!(nav.open_goal(-7, Cell::new(20, 20)), None, "no grid on that level");
+        assert_eq!(nav.open_goal(0, Cell::new(-100, -100)), None, "nothing open that close");
+    }
+
+    #[test]
+    fn reachable_is_false_for_a_closed_pocket_and_matches_the_exact_search() {
+        // a 3 x 3 room sealed by a ring of wall
+        let (mut upper, lower) = Facility::test_levels(FlightShape::Switchback, false);
+        for dz in -2i32..=2 {
+            for dx in -2i32..=2 {
+                if dx.abs() == 2 || dz.abs() == 2 {
+                    upper.wall[(24 + dz) as usize][(24 + dx) as usize] = true;
+                }
+            }
+        }
+        upper.rebuild_grids();
+        let nav = test_nav_of(&upper, &lower, rules());
+        let pocket = Node { level: 0, cell: Cell::new(24, 24) };
+        let outside = Node { level: 0, cell: Cell::new(6, 6) };
+        assert!(nav.is_open(pocket) && nav.is_open(outside));
+        assert!(!nav.reachable(outside, pocket) && !nav.reachable(pocket, outside));
+        assert!(nav.find_path(outside, pocket, &free).is_empty());
+        let sample = |nav: &StackNav| -> Vec<Node> {
+            [(0, 6, 6), (0, 20, 20), (0, 24, 24), (-1, 22, 22), (-1, 6, 6), (-1, 16, 16), (0, 8, 8), (-1, 8, 9)]
+                .iter()
+                .map(|(l, x, y)| Node { level: *l, cell: Cell::new(*x, *y) })
+                .filter(|n| nav.is_open(*n))
+                .collect()
+        };
+        let mut checked = 0;
+        for (nav, name) in [(&nav, "pocket")] {
+            for a in sample(nav) {
+                for b in sample(nav) {
+                    let exact = !nav.find_path(a, b, &free).is_empty();
+                    assert_eq!(nav.reachable(a, b), exact, "{name}: {a:?} to {b:?}");
+                    checked += 1;
+                }
+            }
+        }
+        for (shape, ladder, _) in STAGES {
+            let (nav, _, _) = test_nav(shape, ladder);
+            for a in sample(&nav) {
+                for b in sample(&nav) {
+                    let exact = !nav.find_path(a, b, &free).is_empty();
+                    assert_eq!(nav.reachable(a, b), exact, "{shape:?}: {a:?} to {b:?}");
+                    assert!(exact, "{shape:?}: the open stage is one space");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 40);
+        // a closed or missing cell is left to the exact search
+        let wall = Node { level: 0, cell: Cell::new(22, 24) };
+        assert!(!nav.is_open(wall) && nav.reachable(outside, wall) && nav.reachable(wall, outside));
+        assert!(nav.reachable(outside, Node { level: -9, cell: Cell::new(1, 1) }));
+        // a one-way drop is reachable down and not up
+        let (upper, lower) = Facility::test_levels_drop();
+        let on = test_nav_of(&upper, &lower, &FlightEdgeRules { drop_allowed: true, ..rules().clone() });
+        let above = Node { level: 0, cell: Cell::new(17, 18) };
+        let below = Node { level: -1, cell: Cell::new(12, 12) };
+        assert!(on.reachable(above, below) && !on.reachable(below, above));
+        let off = test_nav_of(&upper, &lower, &FlightEdgeRules { drop_allowed: false, ..rules().clone() });
+        assert!(!off.reachable(above, below));
+    }
+
+    #[test]
+    fn an_edge_walk_shifted_by_whole_cells_walks_the_same_edge_offset() {
+        let r = rules();
+        let (nav, upper, _) = test_nav(FlightShape::Switchback, false);
+        let e = nav.edges_from(Node { level: 0, cell: upper.stairs[0].cell }).next().unwrap().clone();
+        let mut plain = EdgeWalk::start(&e);
+        let mut moved = plain.clone();
+        assert!(plain.shares_edge(&moved));
+        moved.shift(3, -2);
+        assert!(!plain.shares_edge(&moved), "the shifted walk names other cells");
+        let (a, b) = (plain.pose(), moved.pose());
+        assert!(approx(b.x, a.x + 3.0) && approx(b.z, a.z - 2.0) && approx(b.y, a.y), "{a:?} vs {b:?}");
+        assert_eq!((moved.from.cell.x, moved.from.cell.y), (plain.from.cell.x + 3, plain.from.cell.y - 2));
+        assert_eq!((moved.to.cell.x, moved.to.cell.y), (plain.to.cell.x + 3, plain.to.cell.y - 2));
+        assert_eq!((moved.key.cell.x, moved.key.cell.y), (plain.key.cell.x + 3, plain.key.cell.y - 2));
+        assert_eq!(moved.key.kind, plain.key.kind);
+        assert!(Arc::ptr_eq(&plain.path, &e.path), "the original keeps its polyline");
+        let mut steps = 0;
+        loop {
+            let (pa, pb) = (plain.advance(2.0, 0.07, r), moved.advance(2.0, 0.07, r));
+            assert!(approx(pb.x, pa.x + 3.0) && approx(pb.z, pa.z - 2.0) && approx(pb.y, pa.y), "step {steps}: {pa:?} vs {pb:?}");
+            assert_eq!(pa.done, pb.done);
+            assert!(approx(plain.fraction(), moved.fraction()));
+            steps += 1;
+            if pa.done || steps > 2000 {
+                break;
+            }
+        }
+        assert!(plain.pose().done);
+        // a zero shift keeps the same polyline; the opposite direction is not the same edge
+        let mut same = EdgeWalk::start(&e);
+        let before = same.path.clone();
+        same.shift(0, 0);
+        assert!(Arc::ptr_eq(&before, &same.path));
+        let back = nav.edges_from(e.to).find(|b| b.key == e.key).unwrap();
+        assert!(!EdgeWalk::start(&e).shares_edge(&EdgeWalk::start(back)));
+    }
+
+    #[test]
+    fn find_path_twice_is_identical_and_reuses_its_arrays() {
+        for (shape, ladder, _) in STAGES {
+            let (nav, _, _) = test_nav(shape, ladder);
+            let from = Node { level: 0, cell: Cell::new(28, 5) };
+            let to = Node { level: -1, cell: Cell::new(5, 28) };
+            let first = nav.find_path(from, to, &free);
+            assert!(!first.is_empty(), "{shape:?}");
+            let cap = scratch_capacity();
+            assert!(cap > 0);
+            let second = nav.find_path(from, to, &free);
+            assert_eq!(first, second, "{shape:?}: deterministic");
+            assert_eq!(scratch_capacity(), cap, "{shape:?}: the second call allocated no search arrays");
+            // a different route in the same nav, and the pair reversed, also stay inside the arrays
+            let _ = nav.find_path(to, from, &free);
+            let _ = nav.next_hop(from, to, &free);
+            assert_eq!(scratch_capacity(), cap, "{shape:?}: nor did other searches");
+        }
+    }
+
+    #[test]
+    fn each_build_has_its_own_version() {
+        let (upper, lower) = Facility::test_levels(FlightShape::Straight, false);
+        let a = test_nav_of(&upper, &lower, rules());
+        let b = test_nav_of(&upper, &lower, rules());
+        assert_eq!(a, b);
+        assert!(a.version() != 0 && b.version() != 0 && a.version() != b.version());
+        assert_eq!(a.clone().version(), a.version(), "a clone is the same build");
+        assert_eq!(StackNav::empty().version(), 0);
+    }
+
+    #[test]
+    fn the_expansion_cap_ends_a_search_with_an_empty_route() {
+        let (upper, lower) = Facility::test_levels(FlightShape::Switchback, false);
+        let from = Node { level: 0, cell: Cell::new(28, 5) };
+        let to = Node { level: -1, cell: Cell::new(5, 28) };
+        let roomy = test_nav_of(&upper, &lower, rules());
+        assert!(!roomy.find_path(from, to, &free).is_empty(), "the default cap is enough");
+        let tiny = test_nav_of(&upper, &lower, &FlightEdgeRules { search_expansions: 5, ..rules().clone() });
+        assert!(tiny.reachable(from, to));
+        assert!(tiny.find_path(from, to, &free).is_empty(), "five expansions cannot cross two levels");
+        assert!(tiny.next_hop(from, to, &free).is_none());
+        // a goal far off the grid is no route at once, whatever the cap
+        let huge = Node { level: -1, cell: Cell::new(10_000, 10_000) };
+        assert!(roomy.find_path(from, huge, &free).is_empty());
+        // a goal in a sealed pocket ends at the early-out
+        let sealed = Node { level: 0, cell: Cell::new(24, 24) };
+        let mut walled = upper.clone();
+        for dz in -2i32..=2 {
+            for dx in -2i32..=2 {
+                if dx.abs() == 2 || dz.abs() == 2 {
+                    walled.wall[(24 + dz) as usize][(24 + dx) as usize] = true;
+                }
+            }
+        }
+        walled.rebuild_grids();
+        let nav = test_nav_of(&walled, &lower, rules());
+        assert!(nav.is_open(sealed) && !nav.reachable(from, sealed));
+        assert!(nav.find_path(from, sealed, &free).is_empty());
+    }
+
+    #[test]
+    fn edges_near_lists_the_entrances_around_a_point_in_a_stable_order() {
+        let (nav, upper, _) = test_nav(FlightShape::Switchback, false);
+        let e = nav.edges_from(Node { level: 0, cell: upper.stairs[0].cell }).next().unwrap();
+        let (x, z) = (e.path[0][0], e.path[0][1]);
+        let near: Vec<&Edge> = nav.edges_near(0, x + 0.3, z - 0.2, 0.6).collect();
+        assert_eq!(near.len(), 1);
+        assert_eq!((near[0].key, near[0].from.level), (e.key, 0));
+        assert_eq!(nav.edges_near(0, x + 5.0, z, 0.6).count(), 0, "out of reach");
+        assert_eq!(nav.edges_near(7, x, z, 100.0).count(), 0, "no edge starts on a level without one");
+        let low: Vec<&Edge> = nav.edges_near(-1, 0.0, 0.0, 1000.0).collect();
+        assert_eq!(low.len(), 1);
+        assert_eq!((low[0].from.level, low[0].to.level, low[0].key), (-1, 0, e.key), "the record that starts below");
+        let again: Vec<&Edge> = nav.edges_near(0, x, z, 1000.0).collect();
+        assert!(again.iter().zip(nav.edges_near(0, x, z, 1000.0)).all(|(a, b)| std::ptr::eq(*a, b)), "the same order twice");
     }
 }

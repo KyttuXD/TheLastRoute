@@ -1701,7 +1701,18 @@ impl Facility {
     /// the flight's surface is at the floor. A hunter or a bot is never carried across a well (over the drop, under the
     /// ramp) that the runner could not cross; the landing where a flight starts still holds the wider hunter, as it holds
     /// the runner.
+    ///
+    /// A drop cell has no floor: a hunter-sized body (radius `HUNTER_RADIUS` or more) never stands on one, by the same
+    /// five-sample test as `can_occupy`. The runner and the thinner bots may still enter a drop to fall (the deliberate
+    /// gap of a falls chunk). Free on a floor without drops.
     pub fn body_fits(&self, x: f32, y: f32, r: f32) -> bool {
+        if r >= crate::config::HUNTER_RADIUS && !self.drop_list.is_empty() {
+            for (a, b) in [(x, y), (x - r, y - r), (x + r, y - r), (x - r, y + r), (x + r, y + r)] {
+                if self.is_drop(Cell::new(a.floor() as i32, b.floor() as i32)) {
+                    return false;
+                }
+            }
+        }
         self.fits(x, y, r, 0.0, false)
             && (self.stairs.is_empty() || self.stair_holes_fit(x, y, r.min(crate::config::PLAYER_RADIUS), 0.0, true))
     }

@@ -303,6 +303,14 @@ impl Game {
                 h.patrol_anchor = self.patrol_book.anchor(patrol, &h.def.id, now, &runners);
                 h.patrol = Some(patrol);
             }
+            // the resident floors patrol too: their hunters guard the runner the same way
+            for level in self.resident_hunters.levels() {
+                for slot in self.resident_hunters.list_mut(level).iter_mut() {
+                    let h = &mut slot.brain;
+                    h.patrol_anchor = self.patrol_book.anchor(patrol, &h.def.id, now, &runners);
+                    h.patrol = Some(patrol);
+                }
+            }
         }
         let target = self.target();
         let admin = self.admin_flags();
@@ -344,9 +352,7 @@ impl Game {
         if sabotaged {
             self.announce("SIGNAL LOST // RELAY OFFLINE");
         }
-        if self.inf.is_some() {
-            crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
-        }
+        // (the squad is pushed apart after the brains have moved, below)
         // the shared water field for every brain, the hunters' own wading splashes, and the sounds of this frame
         self.sync_hunter_water();
         self.hunters_hear_noise(&noise, prof.hunter_hearing);
@@ -500,6 +506,9 @@ impl Game {
             }
             all_events.extend(ev.into_iter().map(|e| (i, e)));
         }
+        // bodies are pushed apart AFTER every brain has stepped (and on a finite facility too), so no two end the frame
+        // overlapping; a walker on an edge owns its position and is left alone (hunters/director.rs)
+        crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
         for (i, e) in all_events {
             self.apply_event(i, e);
             if self.report.is_some() {
@@ -560,10 +569,10 @@ impl Game {
         match e {
             Event::Stun(s) => self.p.stun = self.p.stun.max(s),
             Event::FacilityAlert { at, except_self } => {
+                let level = self.fac.level;
                 for (j, h) in self.hunters.iter_mut().enumerate() {
                     if h.active && !(except_self && j == from) {
-                        h.state = State::Investigate;
-                        h.last_known = Some(at);
+                        h.alert_on(at, level);
                     }
                 }
             }
@@ -2116,6 +2125,110 @@ mod resident_floor_tests {
         assert!(!guest.resident_hunters.has(-1), "the guest drops the list instead of storing it");
         assert!(guest.inf.as_mut().unwrap().floor_hunters_mut().is_empty(), "a guest stores nothing");
         assert!(guest.inf.as_mut().unwrap().stored_mut().is_empty());
+    }
+
+    // -- a chase down a flight, seen from the whole Game (nav3d pass) -------------------------------------------------
+
+    /// The probe hunter: the brain marked with a disguise, wherever its list is.
+    fn probe(g: &Game) -> Option<&Brain> {
+        g.hunters.iter().chain(g.resident_hunters.iter_leveled().map(|(_, b)| b)).find(|b| b.disguise.is_some())
+    }
+
+    fn probe_mut(g: &mut Game) -> Option<&mut Brain> {
+        if let Some(i) = g.hunters.iter().position(|b| b.disguise.is_some()) {
+            return Some(&mut g.hunters[i]);
+        }
+        let found = g
+            .resident_hunters
+            .levels()
+            .into_iter()
+            .find_map(|l| g.resident_hunters.list(l).iter().position(|s| s.brain.disguise.is_some()).map(|i| (l, i)));
+        let (l, i) = found?;
+        Some(&mut g.resident_hunters.list_mut(l)[i].brain)
+    }
+
+    /// A chaser on level 0, well away from the flight, and a runner who walked down to level -1 and stands far from it on
+    /// the lower floor: the label flipped (`relabel`) with the chaser still on the floor above, now a resident list.
+    fn descent() -> Game {
+        let (mut g, content, catalog) = stacked();
+        let flight = g.p.pos;
+        let start = open_spots(&g, 0, 1, flight, 10.0)[0];
+        let mut chaser = hunter(&content, 0, start, 0, 1.0);
+        chaser.state = State::Chase;
+        chaser.disguise = Some("probe".into());
+        g.hunters.push(chaser);
+        assert!(g.relabel(-1, &content, &catalog), "the runner walks down to the resident floor");
+        // only the chaser is left to move: the lineup that topped the lower floor up stays out of it
+        g.hunters.clear();
+        if let Some(inf) = g.inf.as_mut() {
+            inf.loaded_mut().clear();
+        }
+        let b = probe(&g).expect("the chaser is in the list of the floor the runner left");
+        assert_eq!(b.state, State::Investigate, "it follows the runner across the level change");
+        assert_eq!(b.last_known_level, -1, "to the floor below");
+        let far = open_spots(&g, -1, 1, flight, 8.0)[0];
+        g.p.pos = far;
+        g.p.height = 0.0;
+        g
+    }
+
+    #[test]
+    fn a_hunter_chasing_a_runner_one_floor_down_walks_the_flight_and_never_jumps() {
+        let mut g = descent();
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let (mut prev, mut worst, mut rose, mut walked, mut landed) = (None::<((f32, f32), f32)>, 0.0f32, 0.0f32, false, false);
+        for _ in 0..(60 * 120) {
+            g.update_hunters(FRAME, &prof, &sounds);
+            let b = probe(&g).expect("the chaser is still in a list");
+            if let Some((p, y)) = prev {
+                worst = worst.max(pdist(p, b.pos));
+                rose = rose.max(b.y - y);
+            }
+            walked |= b.walk.is_some();
+            prev = Some((b.pos, b.y));
+            if b.level == -1 && b.walk.is_none() {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "the chaser reaches the lower floor");
+        assert!(walked, "by walking the flight, not by appearing below");
+        assert!(worst < 0.7, "no frame moves the body like a teleport (worst {worst:.2} m)");
+        assert!(rose < 1e-4, "going down, its height never rises ({rose})");
+        let b = probe(&g).unwrap();
+        assert_eq!(b.y, floor_y_of(-1));
+        assert!(g.hunters.iter().any(|h| h.disguise.is_some()), "it ends in the list of level -1, the floor the runner is on");
+        assert!(g.resident_hunters.list(0).iter().all(|s| s.brain.disguise.is_none()));
+    }
+
+    #[test]
+    fn a_recentre_in_the_middle_of_a_flight_keeps_the_hunter_continuous() {
+        let mut g = descent();
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let mut mid = false;
+        for _ in 0..(60 * 120) {
+            g.update_hunters(FRAME, &prof, &sounds);
+            if probe(&g).is_some_and(|b| b.walk.as_ref().is_some_and(|w| w.fraction() > 0.3)) {
+                mid = true;
+                break;
+            }
+        }
+        assert!(mid, "the chaser is part-way down the flight");
+        let d = (2.0f32, -3.0f32);
+        let b = probe_mut(&mut g).unwrap();
+        let (pos, end, to) = (b.pos, b.walk.as_ref().unwrap().end_point(), b.walk.as_ref().unwrap().to.cell);
+        crate::game::endless::shift_brain(b, d);
+        assert!(pdist(b.pos, (pos.0 + d.0, pos.1 + d.1)) < 1e-3, "the body moved with the window");
+        let w = b.walk.as_ref().expect("the walk goes on");
+        let pose = w.pose();
+        assert!(pdist((pose.x, pose.z), b.pos) < 1.0, "the walk and the body agree after the shift ({:?} vs {:?})", (pose.x, pose.z), b.pos);
+        assert!((w.end_point()[0] - (end[0] + d.0)).abs() < 1e-3 && (w.end_point()[1] - (end[1] + d.1)).abs() < 1e-3, "the end moved too");
+        assert_eq!((w.to.cell.x, w.to.cell.y), (to.x + 2, to.y - 3), "and so did the cell it lands on");
+        let mut run = w.clone();
+        let done = run.advance(8.0, 60.0, flight_edges::rules()).done;
+        assert!(done, "the shifted walk completes");
     }
 }
 

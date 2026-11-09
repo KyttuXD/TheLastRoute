@@ -64,6 +64,10 @@ fn hold(found: &mut Found, label: &str, fac: &Facility, prev: (f32, f32), b: &Br
     if b.walk.is_some() || (b.y - floor_y_of(fac.level)).abs() > 0.05 || step > 1.0 {
         return;
     }
+    // a body crawling a duct (a chaser's vent trip, Verrine's own ducts) is not on the floor: the runner rule does not apply
+    if b.vent_trip.inside() || matches!(&b.gimmick, crate::hunters::gimmicks::Gimmick::Verrine(v) if v.in_duct()) {
+        return;
+    }
     let who = &b.def.id;
     let before = fac.body_fits(prev.0, prev.1, HUNTER_RADIUS);
     if before && !runner_fits(fac, b.pos) && found.inside.len() < 30 {

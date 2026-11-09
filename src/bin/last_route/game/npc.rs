@@ -43,7 +43,7 @@ use super::pdist;
 use super::Game;
 use super::Item;
 use crate::hunters::brain::State;
-use crate::hunters::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
+use crate::hunters::flight_edges::{self, EdgeKey, EdgeWalk, Hop, Node, StackNav};
 use crate::world::rng::Rng;
 use crate::config::{INTERACT_REACH, PLAYER_RADIUS, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED};
 use crate::render::textures::rng::GodotRng;
@@ -52,6 +52,7 @@ use crate::world::vertical::LADDER_CLIMB_SPEED;
 use crate::world::{Cell, Facility};
 use serde_json::Value;
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 /// Godot `npc_teammates.gd` 17: the ring radius of the first eight slots.
@@ -560,6 +561,32 @@ impl Tuning {
 
 /// The deep-cell step cost a bot plans across levels with while data/npcs.json has no `water.deep_step_cost`.
 pub const DEFAULT_DEEP_STEP_COST: f32 = 8.0;
+/// Seconds between the replans of a cross-level hop that nothing else asks for (data `flights.json` `cross_repath_seconds`).
+fn cross_repath_seconds() -> f32 {
+    flight_edges::rules().cross_repath_seconds
+}
+
+/// Bots put on the nearer end of an edge by the stuck timeout (a stat: it should stay at zero).
+static EDGE_SETTLES: AtomicU32 = AtomicU32::new(0);
+
+/// How many times the stuck timeout has put a bot on the nearer end of its edge.
+pub fn edge_settles() -> u32 {
+    EDGE_SETTLES.load(Ordering::Relaxed)
+}
+
+/// Two bodies touch closer than this (m).
+const BODY_GAP: f32 = 2.0 * NAV_RADIUS;
+/// Bodies more than this far apart in height do not collide (a body two metres up a flight is on other treads).
+const COLLIDE_HEIGHT: f32 = 1.2;
+/// The most a bot is moved out of an overlap in one frame (m).
+const PUSH_CAP: f32 = 0.15;
+/// Inside this margin (m) beyond touching a bot steers softly away.
+const SOFT_MARGIN: f32 = 0.2;
+/// The speed (m/s) of that soft steer at touching.
+const SOFT_SPEED: f32 = 2.5;
+/// A bot lands this far (m) from the edge's end, in a direction of its own, when its body fits there.
+const LAND_SPREAD: f32 = 0.2;
+
 /// A bot starts an edge once it is this close to the hop's entrance (its body radius).
 const EDGE_ENTER_REACH: f32 = NAV_RADIUS;
 /// A bot whose route to the entrance has run out starts the edge from this far (one cell).
@@ -662,9 +689,31 @@ impl Spot {
     }
 }
 
+/// What the cached cross-level hop of a bot was planned for: replanned when any of it changes (see `cross_to`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrossKey {
+    /// `StackNav::version` of the graph the hop was found in.
+    pub version: u64,
+    /// The open cell the route aims at (the target snapped by `StackNav::open_goal`).
+    pub goal: Node,
+    /// The cell the bot stood in.
+    pub own: Node,
+    /// Whether cells hunters search were costly on the route.
+    pub avoid_search: bool,
+}
+
+/// The cache of a bot's cross-level hop: what it was planned for and the seconds since.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CrossCache {
+    pub key: Option<CrossKey>,
+    pub age: f32,
+}
+
 /// A bot's level-wide goal (the "goal" intent).
 #[derive(Clone, Debug, Default)]
 pub struct GoalState {
+    /// The cached hop of the cross-level walk (`follow_across`, the goal walk).
+    pub cross: CrossCache,
     pub spot: Option<Spot>,
     /// Seconds before the bot picks a goal again.
     pub cool: f32,
@@ -764,7 +813,15 @@ impl Npc {
     /// replanned at once.
     pub fn shift(&mut self, d: (f32, f32)) {
         self.at = (self.at.0 + d.0, self.at.1 + d.1);
+        // a bot on a flight or ladder keeps walking it: the edge moves with the window and the height is untouched
+        let mut walk = self.walk.take();
+        if let Some(w) = walk.as_mut() {
+            w.shift(d.0.round() as i32, d.1.round() as i32);
+        }
+        let clock = self.edge_clock;
         self.forget_frame();
+        self.walk = walk;
+        self.edge_clock = clock;
     }
 
     /// Drops what the bot knew about the old frame: its route, its door, its hide, its errand, its visits and the points
@@ -791,6 +848,7 @@ impl Npc {
         self.goal.stuck = StuckState::default();
         self.goal.cool = 0.0;
         self.goal.away = 0.0;
+        self.goal.cross = CrossCache::default();
         self.flee.stop();
         self.claim = None;
         self.life = LifeState::default();
@@ -1530,6 +1588,12 @@ pub struct Peer {
     pub at: (f32, f32),
     pub level: i32,
     pub emoting: bool,
+    /// Absolute height of the feet.
+    pub y: f32,
+    /// False while the bot is on an edge, hiding or down: it neither blocks nor is pushed (see `separate_bots`).
+    pub solid: bool,
+    /// The edge the bot walks: its key, the node it set out from and the metres walked (`lead_gap`).
+    pub lane: Option<(EdgeKey, Node, f32)>,
 }
 
 /// What a bot can look at this frame.
@@ -2479,23 +2543,42 @@ fn follow_across(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec
 }
 
 /// Walks the bot toward `target` on another level: the hop it takes, its entrance, then the edge. `avoid_search` makes
-/// cells hunters are searching costly on the route.
+/// cells hunters are searching costly on the route. The target is snapped to open ground (`StackNav::open_goal`): a
+/// runner on the treads is followed to the last open cell at the flight mouth. The hop is cached: it is planned again
+/// only when the graph, the goal cell or level (or, with no hop yet, the bot's own cell) changes, or every
+/// `cross_repath_seconds`.
 fn cross_to(n: &mut Npc, sc: &Scene, target: Node, avoid_search: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let Some(nav) = sc.nav else {
         n.walking = false;
         return;
     };
-    let repath = repath_for(n);
-    if n.hop.is_none() || n.path_age >= repath {
+    n.goal.cross.age += dt;
+    let goal = nav.open_goal(target.level, target.cell).map_or(target, |cell| Node { level: target.level, cell });
+    if goal.level == n.level {
+        // already on the goal's level (the runner's treads snapped to the flight mouth): no edge, walk to the cell
+        n.hop = None;
+        walk_toward(n, sc.fac, goal.cell.center(), false, t, dt, presses);
+        return;
+    }
+    let own = Node { level: n.level, cell: cell_at(n.at) };
+    let key = CrossKey { version: nav.version(), goal, own, avoid_search };
+    let stale = n.goal.cross.age >= cross_repath_seconds()
+        || n.goal.cross.key.map_or(true, |k| k.version != key.version || k.goal != key.goal || k.avoid_search != key.avoid_search || (n.hop.is_none() && k.own != key.own));
+    if stale {
+        let repath = repath_for(n);
         let hop = {
             let cost = step_cost(n, sc, t, avoid_search);
-            next_hop(nav, Node { level: n.level, cell: cell_at(n.at) }, target, &cost)
+            next_hop(nav, own, goal, &cost)
         };
-        // a fresh hop is planned to on this frame; with no route the next ask waits a full repath
-        n.path_age = if hop.is_some() { repath } else { 0.0 };
+        n.goal.cross = CrossCache { key: Some(key), age: 0.0 };
+        // a new entrance is planned to on this frame
+        if hop.map(|h| (h.edge, h.entrance)) != n.hop.map(|h| (h.edge, h.entrance)) {
+            n.path_age = repath;
+            n.path.clear();
+        }
         n.hop = hop;
     }
-    let Some(hop) = n.hop.clone() else {
+    let Some(hop) = n.hop else {
         n.walking = false;
         n.path.clear();
         return;
@@ -2506,12 +2589,14 @@ fn cross_to(n: &mut Npc, sc: &Scene, target: Node, avoid_search: bool, t: &Tunin
         let Some(walk) = edge_start(nav, n.level, &hop) else {
             // the edge is gone (a rebuild dropped it): plan again
             n.hop = None;
+            n.goal.cross = CrossCache::default();
             n.path_age = REPATH;
             return;
         };
         n.walk = Some(walk);
         n.edge_clock = 0.0;
         n.hop = None;
+        n.goal.cross = CrossCache::default();
         n.path.clear();
         n.door = None;
         n.walking = true;
@@ -2532,6 +2617,7 @@ fn set_level(n: &mut Npc, level: i32) {
 
 /// Puts the bot on the nearer end of the edge it was walking, with its route and hop cleared so it plans again.
 fn settle_on_nearer_end(n: &mut Npc, w: &EdgeWalk) {
+    EDGE_SETTLES.fetch_add(1, Ordering::Relaxed);
     let p = if w.fraction() < 0.5 { w.start_point() } else { w.end_point() };
     let (at, y) = ((p[0], p[1]), p[2]);
     n.at = at;
@@ -2546,9 +2632,11 @@ fn settle_on_nearer_end(n: &mut Npc, w: &EdgeWalk) {
 }
 
 /// One frame along the bot's edge: it moves `speed * dt` along the flight (walk speed) or ladder (climb speed), its y
-/// follows the edge, and its level is derived from that y. At the far end the walk and the route are cleared. A bot on
-/// an edge for longer than its length at that speed plus the data `edge_stuck_seconds` is put on the nearer end.
-fn advance_edge(n: &mut Npc, dt: f32) {
+/// follows the edge, and its level is derived from that y. `gap` is the path distance to the bot ahead on the same
+/// flight: the bot slows to stay `BODY_GAP` behind it. At the far end the walk and the route are cleared and the bot is
+/// set a little off the end (`landing_point`). A bot on an edge for longer than its length at that speed plus the data
+/// `edge_stuck_seconds` is put on the nearer end.
+fn advance_edge(n: &mut Npc, dt: f32, facs: &[(i32, &Facility)], gap: Option<f32>) {
     let Some(mut w) = n.walk.take() else { return };
     n.edge_clock += dt;
     let speed = edge_speed(&w);
@@ -2556,8 +2644,9 @@ fn advance_edge(n: &mut Npc, dt: f32) {
         settle_on_nearer_end(n, &w);
         return;
     }
+    let step = gap.map_or(dt, |g| dt.min((g - BODY_GAP).max(0.0) / speed));
     let from = n.at;
-    let (at, y, done) = edge_advance(&mut w, dt);
+    let (mut at, y, done) = edge_advance(&mut w, step);
     let moved = pdist(from, at);
     if moved > 1e-4 {
         n.heading = ((at.0 - from.0) / moved, (at.1 - from.1) / moved);
@@ -2565,6 +2654,11 @@ fn advance_edge(n: &mut Npc, dt: f32) {
         turn(n, heading_yaw(heading), dt);
     }
     n.stride += moved + (y - n.y).abs();
+    if done {
+        if let Some(p) = landing_point(n.id, at, level_at(y, n.level), facs) {
+            at = p;
+        }
+    }
     n.at = at;
     n.y = y;
     set_level(n, level_at(y, n.level));
@@ -2577,6 +2671,124 @@ fn advance_edge(n: &mut Npc, dt: f32) {
         n.path_age = REPATH;
     } else {
         n.walk = Some(w);
+    }
+}
+
+/// Where a bot lands: `LAND_SPREAD` from the edge's end in a direction of its own (its id's golden angle) when its body
+/// fits there, so bots arriving together do not stand on one point. None keeps the exact end.
+fn landing_point(id: u32, end: (f32, f32), level: i32, facs: &[(i32, &Facility)]) -> Option<(f32, f32)> {
+    let fac = facs.iter().find(|(l, _)| *l == level)?.1;
+    let a = id as f32 * SLOT_ANGLE;
+    let p = (end.0 + a.cos() * LAND_SPREAD, end.1 + a.sin() * LAND_SPREAD);
+    (fac.body_fits(p.0, p.1, NAV_RADIUS) && !fac.crawl_stops(p.0, p.1, NAV_RADIUS, crate::config::PLAYER_HEIGHT)).then_some(p)
+}
+
+/// The path distance (m) to the nearest bot ahead of `me` on the same flight in the same direction: one with more
+/// metres walked, or the same with a lower id (so two that start together do not both wait).
+fn lead_gap(me: &Npc, peers: &[Peer]) -> Option<f32> {
+    let w = me.walk.as_ref()?;
+    peers
+        .iter()
+        .filter(|p| p.id != me.id)
+        .filter_map(|p| {
+            let (key, from, s) = p.lane?;
+            (key == w.key && from == w.from && (s > w.s || (s == w.s && p.id < me.id))).then(|| s - w.s)
+        })
+        .min_by(|a, b| a.total_cmp(b))
+}
+
+/// The push and the soft steer that body `other` gives a bot at `me`: inside `BODY_GAP` the overlap times `share`
+/// directly away, inside the margin beyond it a unit-scaled steer that fades to nothing. A bot exactly on `other` leaves
+/// in the direction of its own id.
+fn contact(me: (f32, f32), other: (f32, f32), id: u32, share: f32) -> ((f32, f32), (f32, f32)) {
+    let (dx, dz) = (me.0 - other.0, me.1 - other.1);
+    let d = dx.hypot(dz);
+    let gap = d - BODY_GAP;
+    if gap >= SOFT_MARGIN {
+        return ((0.0, 0.0), (0.0, 0.0));
+    }
+    let dir = if d > 1e-4 {
+        (dx / d, dz / d)
+    } else {
+        let a = id as f32 * SLOT_ANGLE;
+        (a.cos(), a.sin())
+    };
+    if gap < 0.0 {
+        ((dir.0 * -gap * share, dir.1 * -gap * share), (0.0, 0.0))
+    } else {
+        let k = 1.0 - gap / SOFT_MARGIN;
+        ((0.0, 0.0), (dir.0 * k, dir.1 * k))
+    }
+}
+
+/// A bot as the others and the collision pass see it.
+fn peer_of(q: &Npc, downed: bool) -> Peer {
+    Peer {
+        id: q.id,
+        at: q.at,
+        level: q.level,
+        emoting: q.life.emote.is_some(),
+        y: q.y,
+        solid: !(downed || q.walk.is_some() || q.hidden.is_some()),
+        lane: q.walk.as_ref().map(|w| (w.key, w.from, w.s)),
+    }
+}
+
+/// Keeps the bodies apart: each bot yields to the runner (never moved) and to the other bots. Closer than `BODY_GAP` it
+/// is moved out by the overlap (half of it against another bot, which moves out too), at most `PUSH_CAP` a frame, by the
+/// full push, else along x, else along z, onto ground its body fits; within `SOFT_MARGIN` of touching it also steers away
+/// at up to `SOFT_SPEED`. A bot on an edge, hiding or down neither moves nor blocks. `peers` is the frame's buffer, read
+/// at the positions of the start of this pass. `runner` is the runner's place and height, None when it is down or hidden.
+fn separate_bots(npcs: &mut [Npc], peers: &mut [Peer], facs: &[(i32, &Facility)], runner: Option<((f32, f32), f32)>, dt: f32) {
+    for (p, q) in peers.iter_mut().zip(npcs.iter()) {
+        p.at = q.at;
+        p.y = q.y;
+        p.level = q.level;
+        p.solid = p.solid && q.walk.is_none() && q.hidden.is_none();
+    }
+    for i in 0..npcs.len() {
+        if !peers[i].solid {
+            continue;
+        }
+        let (me, my_y, id) = (peers[i].at, peers[i].y, peers[i].id);
+        let (mut hard, mut soft) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+        if let Some((rp, ry)) = runner {
+            if (ry - my_y).abs() <= COLLIDE_HEIGHT {
+                let (h, s) = contact(me, rp, id, 1.0);
+                hard = (hard.0 + h.0, hard.1 + h.1);
+                soft = (soft.0 + s.0, soft.1 + s.1);
+            }
+        }
+        for (j, o) in peers.iter().enumerate() {
+            if j == i || !o.solid || (o.y - my_y).abs() > COLLIDE_HEIGHT {
+                continue;
+            }
+            let (h, s) = contact(me, o.at, id, 0.5);
+            hard = (hard.0 + h.0, hard.1 + h.1);
+            soft = (soft.0 + s.0, soft.1 + s.1);
+        }
+        let hl = hard.0.hypot(hard.1);
+        if hl > PUSH_CAP {
+            hard = (hard.0 / hl * PUSH_CAP, hard.1 / hl * PUSH_CAP);
+        }
+        let (sl, smax) = (soft.0.hypot(soft.1), SOFT_SPEED * dt);
+        let sk = if sl > 1.0 { smax / sl } else { smax };
+        let push = (hard.0 + soft.0 * sk, hard.1 + soft.1 * sk);
+        if push.0.hypot(push.1) < 1e-5 {
+            continue;
+        }
+        let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == npcs[i].level) else { continue };
+        let at = npcs[i].at;
+        let ok = |p: (f32, f32)| {
+            fac.body_fits(p.0, p.1, NAV_RADIUS)
+                && !fac.crawl_stops(p.0, p.1, NAV_RADIUS, crate::config::PLAYER_HEIGHT)
+                && fac.door_in_way(p.0, p.1, NAV_RADIUS).is_none()
+        };
+        let tries = [(at.0 + push.0, at.1 + push.1), (at.0 + push.0, at.1), (at.0, at.1 + push.1)];
+        if let Some(p) = tries.into_iter().find(|&p| p != at && ok(p)) {
+            npcs[i].at = p;
+            npcs[i].y = floor_y_of(npcs[i].level) + local_ground(fac, p.0, p.1);
+        }
     }
 }
 
@@ -2855,6 +3067,14 @@ fn pick_goal(n: &Npc, sc: &Scene, t: &Tuning) -> Option<Spot> {
     let from = Node { level: n.level, cell: sc.fac.nearest_open(n.at.0, n.at.1, NAV_RADIUS).map_or(cell_at(n.at), cell_at) };
     let mut best: Option<(f32, Spot)> = None;
     for (_, s) in near.into_iter().take(g.candidates) {
+        // a same-level route is at least the straight run in cells (diagonal steps, less the cell the ends sit in): a spot
+        // that cannot beat the best even at that cost is not searched
+        if let Some((b, _)) = best {
+            let floor_cost = if s.level == n.level { (pdist(n.at, s.pos) / std::f32::consts::SQRT_2 - 1.5).max(0.0) } else { 0.0 };
+            if g.weight(s.kind) - (floor_cost * g.distance_weight).min(g.distance_cap) <= b {
+                continue;
+            }
+        }
         let Some(cost) = route_cost(n, sc, t, from, Node { level: s.level, cell: s.cell }) else { continue };
         let score = g.weight(s.kind) - (cost * g.distance_weight).min(g.distance_cap);
         if best.map_or(true, |(b, _)| score > b) {
@@ -3415,7 +3635,9 @@ impl Game {
             downed.push((n.level, n.at, Some(n.id)));
         }
         // the teammates a bot may look at or answer, and whether the runner is emoting
-        let peers: Vec<Peer> = self.npcs.iter().map(|q| Peer { id: q.id, at: q.at, level: q.level, emoting: q.life.emote.is_some() }).collect();
+        let mut peers: Vec<Peer> = self.npcs.iter().map(|q| peer_of(q, self.downed_npcs.contains_key(&q.id))).collect();
+        // the runner's body for the collision pass: not while it is down or inside a locker
+        let runner_body = (!self.runner_downed() && self.p.hidden.is_none()).then(|| (leader, self.p.y()));
         let runner_emoting = self.emote.active().is_some();
         for n in self.npcs.iter_mut() {
             // a downed bot lies still until it is revived or leaves the floor
@@ -3441,7 +3663,11 @@ impl Game {
             }
             let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == n.level) else {
                 // a level that is not resident (a summon with a stale level, or a landing on an evicted one): the bot
-                // drops its edge and route and is set down on the runner's level beside where it was
+                // finishes the edge it is on, then drops its route and is set down on the runner's level beside where it was
+                if n.walk.is_some() {
+                    advance_edge(n, dt, &facs, None);
+                    continue;
+                }
                 n.walk = None;
                 n.edge_clock = 0.0;
                 n.hop = None;
@@ -3483,7 +3709,8 @@ impl Game {
                 n.life.head_pitch -= n.life.head_pitch * k;
                 n.life.gaze = None;
                 n.life.gaze_left = 0.0;
-                advance_edge(n, dt);
+                let gap = lead_gap(n, &peers);
+                advance_edge(n, dt, &facs, gap);
                 continue;
             }
             n.y = floor_y_of(n.level) + local_ground(fac, n.at.0, n.at.1);
@@ -3548,6 +3775,7 @@ impl Game {
                 }
             }
         }
+        separate_bots(&mut self.npcs, &mut peers, &facs, runner_body, dt);
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
         self.npc_claims(content);
@@ -5749,6 +5977,168 @@ mod level_tests {
         assert!((n.y - floor_y_of(runner)).abs() < 0.05, "it stands on the lower floor: y {}", n.y);
     }
 
+    /// Every downward flight shape and a ladder: the bot walks down to the runner and its height never jumps (a frame moves
+    /// it by at most the walk or climb speed times the frame, plus slack for the step onto the floor).
+    #[test]
+    fn a_bot_follows_down_every_flight_shape_with_a_continuous_y() {
+        let mut cases: Vec<(String, Case)> = vec![];
+        for shape in [FlightShape::Switchback, FlightShape::Straight, FlightShape::Spiral] {
+            if let Some(c) = [-1, -2, -3, 0].into_iter().find_map(|l| case(l, 1, move |s| !s.is_ladder() && s.shape == shape)) {
+                cases.push((format!("{shape:?}"), c));
+            }
+        }
+        if let Some(c) = [-1, -2].into_iter().find_map(|l| case(l, 1, |s| s.is_ladder())) {
+            cases.push(("ladder".to_string(), c));
+        }
+        let top = PLAYER_WALK_SPEED.max(ladder_speed()) * FRAME + 0.15;
+        for (what, mut c) in cases {
+            let runner = c.g.runner_level();
+            assert_eq!(c.g.npcs[0].level, runner + 1, "{what}: the bot starts a storey above");
+            let (mut last, mut worst, mut on_edge) = (c.g.npcs[0].y, 0.0f32, false);
+            let t = run(&mut c, CAP_SECONDS, |g| {
+                let n = &g.npcs[0];
+                worst = worst.max((n.y - last).abs());
+                last = n.y;
+                on_edge |= n.walk.is_some();
+                arrived(g)
+            });
+            assert!(t.is_some(), "{what}: the bot walked down to the runner within {CAP_SECONDS} s");
+            assert!(on_edge, "{what}: it went down by an edge walk, not a set-down");
+            assert!(worst <= top, "{what}: y jumped {worst} m in one frame (limit {top})");
+            assert_eq!(c.g.npcs[0].level, runner, "{what}");
+            assert!((c.g.npcs[0].y - floor_y_of(runner)).abs() < 0.3, "{what}: it stands on the lower floor: y {}", c.g.npcs[0].y);
+        }
+    }
+
+    /// The runner stands on the treads of the flight: the bot comes to the flight mouth, then keeps following the runner.
+    #[test]
+    fn a_bot_follows_a_runner_standing_on_the_treads_to_the_flight_mouth() {
+        let Some(mut c) = any_switchback() else { return };
+        let level = c.g.runner_level();
+        let from = c.g.p.pos;
+        let Some(stair) = c
+            .g
+            .fac
+            .stairs
+            .iter()
+            .copied()
+            .filter(|s| !s.is_ladder())
+            .min_by(|a, b| pdist(a.cell.center(), from).total_cmp(&pdist(b.cell.center(), from)))
+        else {
+            return;
+        };
+        let path = stair.walk_path(level, 0.25);
+        let mid = path[path.len() / 2];
+        c.g.p.pos = mid;
+        let start = c.g.npcs[0].at;
+        let start_level = c.g.npcs[0].level;
+        run(&mut c, CAP_SECONDS, |_| false);
+        let n = &c.g.npcs[0];
+        assert!(n.walk.is_none(), "the bot is off the edge again");
+        // a switchback can set the bot down on the same x/z one storey up, so a changed level counts as having moved
+        assert!(n.level != start_level || pdist(n.at, start) > 1.0, "the bot did not stand where it was: {start:?} -> {:?}", n.at);
+        assert!(pdist(n.at, c.g.p.pos) <= 6.0, "it ends with the runner: {} m away", pdist(n.at, c.g.p.pos));
+        assert!(c.g.fac.body_fits(n.at.0, n.at.1, NAV_RADIUS) || n.level != c.g.fac.level, "and on open ground");
+    }
+
+    /// A window recentre while a bot is on a flight: it keeps the edge, its height and its walked share, and the next
+    /// frame moves it by one step only.
+    #[test]
+    fn a_window_shift_mid_edge_keeps_the_bot_walking() {
+        let Some(mut c) = any_switchback() else { return };
+        let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.as_ref().is_some_and(|w| w.s > 0.5));
+        assert!(started.is_some(), "the bot is on the flight");
+        let mut n = c.g.npcs[0].clone();
+        let (at, y, s, clock) = (n.at, n.y, n.walk.as_ref().unwrap().s, n.edge_clock);
+        n.shift((16.0, -32.0));
+        assert!(n.walk.is_some(), "the shift does not drop the edge walk");
+        assert_eq!(n.at, (at.0 + 16.0, at.1 - 32.0));
+        assert_eq!(n.y, y, "and does not touch the height");
+        assert_eq!((n.walk.as_ref().unwrap().s, n.edge_clock), (s, clock));
+        let p = n.walk.as_ref().unwrap().pose();
+        assert!(pdist((p.x, p.z), n.at) < 0.5, "the walk moved with the bot: pose {:?} bot {:?}", (p.x, p.z), n.at);
+        assert!(n.hop.is_none() && n.path.is_empty() && n.goal.spot.is_none(), "the old frame's route is gone");
+        let before = n.at;
+        advance_edge(&mut n, FRAME, &[], None);
+        assert!(pdist(before, n.at) <= PLAYER_WALK_SPEED.max(ladder_speed()) * FRAME + 1e-3, "one step, no jump: {before:?} -> {:?}", n.at);
+        assert!((n.y - y).abs() <= 1.0, "no jump in height");
+    }
+
+    /// Two bots on one flight, the follower starting at the leader's place: it holds until the leader is a body ahead,
+    /// and a bot with open path ahead is never held.
+    #[test]
+    fn a_bot_keeps_a_body_length_behind_the_one_ahead_on_a_flight() {
+        let Some(mut c) = any_switchback() else { return };
+        let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
+        assert!(started.is_some(), "the bot is on the flight");
+        let mut lead = c.g.npcs[0].clone();
+        lead.id = 100;
+        let mut tail = lead.clone();
+        tail.id = 101;
+        let peers = [peer_of(&lead, false), peer_of(&tail, false)];
+        assert_eq!(lead_gap(&lead, &peers), None, "nobody is ahead of the leader");
+        assert_eq!(lead_gap(&tail, &peers), Some(0.0), "the lower id leads a tie");
+        let s0 = tail.walk.as_ref().unwrap().s;
+        advance_edge(&mut tail, FRAME, &[], Some(0.0));
+        assert_eq!(tail.walk.as_ref().unwrap().s, s0, "the follower holds on the leader's heels");
+        advance_edge(&mut tail, FRAME, &[], Some(BODY_GAP + 5.0));
+        assert!(tail.walk.as_ref().unwrap().s > s0, "with room ahead it walks");
+    }
+
+    /// Two bots and the runner on one spot part to a body apart, each on open ground, and the runner never moves.
+    #[test]
+    fn two_bots_and_the_runner_in_a_pile_part_to_a_body_apart_on_open_ground() {
+        let Some(mut c) = any_switchback() else { return };
+        let (level, pos, y) = (c.g.runner_level(), c.g.p.pos, c.g.p.y());
+        c.g.npcs.clear();
+        c.g.push_npc((pos.0 + 0.05, pos.1), level, 70, None, 0.0);
+        c.g.push_npc((pos.0, pos.1 + 0.08), level, 70, None, 0.0);
+        for n in c.g.npcs.iter_mut() {
+            n.y = y;
+        }
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        let facs = [(c.g.fac.level, &c.g.fac)];
+        for _ in 0..120 {
+            separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        }
+        let (a, b) = (c.g.npcs[0].at, c.g.npcs[1].at);
+        let tol = BODY_GAP - 0.02;
+        assert!(pdist(a, b) >= tol, "the bots stand {} m apart (need {tol})", pdist(a, b));
+        assert!(pdist(a, pos) >= tol && pdist(b, pos) >= tol, "and clear of the runner: {} {}", pdist(a, pos), pdist(b, pos));
+        for (what, p) in [("first", a), ("second", b)] {
+            assert!(c.g.fac.body_fits(p.0, p.1, NAV_RADIUS), "the {what} bot stands on open ground at {p:?}");
+        }
+    }
+
+    /// A bot on an edge, hiding or down is neither pushed nor a block; one at another height is not collided with.
+    #[test]
+    fn the_collision_pass_skips_bots_on_edges_hidden_down_or_at_another_height() {
+        let Some(mut c) = any_switchback() else { return };
+        let (level, pos, y) = (c.g.runner_level(), c.g.p.pos, c.g.p.y());
+        c.g.npcs.clear();
+        c.g.push_npc((pos.0 + 0.05, pos.1), level, 70, None, 0.0);
+        for n in c.g.npcs.iter_mut() {
+            n.y = y;
+        }
+        let at = c.g.npcs[0].at;
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, true)).collect();
+        let facs = [(c.g.fac.level, &c.g.fac)];
+        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        assert_eq!(c.g.npcs[0].at, at, "a downed bot is not pushed");
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y + 2.0)), FRAME);
+        assert_eq!(c.g.npcs[0].at, at, "a runner two metres up is not in the way");
+        c.g.npcs[0].hidden = Some(0);
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        assert_eq!(c.g.npcs[0].at, at, "a bot in a locker stays put");
+        c.g.npcs[0].hidden = None;
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        assert!(pdist(c.g.npcs[0].at, at) > 0.0, "a free bot on the runner is pushed out");
+        assert!(pdist(c.g.npcs[0].at, at) <= PUSH_CAP + SOFT_SPEED * FRAME + 1e-4, "by at most the cap and the steer");
+    }
+
     #[test]
     fn a_bot_on_a_resident_floor_keeps_simulating() {
         let Some(mut c) = any_switchback() else { return };
@@ -6107,6 +6497,8 @@ mod life_tests {
         let t = tuned(&["life"], |v| {
             v["life"]["poi"] = serde_json::json!({ "here": { "weight": 1.0, "acts": { "idle": 1 } } });
         });
+        // the bot spawns on the runner and is first moved out of the runner's body (the collision pass), then it idles
+        run(&mut g, &t, 3.0);
         let start = g.npcs[0].at;
         run(&mut g, &t, 30.0);
         let n = &g.npcs[0];

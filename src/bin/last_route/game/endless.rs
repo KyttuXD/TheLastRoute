@@ -1028,7 +1028,27 @@ impl Game {
             near.push(level - 1);
         }
         let cfg = super::preload::preload();
-        let mut keep = super::preload::keep_levels(level, &cfg, infinite::level_allowed);
+        // levels a walker is bound for stay built: both ends of every edge walked, each cross-floor goal, the floors of the
+        // edge a hunter heads for (hunters of every list, and the bots on an edge)
+        let mut pinned: Vec<i32> = Vec::new();
+        for b in &self.hunters {
+            b.pin_levels(&mut pinned);
+        }
+        for l in self.resident_hunters.levels() {
+            for slot in self.resident_hunters.list(l) {
+                slot.brain.pin_levels(&mut pinned);
+            }
+        }
+        for n in &self.npcs {
+            if let Some(w) = n.walk.as_ref() {
+                pinned.push(w.from.level);
+                pinned.push(w.to.level);
+            }
+        }
+        pinned.retain(|l| *l != level && infinite::level_allowed(*l));
+        pinned.sort_unstable();
+        pinned.dedup();
+        let mut keep = super::preload::keep_levels(level, &cfg, infinite::level_allowed, &pinned);
         for t in &near {
             if !keep.contains(t) {
                 keep.push(*t);
@@ -1045,7 +1065,7 @@ impl Game {
             let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| keep.contains(l)).collect();
             inf.stack.retain_levels(&kept);
             let held: Vec<(i32, usize)> = inf.stack.residents.iter().map(|r| (r.level, r.bytes())).collect();
-            drop = super::preload::to_evict(&held, &keep, level, &cfg);
+            drop = super::preload::to_evict(&held, &keep, level, &cfg, &pinned);
             let kept: Vec<i32> = inf.stack.levels().into_iter().filter(|l| !drop.contains(l)).collect();
             inf.stack.retain_levels(&kept);
         }
@@ -1374,6 +1394,10 @@ impl Game {
         ));
         for i in 0..self.hunters.len() {
             let p = self.hunters[i].pos;
+            // a hunter on a flight or ladder owns its position (its walk is in window metres and was shifted with it)
+            if self.hunters[i].on_edge() {
+                continue;
+            }
             if p.0 < 0.0
                 || p.1 < 0.0
                 || p.0 >= size
@@ -2221,6 +2245,11 @@ pub(super) fn shift_brain(b: &mut Brain, d: (f32, f32)) {
     b.last_known = b.last_known.map(s);
     b.wander_target = b.wander_target.map(s);
     b.search_target = b.search_target.map(s);
+    // a walk in progress keeps its own polyline (window metres): it moves with the window so the body stays continuous
+    if let Some(w) = b.walk.as_mut() {
+        w.shift(d.0.round() as i32, d.1.round() as i32);
+    }
+    b.shift_cross_goal(d);
     b.gimmick.shift(d);
     b.clear_path();
 }
@@ -4329,7 +4358,7 @@ mod walked_stair_tests {
         let (mut g, _) = on_landing(-1, &content, &catalog);
         let level = g.inf.as_ref().unwrap().level;
         let cfg = super::super::preload::preload();
-        let keep = super::super::preload::keep_levels(level, &cfg, infinite::level_allowed);
+        let keep = super::super::preload::keep_levels(level, &cfg, infinite::level_allowed, &[]);
         assert!(keep.len() > 1, "more than the adjacent storey is kept (the active level is not listed)");
         for _ in 0..=keep.len() {
             g.keep_stack(&content, &catalog);

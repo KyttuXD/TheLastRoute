@@ -54,8 +54,10 @@ pub fn preload() -> Preload {
 }
 
 /// The neighbour levels worth keeping resident around `current`, nearest first (alternating up and down), cut to
-/// `max_windows`. `current` itself is never listed. `allowed` filters levels the run may not enter.
-pub fn keep_levels(current: i32, cfg: &Preload, allowed: impl Fn(i32) -> bool) -> Vec<i32> {
+/// `max_windows`. `current` itself is never listed. `allowed` filters levels the run may not enter. `pinned` levels
+/// (a level a hunter or bot is walking toward, so it must stay built) are always kept, after the nearest ones and beyond
+/// the `max_windows` cut; the active level is never listed even when pinned.
+pub fn keep_levels(current: i32, cfg: &Preload, allowed: impl Fn(i32) -> bool, pinned: &[i32]) -> Vec<i32> {
     let mut out = Vec::new();
     let reach = cfg.levels_up.max(cfg.levels_down);
     for d in 1..=reach {
@@ -67,6 +69,11 @@ pub fn keep_levels(current: i32, cfg: &Preload, allowed: impl Fn(i32) -> bool) -
         }
     }
     out.truncate(cfg.max_windows.max(1));
+    for &l in pinned {
+        if l != current && !out.contains(&l) {
+            out.push(l);
+        }
+    }
     out
 }
 
@@ -82,18 +89,20 @@ pub fn held_bytes(stack: &LevelStack) -> Vec<(i32, usize)> {
 }
 
 /// The resident levels to drop: all not in `keep`, then, while the resident bytes pass the memory cap, the farthest from
-/// `current` among the rest (never `current`). `held` is (level, bytes), see `held_bytes`.
-pub fn to_evict(held: &[(i32, usize)], keep: &[i32], current: i32, cfg: &Preload) -> Vec<i32> {
-    let mut out: Vec<i32> = held.iter().map(|h| h.0).filter(|l| !keep.contains(l)).collect();
+/// `current` among the rest (never `current`). `held` is (level, bytes), see `held_bytes`. A `pinned` level is never
+/// evicted, neither as out of `keep` nor by the cap: the cap takes unpinned levels first and, still over, leaves the
+/// pinned ones held.
+pub fn to_evict(held: &[(i32, usize)], keep: &[i32], current: i32, cfg: &Preload, pinned: &[i32]) -> Vec<i32> {
+    let mut out: Vec<i32> = held.iter().map(|h| h.0).filter(|l| !keep.contains(l) && !pinned.contains(l)).collect();
     let cap = (cfg.memory_cap_mb * 1024.0 * 1024.0) as usize;
-    let mut rest: Vec<(i32, usize)> = held.iter().copied().filter(|h| keep.contains(&h.0)).collect();
+    let mut rest: Vec<(i32, usize)> = held.iter().copied().filter(|h| keep.contains(&h.0) || pinned.contains(&h.0)).collect();
     rest.sort_by_key(|h| std::cmp::Reverse((h.0 - current).abs()));
     let mut total: usize = rest.iter().map(|h| h.1).sum();
     for (l, b) in rest {
         if total <= cap {
             break;
         }
-        if l != current {
+        if l != current && !pinned.contains(&l) {
             out.push(l);
             total -= b;
         }
@@ -181,22 +190,22 @@ mod tests {
 
     #[test]
     fn keep_is_nearest_first_and_capped() {
-        let k = keep_levels(0, &cfg(), |_| true);
+        let k = keep_levels(0, &cfg(), |_| true, &[]);
         assert_eq!(k, vec![1, -1, 2, -2], "neighbours only, the active level is never listed");
         let small = Preload { max_windows: 3, ..cfg() };
-        assert_eq!(keep_levels(0, &small, |_| true), vec![1, -1, 2]);
+        assert_eq!(keep_levels(0, &small, |_| true, &[]), vec![1, -1, 2]);
     }
 
     #[test]
     fn keep_skips_levels_not_allowed() {
-        let k = keep_levels(0, &cfg(), |l| l <= 0);
+        let k = keep_levels(0, &cfg(), |l| l <= 0, &[]);
         assert_eq!(k, vec![-1, -2]);
     }
 
     #[test]
     fn a_changed_value_changes_the_levels_kept() {
         let down_only = Preload { levels_up: 0, ..cfg() };
-        assert_eq!(keep_levels(3, &down_only, |_| true), vec![2, 1]);
+        assert_eq!(keep_levels(3, &down_only, |_| true, &[]), vec![2, 1]);
     }
 
     #[test]
@@ -212,7 +221,7 @@ mod tests {
     #[test]
     fn evicts_levels_out_of_the_keep_set() {
         let held = [(0, 10), (1, 10), (5, 10)];
-        assert_eq!(to_evict(&held, &[0, 1], 0, &cfg()), vec![5]);
+        assert_eq!(to_evict(&held, &[0, 1], 0, &cfg(), &[]), vec![5]);
     }
 
     #[test]
@@ -220,11 +229,34 @@ mod tests {
         let mb = 1024 * 1024;
         let held = [(0, mb), (1, mb), (-2, mb)];
         let two_mb = Preload { memory_cap_mb: 2.0, ..cfg() };
-        let out = to_evict(&held, &[0, 1, -2], 0, &two_mb);
+        let out = to_evict(&held, &[0, 1, -2], 0, &two_mb, &[]);
         assert_eq!(out, vec![-2], "the farthest goes first, stopping once under the cap");
         let tight = Preload { memory_cap_mb: 0.1, ..cfg() };
-        let out = to_evict(&held, &[0, 1, -2], 0, &tight);
+        let out = to_evict(&held, &[0, 1, -2], 0, &tight, &[]);
         assert!(!out.contains(&0), "the current level is never evicted");
+    }
+
+    #[test]
+    fn a_pinned_level_is_kept_and_survives_a_cap_that_evicts_others() {
+        let mb = 1024 * 1024;
+        // pinned levels join the keep set beyond max_windows, never the active level, no duplicates
+        let small = Preload { max_windows: 2, ..cfg() };
+        assert_eq!(keep_levels(0, &small, |_| true, &[]), vec![1, -1]);
+        assert_eq!(keep_levels(0, &small, |_| true, &[-2, 0, 1]), vec![1, -1, -2]);
+        // out of the keep set, a pinned level stays; an unpinned one goes
+        let held = [(0, 10), (5, 10), (7, 10)];
+        assert_eq!(to_evict(&held, &[0], 0, &cfg(), &[5]), vec![7]);
+        // the cap takes the farthest unpinned level, not the pinned one
+        let held = [(0, mb), (1, mb), (-2, mb), (3, mb)];
+        let keep = [0, 1, -2, 3];
+        let two = Preload { memory_cap_mb: 2.0, ..cfg() };
+        let out = to_evict(&held, &keep, 0, &two, &[3]);
+        assert!(!out.contains(&3) && !out.contains(&0), "pinned and active survive: {out:?}");
+        assert_eq!(out, vec![-2, 1], "the unpinned ones are evicted, farthest first");
+        // still over the cap with only pinned left: they stay
+        let tight = Preload { memory_cap_mb: 0.1, ..cfg() };
+        let out = to_evict(&held, &keep, 0, &tight, &[3, -2]);
+        assert_eq!(out, vec![1]);
     }
 
     #[test]
@@ -246,11 +278,11 @@ mod tests {
         assert!(held.iter().all(|h| h.1 > 0), "a resident holds memory");
         let keep = [1, -1, -2];
         let roomy = Preload { memory_cap_mb: 1000.0, ..cfg() };
-        assert!(to_evict(&held, &keep, 0, &roomy).is_empty());
+        assert!(to_evict(&held, &keep, 0, &roomy, &[]).is_empty());
         // a cap below the three residents' bytes drops the farthest first and never the active level
         let total: usize = held.iter().map(|h| h.1).sum();
         let tight = Preload { memory_cap_mb: (total as f32 * 0.7) / (1024.0 * 1024.0), ..cfg() };
-        let out = to_evict(&held, &keep, 0, &tight);
+        let out = to_evict(&held, &keep, 0, &tight, &[]);
         assert_eq!(out.first(), Some(&-2), "the farthest resident goes first");
         assert!(!out.contains(&0));
     }

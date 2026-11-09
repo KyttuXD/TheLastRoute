@@ -531,7 +531,15 @@ impl Game {
             }
             None => vec![String::new(); n],
         };
-        let brains = std::mem::take(&mut self.hunters);
+        let mut brains = std::mem::take(&mut self.hunters);
+        // the hunters left on the floor the runner just walked off follow it by the flight instead of losing it (a guest
+        // only draws what the host sends: nothing is steered here)
+        if !self.remote_hunters {
+            let runner = self.p.pos;
+            for b in brains.iter_mut().filter(|b| !b.target_is_bot) {
+                b.follow_cross(runner, to);
+            }
+        }
         self.resident_hunters.put(from, join(ids, brains));
         if !self.resident_hunters.has(to) {
             // `to` was not synced: make its list alone from the shelf (or its lineup); no other list is touched, so the
@@ -968,9 +976,8 @@ impl Game {
                         }
                     }
                 }
-                if self.inf.is_some() {
-                    director::separate(dt, &mut brains, fac);
-                }
+                // after every brain of the list has stepped; a finite facility pushes its crowd apart too
+                director::separate(dt, &mut brains, fac);
             }
             *self.resident_hunters.list_mut(level) = join(ids, brains);
             base += count;
@@ -992,8 +999,7 @@ impl Game {
                 Event::FacilityAlert { at, except_self } => {
                     for (j, s) in self.resident_hunters.list_mut(level).iter_mut().enumerate() {
                         if s.brain.active && !(except_self && j == from) {
-                            s.brain.state = crate::hunters::brain::State::Investigate;
-                            s.brain.last_known = Some(at);
+                            s.brain.alert_on(at, level);
                         }
                     }
                 }

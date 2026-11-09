@@ -13,6 +13,7 @@
 //! hunter is stunned, a hidden bot is out of reach. A bot walks to a downed teammate in range (the "revive" intent,
 //! npc.rs) and holds the revive; a bot hidden in a locker cannot.
 
+use super::resident_hunters::Spot;
 use super::{guest_gate, pdist, Controls, Game};
 use crate::net::world_sync::ReviveSignal;
 use serde_json::Value;
@@ -207,33 +208,46 @@ impl Game {
     }
 
     /// A hunter that is chasing and reaches a joined bot on its floor puts the bot down (not a hidden bot, not one
-    /// already down, not a bot on a ladder or flight). The hunter is stunned as when it downs the runner. Only the
-    /// side that simulates the hunters runs this (a guest has no bots of its own).
+    /// already down, not a bot on a ladder or flight). Every hunter counts, the active list's and the resident levels'.
+    /// A hunter reaches a bot only within `NPC_CATCH_HEIGHT` of its height and, from `NPC_CATCH_LOS_MIN` away, with a
+    /// clear line over the floor: one up a flight cannot down a bot below it, nor one through a wall. The hunter is
+    /// stunned as when it downs the runner. Only the side that simulates the hunters runs this (a guest has no bots of
+    /// its own).
     pub(super) fn npc_catches(&mut self) {
         if self.report.is_some() || self.npcs.is_empty() {
             return;
         }
         let r = rules();
-        let mut caught: Vec<(u32, usize)> = vec![];
+        let mut caught: Vec<(u32, Spot)> = vec![];
         for n in &self.npcs {
             if !n.joined || n.hidden.is_some() || n.walk.is_some() || self.downed_npcs.contains_key(&n.id) {
                 continue;
             }
-            let hit = self.hunters.iter().position(|h| {
-                h.active
-                    && matches!(h.state, crate::hunters::brain::State::Chase)
-                    && h.stun <= 0.0
-                    && h.level == n.level
-                    && pdist(h.pos, n.at) <= r.npc_catch_radius
-            });
-            if let Some(i) = hit {
-                caught.push((n.id, i));
+            let fac: Option<&crate::world::Facility> = if n.level == self.fac.level {
+                Some(&self.fac)
+            } else {
+                self.inf.as_ref().and_then(|i| i.stack.get(n.level)).map(|res| &res.fac)
+            };
+            let reaches = |h: &crate::hunters::brain::Brain| hunter_reaches(h, n.at, n.y, n.level, r.npc_catch_radius, fac);
+            let mut hit = self.hunters.iter().position(|h| reaches(h)).map(Spot::Active);
+            if hit.is_none() {
+                'levels: for l in self.resident_hunters.levels() {
+                    for (i, s) in self.resident_hunters.list(l).iter().enumerate() {
+                        if reaches(&s.brain) {
+                            hit = Some(Spot::Resident(l, i));
+                            break 'levels;
+                        }
+                    }
+                }
+            }
+            if let Some(spot) = hit {
+                caught.push((n.id, spot));
             }
         }
-        for (id, hunter) in caught {
+        for (id, spot) in caught {
             let name = self.npcs.iter().find(|n| n.id == id).map(|n| n.name.clone()).unwrap_or_default();
             if self.npc_go_down(id) {
-                if let Some(h) = self.hunters.get_mut(hunter) {
+                if let Some(h) = self.hunter_at_mut(spot) {
                     h.apply_stun(r.hunter_stun_seconds, false);
                 }
                 self.say(&format!("{name} IS DOWN"));
@@ -347,6 +361,25 @@ impl Game {
             }
         }
     }
+}
+
+/// Largest height difference (m) at which a hunter can down a bot: a hunter two metres up a flight cannot.
+const NPC_CATCH_HEIGHT: f32 = 1.2;
+/// Closer than this (m) a hunter downs a bot without the line-of-sight test (the sample points sit on the walls' edge).
+const NPC_CATCH_LOS_MIN: f32 = 0.6;
+
+/// Whether chasing hunter `h` can put down a bot at `at` with feet at `y` on `level`: it is active, chasing, not
+/// stunned, on that level, within `radius` and `NPC_CATCH_HEIGHT` of height, and (from `NPC_CATCH_LOS_MIN` away) has a clear
+/// line over `fac`'s floor.
+fn hunter_reaches(h: &crate::hunters::brain::Brain, at: (f32, f32), y: f32, level: i32, radius: f32, fac: Option<&crate::world::Facility>) -> bool {
+    if !(h.active && matches!(h.state, crate::hunters::brain::State::Chase) && h.stun <= 0.0 && h.level == level) {
+        return false;
+    }
+    let d = pdist(h.pos, at);
+    if d > radius || (h.y - y).abs() > NPC_CATCH_HEIGHT {
+        return false;
+    }
+    d < NPC_CATCH_LOS_MIN || fac.map_or(true, |f| f.has_line_of_sight(h.pos, at))
 }
 
 #[cfg(test)]
@@ -561,6 +594,7 @@ mod tests {
         h.state = crate::hunters::brain::State::Chase;
         h.stun = 0.0;
         h.level = level;
+        h.y = crate::game::level_stack::floor_y_of(level);
         h.pos = pos;
         true
     }
@@ -613,6 +647,73 @@ mod tests {
         g.npc_catches();
         assert!(!g.downed_npcs.contains_key(&a), "a hidden bot is out of reach");
         assert!(!g.downed_npcs.contains_key(&b), "a bot beyond the catch radius is safe");
+    }
+
+    /// A joined, unhidden bot at rest on its level; its place and level.
+    fn ready_bot(g: &mut Game) -> (u32, (f32, f32), i32, f32) {
+        let n = &mut g.npcs[0];
+        n.joined = true;
+        n.hidden = None;
+        n.walk = None;
+        (n.id, n.at, n.level, n.y)
+    }
+
+    #[test]
+    fn a_resident_hunter_puts_a_bot_down() {
+        let (mut g, _) = game();
+        let (id, at, lv, y) = ready_bot(&mut g);
+        if !chase_at(&mut g, lv, at) {
+            return;
+        }
+        // the hunter is on a resident list, not the active one
+        let mut brain = g.hunters.remove(0);
+        brain.y = y;
+        let slot = crate::game::resident_hunters::Slot { id: String::new(), brain };
+        g.resident_hunters.put(lv, vec![slot]);
+        g.npc_catches();
+        assert!(g.downed_npcs.contains_key(&id), "a resident hunter downs the bot it reaches");
+        assert!(g.resident_hunters.iter_all().next().unwrap().stun > 0.0, "and is stunned by it");
+    }
+
+    #[test]
+    fn a_hunter_at_another_height_does_not_down_a_bot() {
+        let (mut g, _) = game();
+        let (id, at, lv, y) = ready_bot(&mut g);
+        if !chase_at(&mut g, lv, at) {
+            return;
+        }
+        g.hunters[0].y = y + 2.0; // two metres up a flight, straight above the bot
+        g.npc_catches();
+        assert!(!g.downed_npcs.contains_key(&id), "a hunter two metres higher cannot reach the bot");
+        g.hunters[0].y = y + 0.5;
+        g.npc_catches();
+        assert!(g.downed_npcs.contains_key(&id), "within the height limit it can");
+    }
+
+    #[test]
+    fn a_hunter_behind_a_wall_does_not_down_a_bot() {
+        let (mut g, _) = game();
+        // an open cell, a wall cell beside it and open floor behind the wall
+        let pair = g.fac.floor_cells().into_iter().find_map(|c| {
+            let at = |dx: i32| (c.x as f32 + dx as f32 + 0.5, c.y as f32 + 0.5);
+            let floor = |dx: i32| g.fac.is_floor(at(dx).0 as f64, at(dx).1 as f64);
+            (floor(0) && !floor(1) && floor(2)).then(|| (at(0), at(2)))
+        });
+        let Some((bot, far)) = pair else { return };
+        let level = g.fac.level;
+        let Some(h) = g.hunters.get_mut(0) else { return };
+        h.active = true;
+        h.state = crate::hunters::brain::State::Chase;
+        h.stun = 0.0;
+        h.level = level;
+        h.y = 0.0;
+        h.pos = far;
+        // the radius is widened to 3 m so only the wall is in the way
+        assert!(!hunter_reaches(h, bot, 0.0, level, 3.0, Some(&g.fac)), "the wall blocks the reach");
+        h.pos = (bot.0 + 0.3, bot.1);
+        assert!(hunter_reaches(h, bot, 0.0, level, 3.0, Some(&g.fac)), "close by, with no wall between, it reaches");
+        h.pos = far;
+        assert!(hunter_reaches(h, bot, 0.0, level, 3.0, None), "with no floor to test the wall is not known");
     }
 
     #[test]

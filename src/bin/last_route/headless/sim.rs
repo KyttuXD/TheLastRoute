@@ -630,6 +630,8 @@ impl Sim {
                 "slow": r2(h.slow_timer),
                 "speed": r2(h.moving_speed),
                 "last_known": h.last_known.map(pt),
+                "snap_count": h.snap_count,
+                "giveup_count": h.giveup_count,
                 "taser_immune": h.def.taser_immune,
                 "melee_immune": h.def.melee_immune,
             })

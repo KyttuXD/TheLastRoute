@@ -759,62 +759,172 @@ fn exit_point(relays: &[Cell], seen_at: (f32, f32), toward: (f32, f32)) -> (f32,
     found
 }
 
-/// HunterDirector.separate: active hunters closer than SEPARATION push apart, skipping pushes
-/// into walls or props. Returns how many moved.
+/// Hard cap (metres per frame) on the overlap push of `separate`: two hunters closer than their radii move out by half
+/// the overlap each, never more than this in one frame.
+pub const SEPARATION_MAX_STEP: f32 = 0.15;
+
+/// One hunter's pending shove inside `separate` (a scratch row, reused every frame).
+#[derive(Clone, Copy, Default)]
+struct Shove {
+    /// Soft steering sum (unit-ish vectors, scaled by SEPARATION_SPEED * dt at the end).
+    soft: (f32, f32),
+    /// Overlap push in metres.
+    hard: (f32, f32),
+    /// The hunter that overlaps this one the most, and by how much.
+    partner: usize,
+    depth: f32,
+    /// The push that did not fit anywhere, to hand to the partner.
+    blocked: (f32, f32),
+}
+
+thread_local! {
+    static SHOVES: std::cell::RefCell<Vec<Shove>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A short push of `pos` by `d` that keeps the hunter on ground it fits: the whole push, else the x part, else the z
+/// part (a slide along a wall). `None` when none fits.
+fn slide_step(fac: &Facility, pos: (f32, f32), d: (f32, f32)) -> Option<(f32, f32)> {
+    let full = (pos.0 + d.0, pos.1 + d.1);
+    if fac.hunter_fits(full.0, full.1) {
+        return Some(full);
+    }
+    if d.0.abs() > 1e-5 && fac.hunter_fits(full.0, pos.1) {
+        return Some((full.0, pos.1));
+    }
+    if d.1.abs() > 1e-5 && fac.hunter_fits(pos.0, full.1) {
+        return Some((pos.0, full.1));
+    }
+    None
+}
+
+/// HunterDirector.separate: active hunters closer than SEPARATION steer apart (SEPARATION_SPEED), and two that overlap
+/// (closer than their radii) are moved out by half the overlap each, at most SEPARATION_MAX_STEP a frame. Every push is
+/// computed first, then applied, so the result does not depend on the order of the slice. A push that does not fit is
+/// tried along x only, then z only (a slide); if neither fits the other body is pushed instead.
+///
+/// A hunter walking an edge (a flight, a ladder) owns its own position: it is never moved here, and it pushes the others
+/// with the thin edge radius. Two hunters on one edge: the one behind gets `Brain::edge_hold` (read by the edge walk).
+/// Returns how many moved.
 pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
-    let mut pushed = 0;
-    for i in 0..hunters.len() {
-        if !hunters[i].active || hunters[i].walk.is_some() {
+    let n = hunters.len();
+    if n < 2 {
+        return 0;
+    }
+    let rules = super::flight_edges::rules();
+    let mut sh = SHOVES.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    sh.clear();
+    sh.resize(n, Shove::default());
+    let mut any = false;
+    for i in 0..n {
+        if !hunters[i].active {
             continue;
         }
-        let mut push = (0.0f32, 0.0f32);
-        for j in 0..hunters.len() {
-            if i == j || !hunters[j].active {
+        for j in (i + 1)..n {
+            if !hunters[j].active {
+                continue;
+            }
+            let (ma, mb) = (hunters[i].walk.is_none(), hunters[j].walk.is_none());
+            if !ma && !mb {
+                // follow the leader: on a shared edge the one behind (smaller share walked) slows while it is crowded
+                if let (Some(wi), Some(wj)) = (hunters[i].walk.as_ref(), hunters[j].walk.as_ref()) {
+                    if wi.shares_edge(wj) {
+                        let off = (hunters[i].pos.0 - hunters[j].pos.0, hunters[i].pos.1 - hunters[j].pos.1);
+                        let gap = (off.0 * off.0 + off.1 * off.1).sqrt();
+                        if gap < SEPARATION {
+                            let behind = if wi.fraction() <= wj.fraction() { i } else { j };
+                            hunters[behind].edge_hold = hunters[behind].edge_hold.max(((SEPARATION - gap) / SEPARATION).min(0.75));
+                        }
+                    }
+                }
                 continue;
             }
             // hunters at different heights (one part-way up a flight, one below it) do not crowd each other
-            if (hunters[i].y - hunters[j].y).abs() > super::flight_edges::rules().same_layer_eps {
+            if (hunters[i].y - hunters[j].y).abs() > rules.same_layer_eps {
                 continue;
             }
-            let off = (
-                hunters[i].pos.0 - hunters[j].pos.0,
-                hunters[i].pos.1 - hunters[j].pos.1,
-            );
+            let off = (hunters[i].pos.0 - hunters[j].pos.0, hunters[i].pos.1 - hunters[j].pos.1);
+            if off.0.abs() >= SEPARATION || off.1.abs() >= SEPARATION {
+                continue;
+            }
             let gap = (off.0 * off.0 + off.1 * off.1).sqrt();
             if gap >= SEPARATION {
                 continue;
             }
-            let away = if gap > 0.001 {
-                (off.0 / gap, off.1 / gap)
-            } else {
-                rotated((1.0, 0.0), i as f32 * 2.4)
-            };
+            // `away` points from j to i
+            let away = if gap > 0.001 { (off.0 / gap, off.1 / gap) } else { rotated((1.0, 0.0), (i + j) as f32 * 2.4) };
             let k = (SEPARATION - gap) / SEPARATION;
-            push.0 += away.0 * k;
-            push.1 += away.1 * k;
+            let ra = if ma { crate::config::HUNTER_RADIUS } else { rules.edge_fit_radius };
+            let rb = if mb { crate::config::HUNTER_RADIUS } else { rules.edge_fit_radius };
+            let over = (ra + rb - gap).max(0.0);
+            let share = if ma && mb { over * 0.5 } else { over };
+            if ma {
+                let s = &mut sh[i];
+                s.soft.0 += away.0 * k;
+                s.soft.1 += away.1 * k;
+                s.hard.0 += away.0 * share;
+                s.hard.1 += away.1 * share;
+                if over > s.depth {
+                    s.depth = over;
+                    s.partner = j;
+                }
+            }
+            if mb {
+                let s = &mut sh[j];
+                s.soft.0 -= away.0 * k;
+                s.soft.1 -= away.1 * k;
+                s.hard.0 -= away.0 * share;
+                s.hard.1 -= away.1 * share;
+                if over > s.depth {
+                    s.depth = over;
+                    s.partner = i;
+                }
+            }
+            any = true;
         }
-        if push == (0.0, 0.0) {
-            continue;
-        }
-        let len = (push.0 * push.0 + push.1 * push.1).sqrt();
-        let lim = if len > 1.0 {
-            (push.0 / len, push.1 / len)
-        } else {
-            push
-        };
-        let to = (
-            hunters[i].pos.0 + lim.0 * SEPARATION_SPEED * dt,
-            hunters[i].pos.1 + lim.1 * SEPARATION_SPEED * dt,
-        );
-        // the hunter's own body against the runner's rule (walls, props, railings, doors, lockers, flight dividers and
-        // stair wells) and the crawl-under pipes (`hunter_fits`), and the push is a short step: it never carries a body
-        // through anything
-        if !fac.hunter_fits(to.0, to.1) {
-            continue;
-        }
-        hunters[i].pos = to;
-        pushed += 1;
     }
+    let mut pushed = 0;
+    if any {
+        let step = SEPARATION_SPEED * dt;
+        for i in 0..n {
+            let s = sh[i];
+            if s.soft == (0.0, 0.0) && s.hard == (0.0, 0.0) {
+                continue;
+            }
+            let slen = (s.soft.0 * s.soft.0 + s.soft.1 * s.soft.1).sqrt();
+            let lim = if slen > 1.0 { (s.soft.0 / slen, s.soft.1 / slen) } else { s.soft };
+            let hlen = (s.hard.0 * s.hard.0 + s.hard.1 * s.hard.1).sqrt();
+            let hk = if hlen > SEPARATION_MAX_STEP { SEPARATION_MAX_STEP / hlen } else { 1.0 };
+            let d = (lim.0 * step + s.hard.0 * hk, lim.1 * step + s.hard.1 * hk);
+            // the hunter's own body against the runner's rule (walls, props, railings, doors, lockers, flight dividers,
+            // stair wells, drops) and the crawl-under pipes (`hunter_fits`): a short step, never through anything
+            match slide_step(fac, hunters[i].pos, d) {
+                Some(p) => {
+                    hunters[i].pos = p;
+                    pushed += 1;
+                }
+                None => {
+                    if hlen > 0.0 {
+                        sh[i].blocked = d;
+                    }
+                }
+            }
+        }
+        // a hunter jammed against a wall hands its push to the body that is crowding it
+        for i in 0..n {
+            let b = sh[i].blocked;
+            if b == (0.0, 0.0) {
+                continue;
+            }
+            let p = sh[i].partner;
+            if p < n && hunters[p].active && hunters[p].walk.is_none() {
+                if let Some(q) = slide_step(fac, hunters[p].pos, (-b.0, -b.1)) {
+                    hunters[p].pos = q;
+                    pushed += 1;
+                }
+            }
+        }
+    }
+    SHOVES.with(|s| *s.borrow_mut() = sh);
     pushed
 }
 
@@ -1068,5 +1178,149 @@ mod tests {
             "relay_rush": { "search_clear": 20.0 }
         }));
         assert!(on.rush_search, "searchers stay in the rush unless the data turns them off");
+    }
+}
+
+#[cfg(test)]
+mod separation_tests {
+    use super::*;
+    use crate::config::HUNTER_RADIUS;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    fn fac() -> Facility {
+        let cat = crate::world::catalog::Catalog::load();
+        Facility::generate("SEP-2", &crate::world::facility::Options::default(), &cat)
+    }
+
+    fn mk(at: (f32, f32)) -> Brain {
+        let v: serde_json::Value = serde_json::from_str(include_str!("../data/hunters/aki.json")).unwrap();
+        let def = crate::content::hunters::parse(&v, None, "").unwrap();
+        let mut b = Brain::new(def, at, "SEP", Difficulty::Standard);
+        b.state = State::Wander;
+        b.active = true;
+        b.y = 0.0;
+        b
+    }
+
+    /// A point with open ground (`hunter_fits`) on every half metre within `reach` of it.
+    fn open_spot(f: &Facility, reach: f32) -> Option<(f32, f32)> {
+        let n = (reach / 0.5) as i32;
+        f.floor_cells().into_iter().map(|c| c.center()).find(|p| {
+            (-n..=n).all(|i| (-n..=n).all(|j| f.hunter_fits(p.0 + i as f32 * 0.5, p.1 + j as f32 * 0.5)))
+        })
+    }
+
+    fn min_gap(h: &[Brain]) -> f32 {
+        let mut m = f32::INFINITY;
+        for i in 0..h.len() {
+            for j in (i + 1)..h.len() {
+                m = m.min(dist(h[i].pos, h[j].pos));
+            }
+        }
+        m
+    }
+
+    #[test]
+    fn a_four_hunter_pile_in_open_ground_resolves_and_stays_on_ground() {
+        let f = fac();
+        let c = open_spot(&f, 1.5).or_else(|| open_spot(&f, 1.0)).expect("open ground");
+        let offs = [(0.0, 0.0), (0.12, 0.05), (-0.07, 0.15), (0.05, -0.11)];
+        let mut hs: Vec<Brain> = offs.iter().map(|o| mk((c.0 + o.0, c.1 + o.1))).collect();
+        for _ in 0..90 {
+            separate(DT, &mut hs, &f);
+            assert!(hs.iter().all(|b| f.hunter_fits(b.pos.0, b.pos.1)), "a push never leaves hunter ground");
+        }
+        assert!(min_gap(&hs) >= 2.0 * HUNTER_RADIUS - 0.01, "the pile spread to body width, got {}", min_gap(&hs));
+    }
+
+    #[test]
+    fn a_pair_jammed_against_a_wall_still_separates() {
+        let f = fac();
+        let mut found = None;
+        'a: for cell in f.floor_cells() {
+            for k in 3..10 {
+                let p = (cell.x as f32 + k as f32 * 0.1, cell.y as f32 + 0.5);
+                if f.hunter_fits(p.0, p.1) && !f.hunter_fits(p.0 + 0.4, p.1) && f.hunter_fits(p.0 - 0.7, p.1) {
+                    found = Some(p);
+                    break 'a;
+                }
+            }
+        }
+        let p = found.expect("a spot with a wall to the east");
+        let mut hs = vec![mk(p), mk((p.0 - 0.1, p.1 + 0.05))];
+        for _ in 0..120 {
+            separate(DT, &mut hs, &f);
+        }
+        assert!(hs.iter().all(|b| f.hunter_fits(b.pos.0, b.pos.1)), "nobody pushed into the wall");
+        assert!(min_gap(&hs) >= 2.0 * HUNTER_RADIUS - 0.02, "the wall does not hold two hunters together, got {}", min_gap(&hs));
+    }
+
+    #[test]
+    fn pushes_do_not_depend_on_the_order_of_the_slice() {
+        let f = fac();
+        let c = open_spot(&f, 1.5).or_else(|| open_spot(&f, 1.0)).expect("open ground");
+        let ps = [(0.0, 0.0), (0.2, 0.05), (-0.1, 0.25), (0.15, -0.2)];
+        let at = |i: usize| (c.0 + ps[i].0, c.1 + ps[i].1);
+        let mut a: Vec<Brain> = (0..4).map(|i| mk(at(i))).collect();
+        let order = [2usize, 0, 3, 1];
+        let mut b: Vec<Brain> = order.iter().map(|&i| mk(at(i))).collect();
+        separate(DT, &mut a, &f);
+        separate(DT, &mut b, &f);
+        for (slot, &i) in order.iter().enumerate() {
+            assert!(dist(a[i].pos, b[slot].pos) < 1e-4, "hunter {i} ends the same wherever it sits in the list");
+        }
+    }
+
+    #[test]
+    fn fewer_than_two_hunters_do_nothing() {
+        let f = fac();
+        let mut none: Vec<Brain> = vec![];
+        assert_eq!(separate(DT, &mut none, &f), 0);
+        let mut one = vec![mk((5.5, 5.5))];
+        assert_eq!(separate(DT, &mut one, &f), 0);
+        assert_eq!(one[0].pos, (5.5, 5.5));
+    }
+
+    #[test]
+    fn a_chase_straight_across_a_drop_never_ends_on_it() {
+        let mut f = fac();
+        let drop = f
+            .floor_cells()
+            .into_iter()
+            .find(|c| (-3..=3).all(|i| f.hunter_fits(c.x as f32 + 0.5 + i as f32, c.y as f32 + 0.5)))
+            .expect("a row of open ground");
+        f.set_drop_cells(&[drop]);
+        let (cx, cz) = drop.center();
+        assert!(!f.body_fits(cx, cz, HUNTER_RADIUS), "a body does not fit on a drop cell");
+        assert!(!f.hunter_fits(cx, cz), "a hunter does not stand on a drop cell");
+        assert!(f.body_fits_at(cx, cz, crate::config::PLAYER_RADIUS, 0.0), "the runner may still enter a drop to fall");
+        let mut pos = (cx - 3.0, cz);
+        for _ in 0..80 {
+            let next = (pos.0 + 0.1, pos.1);
+            if f.hunter_fits(next.0, next.1) {
+                pos = next;
+            }
+            assert!(!f.is_drop(Cell::new(pos.0.floor() as i32, pos.1.floor() as i32)), "stopped on a drop at {pos:?}");
+        }
+        assert!(pos.0 < drop.x as f32, "the chase stops at the edge, got {pos:?}");
+    }
+
+    #[test]
+    fn body_fits_is_unchanged_away_from_a_drop() {
+        let plain = fac();
+        let mut holed = fac();
+        let drop = holed.floor_cells()[holed.floor_cells().len() / 2];
+        holed.set_drop_cells(&[drop]);
+        let mut seen = 0;
+        for c in plain.floor_cells() {
+            if (c.x - drop.x).abs() <= 2 && (c.y - drop.y).abs() <= 2 {
+                continue;
+            }
+            let (x, y) = c.center();
+            assert_eq!(plain.body_fits(x, y, HUNTER_RADIUS), holed.body_fits(x, y, HUNTER_RADIUS), "cell {c:?}");
+            seen += 1;
+        }
+        assert!(seen > 10);
     }
 }
