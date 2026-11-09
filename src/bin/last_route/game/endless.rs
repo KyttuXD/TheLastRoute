@@ -24,6 +24,13 @@ use super::player::stair_height_at;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+thread_local! {
+    /// `keep_stack`'s list of pinned levels, reused every frame so it allocates nothing once it has grown.
+    static KEEP_PINNED: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The resident levels walked in `keep_stack`, reused every frame (`ResidentHunters::levels_into`).
+    static KEEP_RESIDENT: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// What the full map draws of one discovered level-0 chunk (Godot's `_discovered_chunks` record for the map). It is taken
 /// when the chunk first loads and kept for the run, so the chunk stays on the map after the window moves on. `walls` and
 /// `holes` are chunk-local (row-major, `z * CHUNK + x`); the stairs, relays, batteries and props are absolute cells.
@@ -1030,15 +1037,20 @@ impl Game {
         let cfg = super::preload::preload();
         // levels a walker is bound for stay built: both ends of every edge walked, each cross-floor goal, the floors of the
         // edge a hunter heads for (hunters of every list, and the bots on an edge)
-        let mut pinned: Vec<i32> = Vec::new();
+        // (a scratch list reused every frame: taken here, cleared, put back before the function returns)
+        let mut pinned: Vec<i32> = KEEP_PINNED.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        pinned.clear();
         for b in &self.hunters {
             b.pin_levels(&mut pinned);
         }
-        for l in self.resident_hunters.levels() {
+        let mut resident_levels: Vec<i32> = KEEP_RESIDENT.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        self.resident_hunters.levels_into(&mut resident_levels);
+        for &l in &resident_levels {
             for slot in self.resident_hunters.list(l) {
                 slot.brain.pin_levels(&mut pinned);
             }
         }
+        KEEP_RESIDENT.with(|c| *c.borrow_mut() = resident_levels);
         for n in &self.npcs {
             if let Some(w) = n.walk.as_ref() {
                 pinned.push(w.from.level);
@@ -1054,7 +1066,10 @@ impl Game {
                 keep.push(*t);
             }
         }
-        let Some(inf) = self.inf.as_mut() else { return };
+        let Some(inf) = self.inf.as_mut() else {
+            KEEP_PINNED.with(|c| *c.borrow_mut() = pinned);
+            return;
+        };
         inf.stack.retain_center(center);
         let mut drop: Vec<i32> = Vec::new();
         if on_link {
@@ -1086,6 +1101,7 @@ impl Game {
             let (fac, fix) = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
             inf.stack.put(Resident { level: t, center, fac, fix });
         }
+        KEEP_PINNED.with(|c| *c.borrow_mut() = pinned);
         self.sync_resident_hunters(content);
     }
 

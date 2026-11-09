@@ -38,7 +38,7 @@ const MAX_TEXT: usize = 120;
 const PACK_KINDS: [&str; 12] =
     ["props", "regions", "hunters", "grabs", "sounds", "ambience", "floors", "walls", "ceilings", "rooms", "deaths", "emotes"];
 /// `MANIFEST_KEYS` in lr_server.
-const MANIFEST_KEYS: [&str; 9] = ["schema", "id", "name", "version", "author", "description", "game_version", "overrides", "files"];
+const MANIFEST_KEYS: [&str; 10] = ["schema", "id", "name", "version", "author", "description", "game_version", "overrides", "files", "levels"];
 /// File types a pack may hold besides its JSON.
 const ASSET_EXTENSIONS: [&str; 4] = ["bbmodel", "glb", "png", "ogg"];
 
@@ -252,8 +252,12 @@ fn check_manifest(bytes: &[u8]) -> Result<String, String> {
     if m.get("schema").and_then(Value::as_str) != Some("lr.pack/1") {
         return Err("pack.json: \"schema\" must be \"lr.pack/1\" (INVALID_PACK_SCHEMA)".to_string());
     }
-    if let Some(key) = m.keys().find(|k| !MANIFEST_KEYS.contains(&k.as_str())) {
+    if let Some(key) = m.keys().find(|k| !MANIFEST_KEYS.contains(&k.as_str()) && k.as_str() != "levels") {
         return Err(format!("pack.json: \"{key}\" is not a pack field (UNKNOWN_PACK_FIELD); a pack holds content, never scripts"));
+    }
+    // the optional "levels" section adds levels below the shipped ones (world::levels); it is checked, never run here
+    if let Some(section) = m.get("levels") {
+        crate::world::levels::check_section(section).map_err(|why| format!("pack.json: \"levels\" {why} (INVALID_PACK_LEVELS)"))?;
     }
     if let Some(overrides) = m.get("overrides") {
         let ok = overrides.as_array().is_some_and(|a| a.iter().all(|e| e.as_str().is_some_and(override_ok)));
@@ -1389,7 +1393,7 @@ mod tests {
         assert!(SERVER_SOURCE.contains(&format!("max_files: {},", packs::limits().max_files)));
         assert!(SERVER_SOURCE.contains(&format!("max_text: {MAX_TEXT},")));
         let keys = MANIFEST_KEYS.iter().map(|k| format!("\"{k}\"")).collect::<Vec<_>>().join(", ");
-        assert!(SERVER_SOURCE.contains(&format!("[&str; 9] = [{keys}]")), "MANIFEST_KEYS drifted");
+        assert!(SERVER_SOURCE.contains(&format!("[&str; 10] = [{keys}]")), "MANIFEST_KEYS drifted");
     }
 
     #[test]

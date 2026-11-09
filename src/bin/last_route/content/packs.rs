@@ -194,6 +194,16 @@ pub fn validate_dir(dir: &Path) -> (Vec<String>, Vec<String>) {
         return (warnings, vec![]);
     };
     let mut provides = pack.provides.clone();
+    // an optional "levels" section in pack.json (data/levels.json's entry shape) must extend the shipped levels
+    if let Some(section) = std::fs::read_to_string(dir.join("pack.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.get("levels").cloned())
+    {
+        if let Err(why) = crate::world::levels::check_section(&section) {
+            errors.push(format!("{}: pack.json \"levels\": {why}", pack.id));
+        }
+    }
     let table = crate::packs::regions::load(&c.packs, &mut warnings);
     // "loaded, but no level places it" is a note for a new region id, not a fault of the pack
     warnings.retain(|w| !w.contains("no level places it"));
@@ -339,6 +349,48 @@ pub fn load_all(c: &mut Content) {
         pack_import::load_stored_into(c);
     }
     activate_region_loot(c);
+    activate_pack_levels(c);
+}
+
+/// Registers the `levels` section of each loaded pack with the level table (`world::levels::register_pack_section`), so
+/// the levels a pack adds are played. This is the play-activation point: `load_all` runs it once the packs are loaded
+/// for the game, while `validate_dir` and the browser import check only validate a section (`levels::check_section`)
+/// and never register it. A section the table refuses goes to `c.warnings` and its levels are not added.
+fn activate_pack_levels(c: &mut Content) {
+    let packs: Vec<(String, PathBuf)> = c.packs.iter().map(|p| (p.id.clone(), p.dir.clone())).collect();
+    for (id, dir) in packs {
+        // a pack already registered by an earlier load of the content keeps its levels (a second load adds nothing)
+        let Ok(mut done) = LEVEL_PACKS.lock() else {
+            return;
+        };
+        if done.contains(&id) {
+            continue;
+        }
+        let Some(text) = read_pack_file(&dir, "pack.json").and_then(|b| String::from_utf8(b).ok()) else {
+            continue;
+        };
+        let Some(section) = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("levels").cloned())
+        else {
+            continue;
+        };
+        match crate::world::levels::register_pack_section(&section) {
+            Ok(()) => done.push(id),
+            Err(why) => c.warnings.push(format!("{id}: pack.json \"levels\" {why}")),
+        }
+    }
+}
+
+/// The packs whose `levels` section is in the level table (`activate_pack_levels`).
+static LEVEL_PACKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Forgets which packs already registered their levels (tests that reset the level table).
+#[cfg(test)]
+pub(crate) fn forget_level_packs() {
+    if let Ok(mut done) = LEVEL_PACKS.lock() {
+        done.clear();
+    }
 }
 
 fn load_pack(c: &mut Content, dir: &Path) {

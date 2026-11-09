@@ -868,14 +868,10 @@ impl Game {
         self.p.floor_kind = crate::render::world_mesh::floor_kind_at(f, x, y, &mut self.hunter_floors.choices);
     }
 
-    /// The level layer whose bed wins over the region's (audio/ambient.rs `bed_id_for`): "sewer" or "inferno" on the
-    /// Infinite route's whole-layer levels (-1..=-3), None elsewhere.
+    /// The level layer whose bed wins over the region's (audio/ambient.rs `bed_id_for`): the levels table's layer for the
+    /// Infinite route's level (a deeper level with none takes the deep layer), None on level 0 and above.
     fn ambience_layer(&self) -> Option<&'static str> {
-        self.inf
-            .as_ref()
-            .filter(|i| (-3..=-1).contains(&i.level))
-            .map(|i| crate::world::route::regions::godot_region_for(&i.seed, 0, 0, i.level))
-            .filter(|r| *r == "sewer" || *r == "inferno")
+        self.inf.as_ref().and_then(|i| crate::audio::ambient::layer_for_level(i.level))
     }
 
     pub fn eye(&self) -> Vec3 {

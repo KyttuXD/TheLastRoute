@@ -518,6 +518,9 @@ pub struct Brain {
     pub(crate) edge_hold: f32,
     /// This hunter's fixed offset from the centre of its landing cell (<= `land_spread`), so followers do not stack.
     land_offset: (f32, f32),
+    /// Set when a walk set the hunter down off the centre of its landing cell: the next update checks that spot against the
+    /// landing level's own facility (`hunter_fits`; the walk only has the level it left) and falls back to the cell centre.
+    land_check: bool,
     /// Seconds spent on the current edge.
     edge_clock: f32,
     /// The point of interest the current wander goal was picked from (hunters/activities.rs); None for a goal set
@@ -567,8 +570,6 @@ pub struct Brain {
 }
 
 const ARRIVAL_DISTANCE: f32 = 0.65;
-/// A capture beyond this distance needs a clear line (a wall, a shut door or a railing refuses it); closer is a grab.
-const CAPTURE_LOS_SLACK: f32 = 0.15;
 /// The centre-to-centre distance two bodies keep: a hunter is never closer to its target than this.
 const BODY_GAP: f32 = HUNTER_RADIUS + PLAYER_RADIUS;
 /// data/hunter_walk.json: how close counts as at a waypoint, how many route cells it may cut ahead, the sweep sample step.
@@ -737,6 +738,7 @@ impl Brain {
             giveup_count: 0,
             edge_hold: 0.0,
             land_offset: (land_angle.cos() * land_mag, land_angle.sin() * land_mag),
+            land_check: false,
             edge_clock: 0.0,
             poi: None,
             recent_pois: Vec::new(),
@@ -1125,6 +1127,7 @@ impl Brain {
         prof: &Profile,
     ) -> (bool, Vec<Event>) {
         let mut events = vec![];
+        self.verify_landing(ctx.fac);
         self.locker_check = None;
         self.door_action = None;
         self.sniff_cue = false;
@@ -1191,7 +1194,7 @@ impl Brain {
             && !immune
             && gap < self.capture_reach(prof)
             && (self.y - target.y).abs() <= flight_edges::rules().capture_height
-            && (target.cross.is_some() || gap < BODY_GAP + CAPTURE_LOS_SLACK || self.grab_line_clear(ctx.fac, target.pos));
+            && (target.cross.is_some() || gap < BODY_GAP + flight_edges::rules().capture_los_slack || self.grab_line_clear(ctx.fac, target.pos));
         if !caught {
             self.keep_body_gap(ctx.fac, target);
         }
@@ -1813,6 +1816,18 @@ impl Brain {
 
     /// One frame on an edge: the walk alone moves the body (at the hunter's own speed, no climb animation), the level
     /// follows the height, and a hunter held on the edge past its time is put on the nearer end and gives the goal up.
+    /// A landing spot off the cell centre must be ground a hunter fits (a prop, a door or a divider can sit in an open
+    /// cell); otherwise the hunter stands at the cell centre. Runs once, on the first update on the landing level.
+    fn verify_landing(&mut self, fac: &Facility) {
+        if !self.land_check {
+            return;
+        }
+        self.land_check = false;
+        if !fac.hunter_fits(self.pos.0, self.pos.1) {
+            self.pos = cell_of(self.pos).center();
+        }
+    }
+
     fn walk_edge(&mut self, dt: f32, fac: &Facility, speed: f32, prof: &Profile) {
         let speed = speed * (1.0 - self.edge_hold.clamp(0.0, 1.0));
         self.edge_hold = 0.0;
@@ -1835,6 +1850,7 @@ impl Brain {
             let end = next.end_point();
             let spot = (end[0] + self.land_offset.0, end[1] + self.land_offset.1);
             self.pos = if cell_of(spot) == to.cell && self.nav.grid(to.level).is_some_and(|g| g.is_open(to.cell)) {
+                self.land_check = true;
                 spot
             } else {
                 to.cell.center()
@@ -4491,6 +4507,43 @@ mod edge_tests {
     }
 
     #[test]
+    fn a_landing_spot_that_does_not_fit_falls_back_to_the_cell_centre() {
+        let s = stage(TestShape::Straight);
+        let fac = s.fac_of(LOW);
+        // an open cell with a spot inside it that a hunter does not fit (a prop, a divider or a door edge in the cell)
+        let mut found = None;
+        'scan: for x in 0..40 {
+            for y in 0..40 {
+                let c = Cell::new(x, y);
+                if !fac.hunter_open(c) {
+                    continue;
+                }
+                let (cx, cz) = c.center();
+                for (dx, dz) in [(0.3, 0.0), (-0.3, 0.0), (0.0, 0.3), (0.0, -0.3)] {
+                    if !fac.hunter_fits(cx + dx, cz + dz) {
+                        found = Some((c, (cx + dx, cz + dz)));
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        let (cell, bad) = found.expect("a cell with an unfit corner on the landing level");
+        let mut b = hunter(&s, bad, LOW);
+        b.land_check = true;
+        let t = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
+        b.update(1.0 / 60.0, &ctx(fac), &t, 1, 0, &Difficulty::Standard.profile());
+        assert!(!b.land_check, "the check runs once");
+        assert_eq!(cell_of(b.pos), cell);
+        assert!(fac.hunter_fits(b.pos.0, b.pos.1), "set on ground a hunter fits: {:?}", b.pos);
+        // and a fitting landing spot is kept
+        let (cx, cz) = cell.center();
+        let mut g = hunter(&s, (cx, cz), LOW);
+        g.land_check = true;
+        g.update(1.0 / 60.0, &ctx(fac), &t, 1, 0, &Difficulty::Standard.profile());
+        assert!(fac.hunter_fits(g.pos.0, g.pos.1));
+    }
+
+    #[test]
     fn a_chase_toward_a_drop_never_stands_on_a_drop_cell() {
         let s = stage(TestShape::Drop);
         let hole = s.upper.drop_cells()[0];
@@ -4612,7 +4665,7 @@ mod body_rule_tests {
         let mut prof = Difficulty::Standard.profile();
         prof.capture_distance = 3.0; // a long arm: only the wall decides
         let (h, r) = across_a_wall(&fac);
-        assert!(dist(h, r) < 1.47 * 3.0 && dist(h, r) > BODY_GAP + CAPTURE_LOS_SLACK);
+        assert!(dist(h, r) < 1.47 * 3.0 && dist(h, r) > BODY_GAP + flight_edges::rules().capture_los_slack);
         let mut b = chaser(h, r);
         let t = Target { pos: r, flashlight_on: true, ..Default::default() };
         let (caught, _) = b.update(1.0 / 60.0, &ctx(&fac), &t, 1, 0, &prof);

@@ -112,6 +112,12 @@ impl ResidentHunters {
         self.by_level.keys().copied().collect()
     }
 
+    /// The same as `levels`, written into a reused scratch list (cleared first) so a per-frame caller allocates nothing.
+    pub fn levels_into(&self, out: &mut Vec<i32>) {
+        out.clear();
+        out.extend(self.by_level.keys().copied());
+    }
+
     /// Whether `level` has a list (it may be empty).
     pub fn has(&self, level: i32) -> bool {
         self.by_level.contains_key(&level)
@@ -977,7 +983,12 @@ impl Game {
                     }
                 }
                 // after every brain of the list has stepped; a finite facility pushes its crowd apart too
-                director::separate(dt, &mut brains, fac);
+                // the bots standing on this floor are bodies the crowd steers clear of too (a scratch list reused every frame)
+                let mut bodies = super::hunting::BOT_BODIES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+                bodies.clear();
+                bodies.extend(self.npcs.iter().filter(|n| n.walk.is_none() && n.hidden.is_none() && !self.downed_npcs.contains_key(&n.id) && n.level == level).map(|n| director::BotBody { pos: n.at, y: n.y, level: n.level }));
+                director::separate_with_bots(dt, &mut brains, fac, &bodies);
+                super::hunting::BOT_BODIES.with(|c| *c.borrow_mut() = bodies);
             }
             *self.resident_hunters.list_mut(level) = join(ids, brains);
             base += count;
@@ -1263,11 +1274,19 @@ mod shelf_tests {
 
     #[test]
     fn a_recentre_brings_an_outside_resident_hunter_back_in_the_window() {
-        let (mut g, content, catalog) = run("ROOM-SHELF-5");
-        let at = g.p.pos;
-        g.go_to_level(-1, at, 0.0, &content, &catalog);
-        g.keep_stack(&content, &catalog);
-        let Some(l) = g.resident_hunters.levels().into_iter().find(|l| *l != 0) else { return };
+        // a level 0 window whose flight down keeps level -1 resident once the runner stands on it
+        let (mut g, content, _) = (0..200)
+            .find_map(|n| {
+                let (mut g, content, catalog) = run(&format!("ROOM-SHELF-5-{n}"));
+                let down = g.fac.stairs.iter().copied().find(|s| s.dir == -1 && !s.is_ladder())?;
+                g.p.pos = down.cell.center();
+                for _ in 0..8 {
+                    g.keep_stack(&content, &catalog);
+                }
+                g.inf.as_ref().is_some_and(|i| i.stack.has(-1)).then_some((g, content, catalog))
+            })
+            .expect("a test world has a flight down that keeps level -1 resident");
+        let l = g.resident_hunters.levels().into_iter().find(|l| *l != 0).expect("a resident floor other than 0 exists");
         let b = brain(&content, (-500.0, -500.0), "S5");
         g.resident_hunters.list_mut(l).push(Slot { id: String::new(), brain: b });
         g.fit_resident_lists_into_window();

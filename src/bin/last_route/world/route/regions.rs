@@ -113,6 +113,12 @@ pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
     if level == 0 && super::concept_map::enabled() {
         return super::concept_map::region_of_chunk(world, cx, cz);
     }
+    // a whole level of the levels table (data/levels.json: the sewers and the Inferno) is its region for every chunk
+    if let Some(entry) = crate::world::levels::entry(level) {
+        if entry.whole {
+            return entry.region.as_str();
+        }
+    }
     godot_region_for(world, cx, cz, level)
 }
 

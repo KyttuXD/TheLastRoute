@@ -1308,7 +1308,7 @@ impl InfernoFloor {
     fn of(f: &Facility) -> Option<InfernoFloor> {
         let (seed, level) = f.seed_text.rsplit_once(":L")?;
         let terrain = f.terrain()?.clone();
-        (level.parse::<i32>().ok()? == INFERNO_LEVEL).then(|| InfernoFloor {
+        (crate::world::levels::layer_name(level.parse::<i32>().ok()?) == Some("inferno")).then(|| InfernoFloor {
             seed: seed.to_string(),
             origin: f.origin,
             terrain,

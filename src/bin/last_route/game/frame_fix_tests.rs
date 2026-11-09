@@ -14,10 +14,12 @@ fn infinite(room: &str) -> (Game, Content, Catalog) {
 }
 
 #[test]
-fn the_sewer_and_inferno_levels_name_their_layer_and_the_rest_none() {
+fn the_sewer_and_inferno_levels_name_their_layer_and_a_deeper_level_takes_the_deep_layer() {
+    // reads the process-wide level table: hold the lock the registration test takes, so a pack level it adds is not seen here
+    let _lock = crate::world::levels::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (mut g, _, _) = infinite("LAYER-BED-7");
     assert_eq!(g.ambience_layer(), None, "level 0 plays the region bed");
-    for (level, want) in [(-1, Some("sewer")), (-2, Some("sewer")), (-3, Some("inferno")), (-4, None), (1, None)] {
+    for (level, want) in [(-1, Some("sewer")), (-2, Some("sewer")), (-3, Some("inferno")), (-4, Some("deep")), (1, None)] {
         g.inf.as_mut().unwrap().level = level;
         assert_eq!(g.ambience_layer(), want, "level {level}");
     }

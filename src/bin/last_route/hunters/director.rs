@@ -759,9 +759,14 @@ fn exit_point(relays: &[Cell], seen_at: (f32, f32), toward: (f32, f32)) -> (f32,
     found
 }
 
-/// Hard cap (metres per frame) on the overlap push of `separate`: two hunters closer than their radii move out by half
-/// the overlap each, never more than this in one frame.
-pub const SEPARATION_MAX_STEP: f32 = 0.15;
+/// A bot's body as `separate_with_bots` sees it: x/z, absolute feet height and the level it stands on. The host fills a
+/// reused scratch list of these each frame (game/hunting.rs); a hunter steers clear of them but never pushes them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BotBody {
+    pub pos: (f32, f32),
+    pub y: f32,
+    pub level: i32,
+}
 
 /// One hunter's pending shove inside `separate` (a scratch row, reused every frame).
 #[derive(Clone, Copy, Default)]
@@ -798,7 +803,7 @@ fn slide_step(fac: &Facility, pos: (f32, f32), d: (f32, f32)) -> Option<(f32, f3
 }
 
 /// HunterDirector.separate: active hunters closer than SEPARATION steer apart (SEPARATION_SPEED), and two that overlap
-/// (closer than their radii) are moved out by half the overlap each, at most SEPARATION_MAX_STEP a frame. Every push is
+/// (closer than their radii) are moved out by half the overlap each, at most `separation_max_step` (data/hunters/flights.json) a frame. Every push is
 /// computed first, then applied, so the result does not depend on the order of the slice. A push that does not fit is
 /// tried along x only, then z only (a slide); if neither fits the other body is pushed instead.
 ///
@@ -806,8 +811,16 @@ fn slide_step(fac: &Facility, pos: (f32, f32), d: (f32, f32)) -> Option<(f32, f3
 /// with the thin edge radius. Two hunters on one edge: the one behind gets `Brain::edge_hold` (read by the edge walk).
 /// Returns how many moved.
 pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
+    separate_with_bots(dt, hunters, fac, &[])
+}
+
+/// `separate`, and a hunter that is walking about (not on an edge, not chasing, not after a bot) also steers clear of the
+/// `bots` on its level and height band: the same soft steer and capped overlap push, with the bot as an immovable body of
+/// the thin edge radius (`edge_fit_radius`). A hunter in a chase, or one whose target is a bot, keeps its own gap rule
+/// (`keep_body_gap`), so the catch still works.
+pub fn separate_with_bots(dt: f32, hunters: &mut [Brain], fac: &Facility, bots: &[BotBody]) -> i32 {
     let n = hunters.len();
-    if n < 2 {
+    if n < 2 && (n == 0 || bots.is_empty()) {
         return 0;
     }
     let rules = super::flight_edges::rules();
@@ -882,6 +895,35 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             any = true;
         }
     }
+    for i in 0..n {
+        let h = &hunters[i];
+        if !h.active || h.walk.is_some() || h.state == State::Chase || h.target_is_bot {
+            continue;
+        }
+        for b in bots {
+            if b.level != h.level || (h.y - b.y).abs() > rules.same_layer_eps {
+                continue;
+            }
+            let off = (h.pos.0 - b.pos.0, h.pos.1 - b.pos.1);
+            if off.0.abs() >= SEPARATION || off.1.abs() >= SEPARATION {
+                continue;
+            }
+            let gap = (off.0 * off.0 + off.1 * off.1).sqrt();
+            if gap >= SEPARATION {
+                continue;
+            }
+            // `away` points from the bot to the hunter
+            let away = if gap > 0.001 { (off.0 / gap, off.1 / gap) } else { rotated((1.0, 0.0), i as f32 * 2.4) };
+            let k = (SEPARATION - gap) / SEPARATION;
+            let over = (crate::config::HUNTER_RADIUS + rules.edge_fit_radius - gap).max(0.0);
+            let s = &mut sh[i];
+            s.soft.0 += away.0 * k;
+            s.soft.1 += away.1 * k;
+            s.hard.0 += away.0 * over;
+            s.hard.1 += away.1 * over;
+            any = true;
+        }
+    }
     let mut pushed = 0;
     if any {
         let step = SEPARATION_SPEED * dt;
@@ -893,7 +935,7 @@ pub fn separate(dt: f32, hunters: &mut [Brain], fac: &Facility) -> i32 {
             let slen = (s.soft.0 * s.soft.0 + s.soft.1 * s.soft.1).sqrt();
             let lim = if slen > 1.0 { (s.soft.0 / slen, s.soft.1 / slen) } else { s.soft };
             let hlen = (s.hard.0 * s.hard.0 + s.hard.1 * s.hard.1).sqrt();
-            let hk = if hlen > SEPARATION_MAX_STEP { SEPARATION_MAX_STEP / hlen } else { 1.0 };
+            let hk = if hlen > rules.separation_max_step { rules.separation_max_step / hlen } else { 1.0 };
             let d = (lim.0 * step + s.hard.0 * hk, lim.1 * step + s.hard.1 * hk);
             // the hunter's own body against the runner's rule (walls, props, railings, doors, lockers, flight dividers,
             // stair wells, drops) and the crawl-under pipes (`hunter_fits`): a short step, never through anything
@@ -1165,6 +1207,44 @@ mod tests {
         let mut stacked = pair(2.5);
         assert_eq!(separate(1.0 / 60.0, &mut stacked, &fac), 0, "a hunter up a flight and one below it do not crowd each other");
         assert_eq!(stacked[0].pos, at);
+    }
+
+    #[test]
+    fn a_wandering_hunter_steers_clear_of_a_bot_but_a_bot_chaser_does_not() {
+        let cat = crate::world::catalog::Catalog::load();
+        let fac = Facility::generate("SEP-1", &crate::world::facility::Options::default(), &cat);
+        let at = fac
+            .floor_cells()
+            .into_iter()
+            .find(|c| {
+                let (x, z) = c.center();
+                fac.hunter_open(*c) && fac.hunter_fits(x, z) && fac.hunter_fits(x - 0.25, z)
+            })
+            .expect("an open cell")
+            .center();
+        let bot = |dx: f32, level: i32, y: f32| BotBody { pos: (at.0 + dx, at.1), y, level };
+        let cap = super::super::flight_edges::rules().separation_max_step + SEPARATION_SPEED * (1.0 / 60.0) + 1e-3;
+        // a wanderer on top of a bot is pushed off it, by no more than the cap in one frame, and never onto unfit ground
+        let mut w = vec![rush_hunter(State::Wander, at)];
+        assert!(separate_with_bots(1.0 / 60.0, &mut w, &fac, &[bot(0.2, 0, 0.0)]) > 0, "the wanderer moves");
+        assert!(dist(w[0].pos, at) > 0.0 && dist(w[0].pos, at) <= cap, "a capped step: {}", dist(w[0].pos, at));
+        assert!(fac.hunter_fits(w[0].pos.0, w[0].pos.1));
+        // the push is away from the bot (the bot is on +x of the hunter)
+        assert!(w[0].pos.0 < at.0, "away from the bot");
+        // the hunter that hunts a bot keeps its gap rule: not pushed
+        let mut c = vec![rush_hunter(State::Wander, at)];
+        c[0].target_is_bot = true;
+        assert_eq!(separate_with_bots(1.0 / 60.0, &mut c, &fac, &[bot(0.2, 0, 0.0)]), 0);
+        assert_eq!(c[0].pos, at);
+        // a chasing hunter is not pushed either
+        let mut ch = vec![rush_hunter(State::Chase, at)];
+        assert_eq!(separate_with_bots(1.0 / 60.0, &mut ch, &fac, &[bot(0.2, 0, 0.0)]), 0);
+        // a bot on another level or well off the height band is no obstacle
+        let mut o = vec![rush_hunter(State::Wander, at)];
+        assert_eq!(separate_with_bots(1.0 / 60.0, &mut o, &fac, &[bot(0.2, -1, 0.0), bot(0.2, 0, 2.5)]), 0);
+        assert_eq!(o[0].pos, at);
+        // no bots: the plain `separate` (a lone hunter does nothing)
+        assert_eq!(separate_with_bots(1.0 / 60.0, &mut o, &fac, &[]), 0);
     }
 
     #[test]

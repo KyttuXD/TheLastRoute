@@ -157,6 +157,8 @@ pub struct Tuning {
     /// Path cost of a step into a cell the bot keeps out of (deep water) when it plans across levels (data
     /// `water.deep_step_cost`, optional: `DEFAULT_DEEP_STEP_COST` while the key is missing).
     pub deep_step_cost: f32,
+    /// Body-collision figures (data `collision`, optional: `Collision::default`).
+    pub collision: Collision,
     /// Metres from a door's centre at which a bot counts itself at that door (data `doors.near`).
     pub door_near: f32,
     /// Metres from a door's centre at which a bot is clear of it and shuts it behind itself (data `doors.close_clear`).
@@ -525,6 +527,7 @@ impl Tuning {
             searched_avoid: num(searched, "avoid_radius")?,
             water_avoid_depth: num(&v["water"], "avoid_depth")?,
             deep_step_cost: num(&v["water"], "deep_step_cost").unwrap_or(DEFAULT_DEEP_STEP_COST),
+            collision: Collision::parse(&v["collision"]),
             door_near: num(doors, "near")?,
             close_clear: num(doors, "close_clear")?,
             tasks: v["tasks"]
@@ -576,16 +579,47 @@ pub fn edge_settles() -> u32 {
 
 /// Two bodies touch closer than this (m).
 const BODY_GAP: f32 = 2.0 * NAV_RADIUS;
-/// Bodies more than this far apart in height do not collide (a body two metres up a flight is on other treads).
-const COLLIDE_HEIGHT: f32 = 1.2;
-/// The most a bot is moved out of an overlap in one frame (m).
-const PUSH_CAP: f32 = 0.15;
-/// Inside this margin (m) beyond touching a bot steers softly away.
-const SOFT_MARGIN: f32 = 0.2;
-/// The speed (m/s) of that soft steer at touching.
-const SOFT_SPEED: f32 = 2.5;
-/// A bot lands this far (m) from the edge's end, in a direction of its own, when its body fits there.
-const LAND_SPREAD: f32 = 0.2;
+
+/// The body-collision figures (data/npcs.json `collision`; every key optional, these are the defaults).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Collision {
+    /// Bodies more than this far apart in height (m) do not collide (a body two metres up a flight is on other treads).
+    pub height: f32,
+    /// The most a bot is moved out of an overlap in one frame (m).
+    pub push_cap: f32,
+    /// Inside this margin (m) beyond touching a bot steers softly away.
+    pub soft_margin: f32,
+    /// The speed (m/s) of that soft steer at touching.
+    pub soft_speed: f32,
+}
+
+impl Default for Collision {
+    fn default() -> Collision {
+        Collision { height: 1.2, push_cap: 0.15, soft_margin: 0.2, soft_speed: 2.5 }
+    }
+}
+
+impl Collision {
+    fn parse(v: &Value) -> Collision {
+        let d = Collision::default();
+        let num = |key: &str, d: f32| v[key].as_f64().map_or(d, |x| x as f32).max(0.0);
+        Collision {
+            height: num("height", d.height),
+            push_cap: num("push_cap", d.push_cap),
+            soft_margin: num("soft_margin", d.soft_margin),
+            soft_speed: num("soft_speed", d.soft_speed),
+        }
+    }
+}
+
+/// A hunter's body as the bots' collision pass sees it (the hunter is never moved by it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HunterBody {
+    at: (f32, f32),
+    /// Absolute height of the feet.
+    y: f32,
+    level: i32,
+}
 
 /// A bot starts an edge once it is this close to the hop's entrance (its body radius).
 const EDGE_ENTER_REACH: f32 = NAV_RADIUS;
@@ -2674,13 +2708,18 @@ fn advance_edge(n: &mut Npc, dt: f32, facs: &[(i32, &Facility)], gap: Option<f32
     }
 }
 
-/// Where a bot lands: `LAND_SPREAD` from the edge's end in a direction of its own (its id's golden angle) when its body
-/// fits there, so bots arriving together do not stand on one point. None keeps the exact end.
+/// Where a bot lands: `land_spread` (data flights.json) from the edge's end in a direction of its own (its id's golden
+/// angle) when its body fits there and the cell is not a drop, so bots arriving together do not stand on one point and
+/// none is set down on open air. None keeps the exact end.
 fn landing_point(id: u32, end: (f32, f32), level: i32, facs: &[(i32, &Facility)]) -> Option<(f32, f32)> {
     let fac = facs.iter().find(|(l, _)| *l == level)?.1;
     let a = id as f32 * SLOT_ANGLE;
-    let p = (end.0 + a.cos() * LAND_SPREAD, end.1 + a.sin() * LAND_SPREAD);
-    (fac.body_fits(p.0, p.1, NAV_RADIUS) && !fac.crawl_stops(p.0, p.1, NAV_RADIUS, crate::config::PLAYER_HEIGHT)).then_some(p)
+    let spread = flight_edges::rules().land_spread;
+    let p = (end.0 + a.cos() * spread, end.1 + a.sin() * spread);
+    (!fac.is_drop(cell_at(p))
+        && fac.body_fits(p.0, p.1, NAV_RADIUS)
+        && !fac.crawl_stops(p.0, p.1, NAV_RADIUS, crate::config::PLAYER_HEIGHT))
+    .then_some(p)
 }
 
 /// The path distance (m) to the nearest bot ahead of `me` on the same flight in the same direction: one with more
@@ -2697,14 +2736,14 @@ fn lead_gap(me: &Npc, peers: &[Peer]) -> Option<f32> {
         .min_by(|a, b| a.total_cmp(b))
 }
 
-/// The push and the soft steer that body `other` gives a bot at `me`: inside `BODY_GAP` the overlap times `share`
-/// directly away, inside the margin beyond it a unit-scaled steer that fades to nothing. A bot exactly on `other` leaves
-/// in the direction of its own id.
-fn contact(me: (f32, f32), other: (f32, f32), id: u32, share: f32) -> ((f32, f32), (f32, f32)) {
+/// The push and the soft steer that body `other` gives a bot at `me`: inside `touch` (m between centres) the overlap
+/// times `share` directly away, inside `margin` beyond it a unit-scaled steer that fades to nothing (none when the margin
+/// is 0). A bot exactly on `other` leaves in the direction of its own id.
+fn contact(me: (f32, f32), other: (f32, f32), id: u32, share: f32, touch: f32, margin: f32) -> ((f32, f32), (f32, f32)) {
     let (dx, dz) = (me.0 - other.0, me.1 - other.1);
     let d = dx.hypot(dz);
-    let gap = d - BODY_GAP;
-    if gap >= SOFT_MARGIN {
+    let gap = d - touch;
+    if gap >= margin {
         return ((0.0, 0.0), (0.0, 0.0));
     }
     let dir = if d > 1e-4 {
@@ -2716,7 +2755,7 @@ fn contact(me: (f32, f32), other: (f32, f32), id: u32, share: f32) -> ((f32, f32
     if gap < 0.0 {
         ((dir.0 * -gap * share, dir.1 * -gap * share), (0.0, 0.0))
     } else {
-        let k = 1.0 - gap / SOFT_MARGIN;
+        let k = 1.0 - gap / margin;
         ((0.0, 0.0), (dir.0 * k, dir.1 * k))
     }
 }
@@ -2734,12 +2773,23 @@ fn peer_of(q: &Npc, downed: bool) -> Peer {
     }
 }
 
-/// Keeps the bodies apart: each bot yields to the runner (never moved) and to the other bots. Closer than `BODY_GAP` it
-/// is moved out by the overlap (half of it against another bot, which moves out too), at most `PUSH_CAP` a frame, by the
-/// full push, else along x, else along z, onto ground its body fits; within `SOFT_MARGIN` of touching it also steers away
-/// at up to `SOFT_SPEED`. A bot on an edge, hiding or down neither moves nor blocks. `peers` is the frame's buffer, read
-/// at the positions of the start of this pass. `runner` is the runner's place and height, None when it is down or hidden.
-fn separate_bots(npcs: &mut [Npc], peers: &mut [Peer], facs: &[(i32, &Facility)], runner: Option<((f32, f32), f32)>, dt: f32) {
+/// Keeps the bodies apart: each bot yields to the runner and to the hunters on its level and height (never moved) and to
+/// the other bots. Closer than `BODY_GAP` (for a hunter: its radius plus the bot's, never more than 0.9 of the catch radius,
+/// so a hunter that reaches a bot can still down it) it is moved out by the overlap (half of it against another bot, which
+/// moves out too), at most `push_cap` a frame, by the full push, else along x, else along z, onto ground its body fits and
+/// that is not a drop cell; within `soft_margin` of touching a runner or bot it also steers away at up to `soft_speed`. A
+/// bot on an edge, hiding or down neither moves nor blocks. `peers` is the frame's buffer, read at the positions of the
+/// start of this pass. `runner` is the runner's place and height, None when it is down or hidden.
+fn separate_bots(
+    npcs: &mut [Npc],
+    peers: &mut [Peer],
+    hunters: &[HunterBody],
+    facs: &[(i32, &Facility)],
+    runner: Option<((f32, f32), f32)>,
+    col: &Collision,
+    dt: f32,
+) {
+    let hunter_touch = (crate::config::HUNTER_RADIUS + NAV_RADIUS).min(0.9 * super::revive::rules().npc_catch_radius);
     for (p, q) in peers.iter_mut().zip(npcs.iter()) {
         p.at = q.at;
         p.y = q.y;
@@ -2750,28 +2800,33 @@ fn separate_bots(npcs: &mut [Npc], peers: &mut [Peer], facs: &[(i32, &Facility)]
         if !peers[i].solid {
             continue;
         }
-        let (me, my_y, id) = (peers[i].at, peers[i].y, peers[i].id);
+        let (me, my_y, id, my_level) = (peers[i].at, peers[i].y, peers[i].id, peers[i].level);
         let (mut hard, mut soft) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
         if let Some((rp, ry)) = runner {
-            if (ry - my_y).abs() <= COLLIDE_HEIGHT {
-                let (h, s) = contact(me, rp, id, 1.0);
+            if (ry - my_y).abs() <= col.height {
+                let (h, s) = contact(me, rp, id, 1.0, BODY_GAP, col.soft_margin);
                 hard = (hard.0 + h.0, hard.1 + h.1);
                 soft = (soft.0 + s.0, soft.1 + s.1);
             }
         }
         for (j, o) in peers.iter().enumerate() {
-            if j == i || !o.solid || (o.y - my_y).abs() > COLLIDE_HEIGHT {
+            if j == i || !o.solid || (o.y - my_y).abs() > col.height {
                 continue;
             }
-            let (h, s) = contact(me, o.at, id, 0.5);
+            let (h, s) = contact(me, o.at, id, 0.5, BODY_GAP, col.soft_margin);
             hard = (hard.0 + h.0, hard.1 + h.1);
             soft = (soft.0 + s.0, soft.1 + s.1);
         }
-        let hl = hard.0.hypot(hard.1);
-        if hl > PUSH_CAP {
-            hard = (hard.0 / hl * PUSH_CAP, hard.1 / hl * PUSH_CAP);
+        // a hunter is a body too, but it only pushes (no soft steer: a chaser must still be able to close in and down the bot)
+        for o in hunters.iter().filter(|o| o.level == my_level && (o.y - my_y).abs() <= col.height) {
+            let (h, _) = contact(me, o.at, id, 1.0, hunter_touch, 0.0);
+            hard = (hard.0 + h.0, hard.1 + h.1);
         }
-        let (sl, smax) = (soft.0.hypot(soft.1), SOFT_SPEED * dt);
+        let hl = hard.0.hypot(hard.1);
+        if hl > col.push_cap {
+            hard = (hard.0 / hl * col.push_cap, hard.1 / hl * col.push_cap);
+        }
+        let (sl, smax) = (soft.0.hypot(soft.1), col.soft_speed * dt);
         let sk = if sl > 1.0 { smax / sl } else { smax };
         let push = (hard.0 + soft.0 * sk, hard.1 + soft.1 * sk);
         if push.0.hypot(push.1) < 1e-5 {
@@ -2780,7 +2835,8 @@ fn separate_bots(npcs: &mut [Npc], peers: &mut [Peer], facs: &[(i32, &Facility)]
         let Some(&(_, fac)) = facs.iter().find(|(l, _)| *l == npcs[i].level) else { continue };
         let at = npcs[i].at;
         let ok = |p: (f32, f32)| {
-            fac.body_fits(p.0, p.1, NAV_RADIUS)
+            !fac.is_drop(cell_at(p))
+                && fac.body_fits(p.0, p.1, NAV_RADIUS)
                 && !fac.crawl_stops(p.0, p.1, NAV_RADIUS, crate::config::PLAYER_HEIGHT)
                 && fac.door_in_way(p.0, p.1, NAV_RADIUS).is_none()
         };
@@ -3596,6 +3652,7 @@ impl Game {
         let leader = self.p.pos;
         // the hunters of every level, as each bot sees them: only those on the bot's own level count
         let mut by_level: Vec<(i32, Vec<Seen>, Vec<(f32, f32)>)> = vec![];
+        let mut bodies: Vec<HunterBody> = Vec::with_capacity(self.hunters.len() + 8);
         for h in self.hunters.iter().chain(self.resident_hunters.iter_all()).filter(|h| h.active) {
             let i = match by_level.iter().position(|e| e.0 == h.level) {
                 Some(i) => i,
@@ -3605,6 +3662,7 @@ impl Game {
                 }
             };
             by_level[i].1.push((h.pos, matches!(h.state, State::Chase)));
+            bodies.push(HunterBody { at: h.pos, y: h.y, level: h.level });
             if matches!(h.state, State::Search) {
                 by_level[i].2.push(h.pos);
             }
@@ -3775,7 +3833,7 @@ impl Game {
                 }
             }
         }
-        separate_bots(&mut self.npcs, &mut peers, &facs, runner_body, dt);
+        separate_bots(&mut self.npcs, &mut peers, &bodies, &facs, runner_body, &t.collision, dt);
         self.npc_press_doors(presses);
         self.npc_close_doors(closes);
         self.npc_claims(content);
@@ -5837,11 +5895,16 @@ mod level_tests {
                     .filter(|s| s.dir == dir && pick(s))
                     .min_by(|a, b| pdist(a.cell.center(), g.p.pos).total_cmp(&pdist(b.cell.center(), g.p.pos)))
             };
+            // a runner stands on open floor by a ladder's hatch: the hatch cell is a well it would drop through
+            let spot = |g: &Game, s: &Stair| {
+                let c = s.cell.center();
+                if s.is_ladder() { g.fac.nearest_open(c.0, c.1, NAV_RADIUS).unwrap_or(c) } else { c }
+            };
             let Some(first) = choose(&g) else { continue };
-            g.p.pos = first.cell.center();
+            g.p.pos = spot(&g, &first);
             g.step(FRAME, &Controls::default(), &content, &catalog, &sounds);
             let Some(stair) = choose(&g) else { continue };
-            g.p.pos = stair.cell.center();
+            g.p.pos = spot(&g, &stair);
             for _ in 0..8 {
                 g.keep_stack(&content, &catalog);
             }
@@ -5879,7 +5942,8 @@ mod level_tests {
     }
 
     fn ladder_case() -> Option<Case> {
-        [-1, -2].into_iter().find_map(|l| case(l, -1, |s| s.is_ladder()))
+        // sewer ladders hang from the maze hatch on level 0 down to level -1 (world/level_links.rs:21-26)
+        case(0, -1, |s| s.is_ladder())
     }
 
     fn up_case(shape: FlightShape, level: i32) -> Option<Case> {
@@ -5933,7 +5997,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_on_level_0_reaches_a_relay_on_another_level() {
-        let Some((mut c, i)) = relay_case() else { return };
+        let (mut c, i) = relay_case().expect("the test world has a relay on another level");
         let t = relay_run(&mut c, i);
         assert!(t.is_some(), "the bot recovered the relay a storey down, away from the runner");
         let n = &c.g.npcs[0];
@@ -5945,7 +6009,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_goes_back_to_following_when_the_goals_are_done() {
-        let Some((mut c, i)) = relay_case() else { return };
+        let (mut c, i) = relay_case().expect("the test world has a relay on another level");
         assert!(relay_run(&mut c, i).is_some());
         run(&mut c, 60.0, |g| g.npcs[0].goal.spot.is_none() && pdist(g.npcs[0].at, g.p.pos) <= 6.0);
         let n = &c.g.npcs[0];
@@ -5967,7 +6031,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_follows_down_a_flight() {
-        let Some(mut c) = [-1, -2].into_iter().find_map(|l| case(l, 1, |s| !s.is_ladder())) else { return };
+        let mut c = [-1, -2].into_iter().find_map(|l| case(l, 1, |s| !s.is_ladder())).expect("the test world has a flight below level 0");
         let runner = c.g.runner_level();
         assert_eq!(c.g.npcs[0].level, runner + 1, "the bot starts a storey above");
         let t = run(&mut c, CAP_SECONDS, arrived);
@@ -6013,7 +6077,7 @@ mod level_tests {
     /// The runner stands on the treads of the flight: the bot comes to the flight mouth, then keeps following the runner.
     #[test]
     fn a_bot_follows_a_runner_standing_on_the_treads_to_the_flight_mouth() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let level = c.g.runner_level();
         let from = c.g.p.pos;
         let Some(stair) = c
@@ -6045,7 +6109,7 @@ mod level_tests {
     /// frame moves it by one step only.
     #[test]
     fn a_window_shift_mid_edge_keeps_the_bot_walking() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.as_ref().is_some_and(|w| w.s > 0.5));
         assert!(started.is_some(), "the bot is on the flight");
         let mut n = c.g.npcs[0].clone();
@@ -6068,7 +6132,7 @@ mod level_tests {
     /// and a bot with open path ahead is never held.
     #[test]
     fn a_bot_keeps_a_body_length_behind_the_one_ahead_on_a_flight() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
         assert!(started.is_some(), "the bot is on the flight");
         let mut lead = c.g.npcs[0].clone();
@@ -6088,7 +6152,7 @@ mod level_tests {
     /// Two bots and the runner on one spot part to a body apart, each on open ground, and the runner never moves.
     #[test]
     fn two_bots_and_the_runner_in_a_pile_part_to_a_body_apart_on_open_ground() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let (level, pos, y) = (c.g.runner_level(), c.g.p.pos, c.g.p.y());
         c.g.npcs.clear();
         c.g.push_npc((pos.0 + 0.05, pos.1), level, 70, None, 0.0);
@@ -6099,7 +6163,7 @@ mod level_tests {
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
         let facs = [(c.g.fac.level, &c.g.fac)];
         for _ in 0..120 {
-            separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
         }
         let (a, b) = (c.g.npcs[0].at, c.g.npcs[1].at);
         let tol = BODY_GAP - 0.02;
@@ -6113,7 +6177,7 @@ mod level_tests {
     /// A bot on an edge, hiding or down is neither pushed nor a block; one at another height is not collided with.
     #[test]
     fn the_collision_pass_skips_bots_on_edges_hidden_down_or_at_another_height() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let (level, pos, y) = (c.g.runner_level(), c.g.p.pos, c.g.p.y());
         c.g.npcs.clear();
         c.g.push_npc((pos.0 + 0.05, pos.1), level, 70, None, 0.0);
@@ -6123,25 +6187,156 @@ mod level_tests {
         let at = c.g.npcs[0].at;
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, true)).collect();
         let facs = [(c.g.fac.level, &c.g.fac)];
-        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
         assert_eq!(c.g.npcs[0].at, at, "a downed bot is not pushed");
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y + 2.0)), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y + 2.0)), &Collision::default(), FRAME);
         assert_eq!(c.g.npcs[0].at, at, "a runner two metres up is not in the way");
         c.g.npcs[0].hidden = Some(0);
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
         assert_eq!(c.g.npcs[0].at, at, "a bot in a locker stays put");
         c.g.npcs[0].hidden = None;
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &facs, Some((pos, y)), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
         assert!(pdist(c.g.npcs[0].at, at) > 0.0, "a free bot on the runner is pushed out");
-        assert!(pdist(c.g.npcs[0].at, at) <= PUSH_CAP + SOFT_SPEED * FRAME + 1e-4, "by at most the cap and the steer");
+        assert!(pdist(c.g.npcs[0].at, at) <= Collision::default().push_cap + Collision::default().soft_speed * FRAME + 1e-4, "by at most the cap and the steer");
+    }
+
+    /// The collision block of data/npcs.json holds today's figures, and a file without the block loads the same.
+    #[test]
+    fn the_collision_figures_come_from_data_with_todays_defaults() {
+        let d = Collision::default();
+        assert_eq!((d.height, d.push_cap, d.soft_margin, d.soft_speed), (1.2, 0.15, 0.2, 2.5));
+        assert_eq!(Tuning::get().collision, d, "the shipped data equals the old constants");
+        let mut v = crate::content::npcs::embedded_json();
+        v.as_object_mut().unwrap().remove("collision");
+        assert_eq!(Tuning::parse(&v).expect("an old file still loads").collision, d);
+        v["collision"] = serde_json::json!({ "push_cap": 0.3, "soft_speed": -1.0 });
+        let t = Tuning::parse(&v).unwrap().collision;
+        assert_eq!((t.push_cap, t.soft_speed, t.height), (0.3, 0.0, 1.2), "keys read, a bad one clamps, a missing one defaults");
+    }
+
+    /// An open cell with an open cell to its east, where a bot can stand a hair inside the cell's east edge.
+    fn edge_cell(fac: &Facility) -> Option<(Cell, Cell, (f32, f32))> {
+        fac.floor_cells().into_iter().find_map(|a| {
+            let e = Cell::new(a.x + 1, a.y);
+            let (cx, cz) = a.center();
+            let at = (cx + 0.45, cz);
+            (fac.floor_cells().contains(&e) && fac.body_fits(at.0, at.1, NAV_RADIUS) && fac.body_fits(cx, cz, NAV_RADIUS)).then_some((a, e, at))
+        })
+    }
+
+    /// A push that would carry a bot into a drop cell is refused: it stays on its side of the edge.
+    #[test]
+    fn a_push_toward_a_drop_cell_is_refused() {
+        let mut c = any_switchback().expect("the test world has a switchback");
+        let (level, y) = (c.g.fac.level, c.g.p.y());
+        let (_, drop, at) = edge_cell(&c.g.fac).expect("a switchback has an edge cell beside a drop");
+        c.g.npcs.clear();
+        c.g.push_npc(at, level, 70, None, 0.0);
+        c.g.npcs[0].y = y;
+        c.g.npcs[0].level = level;
+        let runner = (at.0 - 0.1, at.1);
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        // on open ground the runner behind it pushes it east
+        {
+            let facs = [(level, &c.g.fac)];
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME);
+        }
+        assert!(c.g.npcs[0].at.0 > at.0, "with no drop the push moves the bot east: {:?}", c.g.npcs[0].at);
+        c.g.npcs[0].at = at;
+        c.g.fac.set_drop_cells(&[drop]);
+        let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+        let facs = [(level, &c.g.fac)];
+        for _ in 0..30 {
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME);
+            assert!(!c.g.fac.is_drop(cell_at(c.g.npcs[0].at)), "the bot is never pushed onto the drop: {:?}", c.g.npcs[0].at);
+        }
+        assert_eq!(c.g.npcs[0].at, at, "the refused push leaves it where it was");
+    }
+
+    /// A landing offset that would fall on a drop cell is not taken (the bot keeps the exact end); on open ground it is.
+    #[test]
+    fn a_landing_beside_a_drop_does_not_offset_onto_it() {
+        let spread = flight_edges::rules().land_spread;
+        let dirs = [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)];
+        // land_spread is under half a cell, so a landing crosses into a neighbour only from near that cell's edge: the foot
+        // stands 0.45 m from the centre towards the neighbour, and the offset carries the landing over the edge.
+        let hit = CASES.iter().find_map(|&(shape, lvl)| {
+            let c = up_case(shape, lvl)?;
+            let level = c.g.fac.level;
+            let cells = c.g.fac.floor_cells();
+            let found = (0..8u32).find_map(|id| {
+                let a = id as f32 * SLOT_ANGLE;
+                let off = (a.cos() * spread, a.sin() * spread);
+                cells.iter().find_map(|&e| {
+                    let (cx, cz) = e.center();
+                    dirs.iter().find_map(|&(ux, uz)| {
+                        let d = Cell::new(e.x + ux, e.y + uz);
+                        let end = (cx + ux as f32 * 0.45, cz + uz as f32 * 0.45);
+                        let p = (end.0 + off.0, end.1 + off.1);
+                        let facs = [(level, &c.g.fac)];
+                        (cell_at(p) == d && cells.contains(&d) && landing_point(id, end, level, &facs).is_some())
+                            .then_some((id, d, end))
+                    })
+                })
+            });
+            found.map(|(id, d, end)| (c, level, id, d, end))
+        });
+        let (mut c, level, id, drop, end) = hit.expect("a landing across an edge into a floor cell exists in one of the test worlds");
+        c.g.fac.set_drop_cells(&[drop]);
+        let facs = [(level, &c.g.fac)];
+        assert_eq!(landing_point(id, end, level, &facs), None, "the offset would land on the drop cell");
+    }
+
+    /// A wandering hunter on a bot's level and height is a body the bot is moved out of; one on another level or height is
+    /// not. The bot is still within the catch radius, so the hunter can down it.
+    #[test]
+    fn a_bot_is_moved_out_of_a_hunter_on_its_level_and_height() {
+        let mut c = any_switchback().expect("the test world has a switchback");
+        let (level, pos) = (c.g.runner_level(), c.g.p.pos);
+        c.g.npcs.clear();
+        // An open, flat spot near the runner: free on every side, so the bot can be pushed whichever way the hunter stands.
+        let free = |f: &Facility, p: (f32, f32)| f.body_fits(p.0, p.1, NAV_RADIUS) && !f.is_drop(cell_at(p));
+        let start = {
+            let f = &c.g.fac;
+            let mut cells: Vec<_> = f.floor_cells().into_iter().map(|d| d.center()).collect();
+            cells.sort_by(|a, b| pdist(*a, pos).total_cmp(&pdist(*b, pos)));
+            cells
+                .into_iter()
+                .filter(|&p| pdist(p, pos) >= 2.0 && local_ground(f, p.0, p.1).abs() < 1e-3)
+                .find(|&p| [(0.3, 0.0), (-0.3, 0.0), (0.0, 0.3), (0.0, -0.3)].iter().all(|d| free(f, (p.0 + d.0, p.1 + d.1))))
+                .expect("an open flat spot")
+        };
+        c.g.push_npc(start, level, 70, None, 0.0);
+        let y = floor_y_of(level);
+        c.g.npcs[0].y = y;
+        let near = |h: &(f32, f32), lv: i32, hy: f32| HunterBody { at: (start.0 + h.0, start.1 + h.1), y: hy, level: lv };
+        let run_with = |c: &mut Case, hunter: HunterBody| {
+            c.g.npcs[0].at = start;
+            let fac = c.g.fac.clone();
+            let facs = [(level, &fac)];
+            let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
+            for _ in 0..120 {
+                separate_bots(&mut c.g.npcs, &mut peers, &[hunter], &facs, None, &Collision::default(), FRAME);
+            }
+            (c.g.npcs[0].at, hunter.at)
+        };
+        let (bot, h) = run_with(&mut c, near(&(0.1, 0.0), level, y));
+        let catch = super::super::revive::rules().npc_catch_radius;
+        assert!(pdist(bot, start) > 0.05, "the bot left the hunter's body: {bot:?}");
+        assert!(pdist(bot, h) >= crate::config::HUNTER_RADIUS + NAV_RADIUS - 0.03, "to a body apart: {}", pdist(bot, h));
+        assert!(pdist(bot, h) < catch, "and still inside the catch radius ({catch}), so a chaser downs it: {}", pdist(bot, h));
+        let (bot, _) = run_with(&mut c, near(&(0.1, 0.0), level + 1, y));
+        assert_eq!(bot, start, "a hunter on another level is not in the way");
+        let (bot, _) = run_with(&mut c, near(&(0.1, 0.0), level, y + 2.0));
+        assert_eq!(bot, start, "nor one two metres up");
     }
 
     #[test]
     fn a_bot_on_a_resident_floor_keeps_simulating() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let (before, level) = (c.g.npcs[0].at, c.g.npcs[0].level);
         assert!(c.g.inf.as_ref().unwrap().stack.has(level), "its floor is resident, not the active one");
         run(&mut c, 3.0, |_| false);
@@ -6155,7 +6350,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_on_a_non_resident_floor_is_set_down_on_the_runners_floor() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let far = c.g.runner_level() + 9;
         assert!(!c.g.inf.as_ref().unwrap().stack.has(far));
         c.g.npcs[0].level = far;
@@ -6168,7 +6363,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_uses_the_ladder_at_climb_speed() {
-        let Some(mut c) = ladder_case() else { return };
+        let mut c = ladder_case().expect("the test world has a ladder down from level 0");
         let mut on_edge: Vec<f32> = vec![];
         run(&mut c, CAP_SECONDS, |g| {
             let n = &g.npcs[0];
@@ -6205,7 +6400,7 @@ mod level_tests {
 
     #[test]
     fn a_bot_stuck_on_an_edge_is_put_on_the_nearer_end() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
         assert!(started.is_some(), "the bot reached the flight");
         c.g.npcs[0].edge_clock = 1.0e6;
@@ -6220,7 +6415,7 @@ mod level_tests {
 
     #[test]
     fn a_bots_head_eases_back_on_a_flight() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
         assert!(started.is_some(), "the bot reached the flight");
         assert!(Tuning::get().lively.rate > 0.0, "the data turns the head");
@@ -6236,7 +6431,7 @@ mod level_tests {
 
     #[test]
     fn npc_place_beside_runner_resets_y_and_walk() {
-        let Some(mut c) = any_switchback() else { return };
+        let mut c = any_switchback().expect("the test world has a switchback");
         let started = run(&mut c, CAP_SECONDS, |g| g.npcs[0].walk.is_some());
         assert!(started.is_some(), "the bot reached the flight");
         c.g.npcs[0].y = 123.0;
@@ -6804,7 +6999,7 @@ mod life_tests {
                 let d = pdist(*c, runner);
                 d > 7.0 && d < 9.0 && g.fac.body_fits(c.0, c.1, NAV_RADIUS)
             });
-        let Some(far) = far else { return };
+        let far = far.expect("the test world has a far cell on this level");
         g.npcs[0].at = far;
         run(&mut g, &t, 40.0);
         let range = follow_range(&g.npcs[0], &t);

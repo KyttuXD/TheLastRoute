@@ -20,7 +20,6 @@ use crate::game::{Game, Item};
 use crate::hunters::brain::State;
 use crate::hunters::gimmicks::Gimmick;
 use crate::net::runner_figure;
-use crate::world::infinite::INFERNO_LEVEL;
 use crate::world::route::sewer::core as sewer_core;
 use macroquad::prelude::*;
 use std::cell::RefCell;
@@ -1106,7 +1105,7 @@ fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
         fx.lamps.push(splash_lamp(cfg, s, &w));
         fx.falls.push((s.clone(), w));
     }
-    if inf.level == INFERNO_LEVEL {
+    if crate::world::levels::layer_name(inf.level) == Some("inferno") {
         let (deco, scene) = (inferno_deco::inferno_deco(), inferno_deco::scene_cfg());
         inferno_deco::with_window_decos(&inf.seed, inf.center, |placed| {
             for gl in inferno_deco::glows(placed, [eye.x, eye.y, eye.z], g.time, deco, scene) {
@@ -1126,7 +1125,7 @@ fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
 /// Draws the storey's effects in the world material: the inferno's embers (small unlit cubes), then, alpha-blended and
 /// unlit, each fall's sheet (with flowing streaks), its mist puffs (billboards) and its foam on the pool.
 fn draw_level_fx(g: &Game, a: &Assets, fx: &LevelFx, eye: Vec3) {
-    if let Some(inf) = g.inf.as_ref().filter(|i| i.level == INFERNO_LEVEL) {
+    if let Some(inf) = g.inf.as_ref().filter(|i| crate::world::levels::layer_name(i.level) == Some("inferno")) {
         let (deco, scene) = (inferno_deco::inferno_deco(), inferno_deco::scene_cfg());
         let mut b = Builder::new(Some(a.white.clone()));
         inferno_deco::with_window_decos(&inf.seed, inf.center, |placed| {

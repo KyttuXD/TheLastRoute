@@ -47,6 +47,8 @@ pub struct Rules {
     pub remote_sample_max_age_s: f32,
     /// Metres of height a remote helper may differ from the downed runner and still reach it.
     pub reach_height: f32,
+    /// Largest height difference (m) at which a hunter can down a bot: a hunter two metres up a flight cannot.
+    pub npc_catch_height: f32,
 }
 
 impl Rules {
@@ -71,6 +73,7 @@ impl Rules {
             max_bot_revives: num("max_bot_revives").unwrap_or(2.0) as u32,
             remote_sample_max_age_s: num("remote_sample_max_age_s").unwrap_or(0.5),
             reach_height: num("reach_height").unwrap_or(1.5),
+            npc_catch_height: num("npc_catch_height").unwrap_or(1.2),
         })
     }
 
@@ -209,7 +212,7 @@ impl Game {
 
     /// A hunter that is chasing and reaches a joined bot on its floor puts the bot down (not a hidden bot, not one
     /// already down, not a bot on a ladder or flight). Every hunter counts, the active list's and the resident levels'.
-    /// A hunter reaches a bot only within `NPC_CATCH_HEIGHT` of its height and, from `NPC_CATCH_LOS_MIN` away, with a
+    /// A hunter reaches a bot only within `npc_catch_height` (data) of its height and, from `NPC_CATCH_LOS_MIN` away, with a
     /// clear line over the floor: one up a flight cannot down a bot below it, nor one through a wall. The hunter is
     /// stunned as when it downs the runner. Only the side that simulates the hunters runs this (a guest has no bots of
     /// its own).
@@ -363,20 +366,18 @@ impl Game {
     }
 }
 
-/// Largest height difference (m) at which a hunter can down a bot: a hunter two metres up a flight cannot.
-const NPC_CATCH_HEIGHT: f32 = 1.2;
 /// Closer than this (m) a hunter downs a bot without the line-of-sight test (the sample points sit on the walls' edge).
 const NPC_CATCH_LOS_MIN: f32 = 0.6;
 
 /// Whether chasing hunter `h` can put down a bot at `at` with feet at `y` on `level`: it is active, chasing, not
-/// stunned, on that level, within `radius` and `NPC_CATCH_HEIGHT` of height, and (from `NPC_CATCH_LOS_MIN` away) has a clear
+/// stunned, on that level, within `radius` and `npc_catch_height` of height, and (from `NPC_CATCH_LOS_MIN` away) has a clear
 /// line over `fac`'s floor.
 fn hunter_reaches(h: &crate::hunters::brain::Brain, at: (f32, f32), y: f32, level: i32, radius: f32, fac: Option<&crate::world::Facility>) -> bool {
     if !(h.active && matches!(h.state, crate::hunters::brain::State::Chase) && h.stun <= 0.0 && h.level == level) {
         return false;
     }
     let d = pdist(h.pos, at);
-    if d > radius || (h.y - y).abs() > NPC_CATCH_HEIGHT {
+    if d > radius || (h.y - y).abs() > rules().npc_catch_height {
         return false;
     }
     d < NPC_CATCH_LOS_MIN || fac.map_or(true, |f| f.has_line_of_sight(h.pos, at))
@@ -729,6 +730,16 @@ mod tests {
             g.npc_spawn_at(1, 70, spot, level);
         }
         assert_eq!(g.npc_room_space(), 0, "a full room has no space left");
+    }
+
+    /// The catch height comes from the data, and a file without the key keeps 1.2 m.
+    #[test]
+    fn the_catch_height_is_data_with_a_default() {
+        assert_eq!(rules().npc_catch_height, 1.2);
+        let old = r#"{"reach":1,"hold_seconds":4,"timeout_seconds":9,"hunter_stun_seconds":1,"npc_catch_radius":1}"#;
+        assert_eq!(Rules::parse(old).unwrap().npc_catch_height, 1.2);
+        let tall = r#"{"reach":1,"hold_seconds":4,"timeout_seconds":9,"hunter_stun_seconds":1,"npc_catch_radius":1,"npc_catch_height":3}"#;
+        assert_eq!(Rules::parse(tall).unwrap().npc_catch_height, 3.0);
     }
 
     #[test]

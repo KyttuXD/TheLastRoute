@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 pub const MOD_PACK_ID_PATTERN: &str = r"^[a-z0-9][a-z0-9_]{2,31}$";
 pub const MOD_PACK_SCHEMA: &str = "lr.pack/1";
 pub const MOD_VERSION_PATTERN: &str = r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,31}$";
-const MANIFEST_KEYS: [&str; 9] = ["schema", "id", "name", "version", "author", "description", "game_version", "overrides", "files"];
+const MANIFEST_KEYS: [&str; 10] = ["schema", "id", "name", "version", "author", "description", "game_version", "overrides", "files", "levels"];
 /// What the game accepts when neither `pack_kinds.json` nor a repo checkout is found (see `pack_kinds`).
 pub const FALLBACK_PACK_KINDS: &[&str] =
     &["props", "regions", "hunters", "grabs", "sounds", "ambience", "floors", "walls", "ceilings", "rooms", "deaths", "emotes"];

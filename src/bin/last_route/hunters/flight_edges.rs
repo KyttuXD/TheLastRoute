@@ -39,11 +39,6 @@ const WALK_STEP: f32 = 0.25;
 /// Metres of one grid cell (`Cell::center` is cell + 0.5): the unit `EdgeWalk::shift` moves by.
 const CELL_M: f32 = 1.0;
 
-/// The longest gap (m) between two consecutive points of an edge's polyline. A ladder's shaft and a drop's fall are one
-/// long segment in the route; the points inserted on them lie on the same line, so the length, the cost and the walk
-/// speed are unchanged, but the polyline is continuous for a consumer that samples its points.
-const MAX_POINT_GAP: f32 = 0.5;
-
 // ---------------------------------------------------------------------------------------------------------------------
 // Rules (data/hunters/flights.json)
 // ---------------------------------------------------------------------------------------------------------------------
@@ -94,6 +89,14 @@ pub struct FlightEdgeRules {
     pub land_spread: f32,
     /// How far (cells) from a hunter a stair is looked for when it picks a goal on another level.
     pub cross_wander_radius: f32,
+    /// The longest gap (m) between two consecutive points of an edge's polyline. A ladder's shaft and a drop's fall are one
+    /// long segment in the route; the points inserted on them lie on the same line, so the length, the cost and the walk
+    /// speed are unchanged, but the polyline is continuous for a consumer that samples its points.
+    pub max_point_gap: f32,
+    /// Hard cap (m per frame) on the overlap push of `director::separate`.
+    pub separation_max_step: f32,
+    /// Extra metres past the grab distance within which a capture needs no clear line (brain.rs).
+    pub capture_los_slack: f32,
 }
 
 fn num(v: &Value, key: &str, lo: f32, hi: f32) -> Result<f32, String> {
@@ -106,6 +109,14 @@ fn num(v: &Value, key: &str, lo: f32, hi: f32) -> Result<f32, String> {
     } else {
         Err(format!("flights.json: `{key}` = {x} is outside {lo}..={hi}"))
     }
+}
+
+/// `num` for a key an older file may lack: absent takes `default`; present, it must still be a number inside the limits.
+fn opt_num(v: &Value, key: &str, default: f32, lo: f32, hi: f32) -> Result<f32, String> {
+    if v.get(key).is_none() {
+        return Ok(default);
+    }
+    num(v, key, lo, hi)
 }
 
 fn flag(v: &Value, key: &str) -> Result<bool, String> {
@@ -149,6 +160,9 @@ impl FlightEdgeRules {
             search_cross_chance: num(&v, "search_cross_chance", 0.0, 1.0)?,
             land_spread: num(&v, "land_spread", 0.0, 0.4)?,
             cross_wander_radius: num(&v, "cross_wander_radius", 1.0, 256.0)?,
+            max_point_gap: opt_num(&v, "max_point_gap", 0.5, 0.05, 4.0)?,
+            separation_max_step: opt_num(&v, "separation_max_step", 0.15, 0.01, 1.0)?,
+            capture_los_slack: opt_num(&v, "capture_los_slack", 0.15, 0.0, 1.0)?,
         })
     }
 
@@ -617,7 +631,7 @@ impl StackNav {
         let (uy, ly) = (fac.level as f32 * STOREY, (fac.level - 1) as f32 * STOREY);
         let (bc, cc, lc) = (bank.center(), c.center(), land.center());
         let path: Arc<[[f32; 3]]> =
-            densify(vec![[bc.0, bc.1, uy], [cc.0, cc.1, uy], [cc.0, cc.1, ly], [lc.0, lc.1, ly]], MAX_POINT_GAP).into();
+            densify(vec![[bc.0, bc.1, uy], [cc.0, cc.1, uy], [cc.0, cc.1, ly], [lc.0, lc.1, ly]], rules.max_point_gap).into();
         let from = Node { level: fac.level, cell: bank };
         let to = Node { level: fac.level - 1, cell: land };
         let len = path_len_3d(&path);
@@ -866,7 +880,7 @@ fn stair_edge(fac: &Facility, s: &Stair, rules: &FlightEdgeRules) -> Option<Edge
         from,
         to,
         cost: cost.max(octile(from.cell, to.cell)),
-        path: densify(path, MAX_POINT_GAP).into(),
+        path: densify(path, rules.max_point_gap).into(),
         len,
         one_way: false,
     })
@@ -1402,12 +1416,26 @@ mod tests {
             ("\"drop_allowed\": false", "\"drop_allowed\": 0"),
             ("\"ladder_speed_scale\": 1.0,", ""),
             ("lr.hunter_flights/1", "lr.hunter_flights/2"),
+            ("\"max_point_gap\": 0.5", "\"max_point_gap\": 0.0"),
+            ("\"separation_max_step\": 0.15", "\"separation_max_step\": 5.0"),
+            ("\"capture_los_slack\": 0.15", "\"capture_los_slack\": -1.0"),
         ];
         for (from, to) in bad {
             assert!(text.contains(from), "test text `{from}` is in the file");
             assert!(FlightEdgeRules::parse(&text.replace(from, to)).is_err(), "`{to}` must be refused");
         }
         assert!(FlightEdgeRules::parse("not json").is_err());
+        assert!(approx(r.max_point_gap, 0.5) && approx(r.separation_max_step, 0.15) && approx(r.capture_los_slack, 0.15));
+        // an older file without the three newer keys loads with today's values
+        let old = text
+            .replace(",
+  \"max_point_gap\": 0.5", "")
+            .replace(",
+  \"separation_max_step\": 0.15", "")
+            .replace(",
+  \"capture_los_slack\": 0.15", "");
+        assert!(!old.contains("max_point_gap\":") && !old.contains("capture_los_slack\":"));
+        assert_eq!(FlightEdgeRules::parse(&old).expect("an old file loads"), r);
     }
 
     #[test]

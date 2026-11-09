@@ -9,6 +9,11 @@ use super::level_stack::floor_y_of;
 use super::resident_hunters::{frame_entry, Slot};
 use crate::hunters::brain::{State, Target};
 use crate::net::hunter_events;
+
+thread_local! {
+    /// The bots' bodies handed to `director::separate_with_bots` each frame, reused so the frame allocates nothing.
+    pub(super) static BOT_BODIES: std::cell::RefCell<Vec<crate::hunters::director::BotBody>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 use serde_json::{json, Value};
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
 use crate::hunters::noise_events::{self, NoiseEvent, NoiseKind};
@@ -508,7 +513,14 @@ impl Game {
         }
         // bodies are pushed apart AFTER every brain has stepped (and on a finite facility too), so no two end the frame
         // overlapping; a walker on an edge owns its position and is left alone (hunters/director.rs)
-        crate::hunters::director::separate(dt, &mut self.hunters, &self.fac);
+        // the bots on the hunters' level are bodies a wandering hunter steers clear of (not the one it hunts: director.rs)
+        let mut bodies = BOT_BODIES.with(|c| std::mem::take(&mut *c.borrow_mut()));
+        bodies.clear();
+        bodies.extend(self.npcs.iter().filter(|n| n.walk.is_none() && n.hidden.is_none() && !self.downed_npcs.contains_key(&n.id) && n.level == self.fac.level).map(|n| {
+            crate::hunters::director::BotBody { pos: n.at, y: n.y, level: n.level }
+        }));
+        crate::hunters::director::separate_with_bots(dt, &mut self.hunters, &self.fac, &bodies);
+        BOT_BODIES.with(|c| *c.borrow_mut() = bodies);
         for (i, e) in all_events {
             self.apply_event(i, e);
             if self.report.is_some() {

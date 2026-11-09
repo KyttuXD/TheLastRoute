@@ -88,6 +88,10 @@ pub struct Ambient {
     default: Look,
     regions: HashMap<String, Row>,
     levels: HashMap<i32, Row>,
+    /// The look of a level deeper than `deep_below` that has no row of its own (`deep_level` in the file).
+    deep: Option<Row>,
+    /// The level below which (exclusive) a level with no row takes `deep`; the file's `deep_below_level`, -3 by default.
+    deep_below: i32,
     /// Time constant of the blend toward a new place's look, in seconds (0: the look jumps).
     blend_seconds: f32,
     flashlight: Flashlight,
@@ -114,10 +118,11 @@ impl Look {
 }
 
 impl Ambient {
-    /// The look at a place: the region's row, else the level's row, key by key over the default.
+    /// The look at a place: the region's row, else the level's row (a level deeper than `deep_below` with no row takes the
+    /// `deep_level` row), key by key over the default.
     pub fn look(&self, region: &str, level: i32) -> Look {
         let region = self.regions.get(region);
-        let level = self.levels.get(&level);
+        let level = self.levels.get(&level).or_else(|| if level < self.deep_below { self.deep.as_ref() } else { None });
         let pick = |f: fn(&Row) -> Option<f32>, d: f32| region.and_then(f).or_else(|| level.and_then(f)).unwrap_or(d);
         let pick3 = |f: fn(&Row) -> Option<[f32; 3]>, d: [f32; 3]| region.and_then(f).or_else(|| level.and_then(f)).unwrap_or(d);
         let d = self.default;
@@ -177,9 +182,17 @@ impl Ambient {
             None => FLASHLIGHT_FALLBACK,
             Some(f) => parse_flashlight(f).map_err(|e| format!("flashlight: {e}"))?,
         };
-        let mut out = Ambient { default, regions: HashMap::new(), levels: HashMap::new(), blend_seconds, flashlight };
+        let deep = match obj.get("deep_level") {
+            None => None,
+            Some(r) => Some(parse_row(r).map_err(|e| format!("deep_level: {e}"))?),
+        };
+        let deep_below = match obj.get("deep_below_level") {
+            None => crate::world::levels::bottom(),
+            Some(n) => n.as_i64().filter(|n| *n <= 0 && *n >= i32::MIN as i64).ok_or("deep_below_level: expected a level of 0 or less")? as i32,
+        };
+        let mut out = Ambient { default, regions: HashMap::new(), levels: HashMap::new(), deep, deep_below, blend_seconds, flashlight };
         for (key, row) in obj {
-            if key.starts_with('_') || ["schema", "default", "blend_seconds", "flashlight"].contains(&key.as_str()) {
+            if key.starts_with('_') || ["schema", "default", "blend_seconds", "flashlight", "deep_level", "deep_below_level"].contains(&key.as_str()) {
                 continue;
             }
             let row_value = parse_row(row).map_err(|e| format!("{key}: {e}"))?;
@@ -270,6 +283,8 @@ pub fn table() -> &'static Ambient {
                 },
                 regions: HashMap::new(),
                 levels: HashMap::new(),
+                deep: None,
+                deep_below: crate::world::levels::bottom(),
                 blend_seconds: DEFAULT_BLEND_SECONDS,
                 flashlight: FLASHLIGHT_FALLBACK,
             }
@@ -398,6 +413,31 @@ mod tests {
             assert!(l.ambient_color[1] > l.ambient_color[0] && l.ambient_color[1] > l.ambient_color[2], "level {level} leans green");
         }
         assert!(t.look("sewer", -2).ambient_energy <= t.look("sewer", -1).ambient_energy);
+    }
+
+    #[test]
+    fn a_deeper_level_without_a_row_takes_the_sewer_look_from_data() {
+        let t = Ambient::parse(FILE).unwrap();
+        let sewer = t.look("anywhere", -1);
+        for level in [-4, -9] {
+            assert_eq!(t.look("anywhere", level), sewer, "level {level}: the deep fallback is the sewer-like look");
+        }
+        assert_ne!(t.look("anywhere", -3), sewer, "the Inferno keeps its own row");
+        assert_eq!(t.look("anywhere", 1), t.look("unlisted", 0), "positive levels keep the baseline");
+    }
+
+    #[test]
+    fn without_a_deep_row_a_deeper_level_keeps_the_baseline() {
+        let t = Ambient::parse(&FILE.replacen("\"deep_level\"", "\"_deep_level\"", 1)).unwrap();
+        assert_eq!(t.look("anywhere", -4), t.look("unlisted", 0));
+    }
+
+    #[test]
+    fn the_deep_threshold_is_data() {
+        let t = Ambient::parse(&FILE.replacen("\"deep_below_level\": -3,", "\"deep_below_level\": -5,", 1)).unwrap();
+        assert_eq!(t.look("anywhere", -4), t.look("unlisted", 0), "-4 is not below -5");
+        assert_eq!(t.look("anywhere", -6), t.look("anywhere", -1), "-6 is below -5");
+        assert!(Ambient::parse(&FILE.replacen("\"deep_below_level\": -3,", "\"deep_below_level\": 1,", 1)).is_err());
     }
 
     #[test]

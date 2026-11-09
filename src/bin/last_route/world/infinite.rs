@@ -89,7 +89,7 @@ fn boundary_offsets(seed: &str, key: &str) -> Vec<i32> {
 /// Godot `is_chunk_allowed` (streamed_route_generator.gd:1437-1442) for a level, with MEZZANINE_ENABLED false: the
 /// route streams level 0 down to the Inferno (-3) and nothing above or below.
 pub fn level_allowed(level: i32) -> bool {
-    (INFERNO_LEVEL..=0).contains(&level)
+    crate::world::levels::allows(level)
 }
 
 /// A stair link on the boundary between `upper` and `upper - 1` in column (cx, cy):
@@ -211,7 +211,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         None => f.apply_godot_streamed_layout(&text, region, cat),
     }
     // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
-    if k.level == INFERNO_LEVEL {
+    if crate::world::levels::layer_name(k.level) == Some("inferno") {
         let inf = super::inferno::InfernoChunk::carve(seed, k);
         for r in inf.clear_rects() {
             f.clear_props_in(r.x, r.y, r.w, r.h);
@@ -594,7 +594,7 @@ pub fn window(
     f.has_lift = false;
     f.origin = ((center.0 - 1) * CHUNK, (center.1 - 1) * CHUNK);
     // the caverns' noisy floor and ceiling: a pure function of the world text and the world cell
-    if level == INFERNO_LEVEL {
+    if crate::world::levels::layer_name(level) == Some("inferno") {
         f.set_terrain(seed, WINDOW);
     }
     (f, fix)
@@ -698,6 +698,8 @@ mod tests {
 
     #[test]
     fn the_level_stack_is_zero_down_to_the_inferno() {
+        // a test that registers a pack level (world::levels) holds this lock while the level is in the table
+        let _lock = crate::world::levels::TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         assert!(level_allowed(0) && level_allowed(-1) && level_allowed(-2) && level_allowed(INFERNO_LEVEL));
         assert!(!level_allowed(1) && !level_allowed(INFERNO_LEVEL - 1));
     }

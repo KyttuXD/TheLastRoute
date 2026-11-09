@@ -81,6 +81,13 @@
     "avoid_depth": 0.5,
     "_source": "Rust-only figure: a bot keeps out of sewer water at least this deep (metres over the bed) unless it is fleeing a chasing hunter"
   },
+  "collision": {
+    "height": 1.2,
+    "push_cap": 0.15,
+    "soft_margin": 0.2,
+    "soft_speed": 2.5,
+    "_source": "Moved from npc.rs consts with the same values: bodies more than height metres apart in height do not collide; a bot is pushed out of an overlap by at most push_cap metres a frame and steers away at up to soft_speed m/s within soft_margin metres of touching. The landing offset is flights.json land_spread."
+  },
   "goals": {
     "weights": { "relay": 100, "battery": 70, "heal": 70, "pickup": 40, "exit": 20 },
     "distance_weight": 0.1,
