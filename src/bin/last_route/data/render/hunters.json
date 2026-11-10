@@ -4,5 +4,5 @@
   "tint_step": 0.01,
   "max_entries": 64,
   "lod_bands": [[12, 1], [24, 2], [40, 4]],
-  "skip_beyond": 0
+  "skip_beyond": 40
 }

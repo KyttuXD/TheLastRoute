@@ -24,6 +24,7 @@ use crate::world::route::sewer::core as sewer_core;
 use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 
@@ -51,6 +52,10 @@ thread_local! {
 #[derive(Default)]
 struct HunterMeshes {
     cache: HunterMeshCache,
+    /// Where each rigged hunter stood (x, z) when its mesh was last posed; a far frame moves the stale copy from here.
+    posed_at: HashMap<(i32, usize), (f32, f32)>,
+    /// The scratch copy a stale mesh is drawn from, moved to the hunter's live spot (its buffers are reused).
+    shifted: Option<Mesh>,
 }
 
 /// Slot offset for the hunters drawn without a rig, so their cache entries never clash with the rigged ones.
@@ -875,27 +880,33 @@ pub fn draw_scene(
             };
             // the brain's activity pose and emote (face, clip, voice cue), next to the Input
             view.set_extras(hunter_act::Extras { activity: h.activity_name(), emote: h.emote });
-            let (pose, normal) = view.update(&input, dt, g.time);
             // a far hunter re-poses every few frames (data/render/hunters.json lod_bands) and shows its last mesh between;
             // near ones have interval 1 and are always due. A held, stunned, mechanic or beam hunter is always posed.
-            if !is_held
+            // A far frame with a mesh to show skips the pose sample; its state (clocks, blends) still advances. The mesh is
+            // drawn at the hunter's live spot (hunter_cache::shift_stale), so the pose freezes but the hunter still walks.
+            let far_frame = !is_held
                 && h.stun <= 0.0
                 && input.mechanic.is_none()
                 && !super::beam::kathy_beam_shown(&h.gimmick, h.active, held, faded, h.stun)
-            {
-                let dist = ((h.pos.0 - light.eye.x).powi(2) + (h.pos.1 - light.eye.z).powi(2)).sqrt();
-                if hunter_cache::beyond_fog(tune, dist) || !hunter_cache::pose_due(tune, dist, hunter_frame, cslot) {
-                    let reused = HUNTER_MESHES.with(|m| match m.borrow_mut().cache.stale((lvl, cslot), id) {
-                        Some(mesh) => {
-                            crate::render::draw_stats::draw_counted(mesh);
-                            true
-                        }
-                        None => false,
-                    });
-                    if reused {
-                        continue;
+                && {
+                    let dist = ((h.pos.0 - light.eye.x).powi(2) + (h.pos.1 - light.eye.z).powi(2)).sqrt();
+                    hunter_cache::beyond_fog(tune, dist) || !hunter_cache::pose_due(tune, dist, hunter_frame, cslot)
+                };
+            let shown_stale = far_frame && HUNTER_MESHES.with(|m| m.borrow_mut().cache.stale((lvl, cslot), id).is_some());
+            let (pose, normal) = view.update_lod(&input, dt, g.time, !shown_stale);
+            if shown_stale {
+                HUNTER_MESHES.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let hm = &mut *m;
+                    let at = hm.posed_at.get(&(lvl, cslot)).copied().unwrap_or(h.pos);
+                    let by = (h.pos.0 - at.0, h.pos.1 - at.1);
+                    if let Some(src) = hm.cache.stale((lvl, cslot), id) {
+                        let shifted = hm.shifted.get_or_insert_with(|| Mesh { vertices: Vec::new(), indices: Vec::new(), texture: None });
+                        hunter_cache::shift_stale(src, shifted, by);
+                        crate::render::draw_stats::draw_counted(shifted);
                     }
-                }
+                });
+                continue;
             }
             let out = grab::drive(
                 slot,
@@ -918,6 +929,7 @@ pub fn draw_scene(
             let pose = hunter_cache::pose_key(tune, &root, &bones, out.face_cell as i32);
             HUNTER_MESHES.with(|m| {
                 let mut m = m.borrow_mut();
+                let before = m.cache.rebuilds;
                 let mesh = m.cache.get_or_build(
                     tune,
                     (lvl, cslot),
@@ -928,6 +940,9 @@ pub fn draw_scene(
                     |v, i| model.build_posed(v, i, root, &bone_of, model.face_cell_uv(out.face_cell), tint),
                 );
                 crate::render::draw_stats::draw_counted(mesh);
+                if m.cache.rebuilds != before {
+                    m.posed_at.insert((lvl, cslot), h.pos);
+                }
             });
             // the item a mechanic animation puts in her hand (Ysolde's stolen battery, Glyra's music box), on the hand bone
             if let (Some((item, hand)), Some(d)) = (view.held_prop(&out), crate::net::held_wire::data()) {
@@ -1073,8 +1088,8 @@ struct LevelFx {
     lamps: Vec<Lamp>,
     /// The falls within reach of the eye, each with its drawn sheet, mist and foam.
     falls: Vec<(waterfall::Site, waterfall::Waterfall)>,
-    /// All of the window's falls (the loop picks the nearest in range, seen or not).
-    sites: Vec<waterfall::Site>,
+    /// All of the window's falls (the loop picks the nearest in range, seen or not), shared with the sites cache.
+    sites: Rc<[waterfall::Site]>,
 }
 
 /// The point light of a fall's splash pool (waterfall.rs `Waterfall::light_pos`, placed at the fall's lip).
@@ -1092,11 +1107,11 @@ pub fn splash_lamp(cfg: &waterfall::WaterfallCfg, site: &waterfall::Site, w: &wa
 /// The lights and falls of the runner's storey this frame: the falls and their pool lights
 /// on the two sewer storeys, the lava and cracks of the inferno (level -3) with their flicker.
 fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
-    let mut fx = LevelFx { lamps: Vec::new(), falls: Vec::new(), sites: Vec::new() };
+    let mut fx = LevelFx { lamps: Vec::new(), falls: Vec::new(), sites: Rc::from(Vec::<waterfall::Site>::new()) };
     let Some(inf) = g.inf.as_ref() else { return fx };
     let cfg = waterfall::config();
     fx.sites = waterfall::sites_cached(&inf.seed, inf.level, inf.center);
-    for s in &fx.sites {
+    for s in fx.sites.iter() {
         let d = ((s.lip[0] - eye.x).powi(2) + (s.lip[1] - eye.z).powi(2)).sqrt();
         if d > cfg.view.cull_m {
             continue;
@@ -1125,10 +1140,19 @@ fn level_fx(g: &Game, eye: Vec3) -> LevelFx {
 /// Draws the storey's effects in the world material: the inferno's embers (small unlit cubes), then, alpha-blended and
 /// unlit, each fall's sheet (with flowing streaks), its mist puffs (billboards) and its foam on the pool.
 fn draw_level_fx(g: &Game, a: &Assets, fx: &LevelFx, eye: Vec3) {
-    if let Some(inf) = g.inf.as_ref().filter(|i| crate::world::levels::layer_name(i.level) == Some("inferno")) {
+    let inferno = g.inf.as_ref().filter(|i| crate::world::levels::layer_name(i.level) == Some("inferno"));
+    if inferno.is_none() && fx.falls.is_empty() {
+        return;
+    }
+    // one builder for the embers and the falls, drawn and cleared after each pass
+    let mut b = Builder::new(Some(a.white.clone()));
+    if let Some(inf) = inferno {
         let (deco, scene) = (inferno_deco::inferno_deco(), inferno_deco::scene_cfg());
-        let mut b = Builder::new(Some(a.white.clone()));
         inferno_deco::with_window_decos(&inf.seed, inf.center, |placed| {
+            // no decorations in the window: the ember maths is skipped
+            if placed.is_empty() {
+                return;
+            }
             for e in inferno_deco::embers(placed, [eye.x, eye.y, eye.z], g.time, deco, scene) {
                 let c = e.color;
                 b.cube(Vec3::from_array(e.pos), Vec3::splat(e.size_m), 0.0, Color::new(c[0], c[1], c[2], 1.0), 2.0);
@@ -1142,11 +1166,10 @@ fn draw_level_fx(g: &Game, a: &Assets, fx: &LevelFx, eye: Vec3) {
     let cfg = waterfall::config();
     let mode = scene_lights().translucent_mode;
     let (_, _, right, up) = view(g);
-    let mut b = Builder::new(Some(a.white.clone()));
     for (site, w) in &fx.falls {
         let at = |p: [f32; 3]| vec3(site.lip[0] + p[0], p[1], site.lip[1] + p[2]);
         let s = cfg.sheet_color;
-        for q in &w.sheet {
+        for q in w.sheet.iter() {
             let shade = waterfall::streak(cfg, (q.v_top + q.v_bottom) * 0.5, g.time);
             b.quad(
                 [at(q.corners[0]), at(q.corners[1]), at(q.corners[2]), at(q.corners[3])],

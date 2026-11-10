@@ -642,7 +642,9 @@ mod tests {
     /// stability (Windows CRT and Linux libm sin/cos differ in the last bit); the models themselves did not change.)
     const GOLDEN: [(&str, u64); 27] = [
         (("hunters/aki.bbmodel", 0xefb1163bbeb1d519)),
-        (("hunters/briselle.bbmodel", 0xcae6c973b4694b95)),
+        // briselle was changed on purpose (assets/hunters/briselle.bbmodel and its atlas), re-pinned after that change
+        // with print_golden_digests, here and in GOLDEN_ALL (which folds it in too).
+        (("hunters/briselle.bbmodel", 0x56e5d5ceac9a2aec)),
         (("hunters/ceryth.bbmodel", 0xefb1163bbeb1d519)),
         (("hunters/dovelle.bbmodel", 0xf81accf6b9cabb9c)),
         (("hunters/elise.bbmodel", 0xd5b5ecd1cde876b8)),
@@ -679,7 +681,7 @@ mod tests {
     /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
     /// (684 -> 683 on 2026-11-07: the black wolf spider was removed from the game, so its model left the set; digest recomputed.)
     /// (digest moved on 2026-11-08: re-recorded with the deliberate 1e-4 quantisation, for cross-platform float stability.)
-    const GOLDEN_ALL: (usize, u64) = (684, 0x53bf3aaefcdf9a54);
+    const GOLDEN_ALL: (usize, u64) = (684, 0x24ceabe019e5c267);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {

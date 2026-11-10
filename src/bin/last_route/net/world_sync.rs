@@ -130,6 +130,10 @@ pub struct Sample {
     /// Ground velocity in cells per second, measured by the sender (0 from an older client or a standing runner).
     pub vx: f32,
     pub vz: f32,
+    /// The runner's height above walking height in metres while it is in the air from a jump (its `feet_y`; 0 on foot).
+    /// Only the simulating client sets it; a remote client reads it. Wire: `"jump"`, sent only when nonzero, so an older
+    /// peer never sends it and reads as 0. `h` stays the feet height without it.
+    pub jump: f32,
     /// The runner wears slim arms (its ARMS setting resolved for its skin).
     pub slim: bool,
     /// The locker the runner is hidden in, if any (Godot `hidden` + `hiding_spot`).
@@ -221,6 +225,7 @@ impl Sample {
             vy: 0.0,
             vx: 0.0,
             vz: 0.0,
+            jump: 0.0,
             slim: false,
             hide: None,
             held: None,
@@ -252,6 +257,13 @@ impl Sample {
         self.vy = vy;
         self.slim = slim;
         self.hide = hide;
+        self
+    }
+
+    /// The sample with the runner's jump height in metres above walking height (its `feet_y`). Only the simulating
+    /// client calls it; a remote client's samples keep the 0 they were parsed with.
+    pub fn with_jump(mut self, metres: f32) -> Sample {
+        self.jump = metres;
         self
     }
 
@@ -292,6 +304,10 @@ impl Sample {
             if self.vx != 0.0 || self.vz != 0.0 {
                 o.insert("vx".into(), json!(self.vx));
                 o.insert("vz".into(), json!(self.vz));
+            }
+            // the jump height is optional: sent only while the runner is in the air from a jump
+            if self.jump != 0.0 {
+                o.insert("jump".into(), json!(self.jump));
             }
             if self.slim {
                 o.insert("slim".into(), json!(true));
@@ -356,6 +372,8 @@ impl Sample {
             vy: num("vy").unwrap_or(0.0),
             vx,
             vz,
+            // a missing or non-numeric jump reads as on foot, so an older peer's samples parse unchanged
+            jump: num("jump").unwrap_or(0.0),
             slim: flag("slim"),
             hide: o.get("hide").and_then(hide_spot_from_json),
             held: o.get("held").and_then(Value::as_str).and_then(super::held_wire::from_wire),
@@ -451,6 +469,9 @@ pub struct RemoteView {
     /// Ground speed and vertical speed in metres per second, from the sample's gait.
     pub speed: f32,
     pub vy: f32,
+    /// The runner's height above walking height in metres while it jumps (its sample's `jump`; 0 on foot). The figure
+    /// hops by it; `h` is unchanged.
+    pub jump: f32,
     /// The pose the sample names (None from an older client).
     pub clip: Option<Pose>,
     /// The locker the runner is hidden in, in this window's cells; None when it is out in the open.
@@ -506,6 +527,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
             crate::config::PLAYER_WALK_SPEED
         },
         vy: shown.vy,
+        jump: shown.jump,
     }
 }
 
@@ -2773,6 +2795,7 @@ pub(crate) mod tests {
             vy: 0.0,
             vx: 0.0,
             vz: 0.0,
+            jump: 0.0,
             slim: false,
             hide: None,
             held: None,
@@ -3031,6 +3054,7 @@ pub(crate) mod tests {
             vy: -3.5,
             vx: 2.5,
             vz: -1.0,
+            jump: 0.75,
             slim: true,
             hide: Some(HideSpot { cell: (-40, 17), facing: (0, -1) }),
             held: Some(Item::Crowbar),
@@ -3079,6 +3103,34 @@ pub(crate) mod tests {
         assert_eq!((v.x, v.y), (3.0, 4.0), "the position moves into this window");
         assert_eq!(v.hide, Some(HideSpot { cell: (3, 4), facing: (1, 0) }), "so does the locker");
         assert!(v.hide_since.is_some());
+    }
+
+    #[test]
+    fn the_jump_height_is_optional_on_the_wire_and_round_trips() {
+        let grounded = sample(1, 0.0, 0.0);
+        assert!(grounded.to_json().get("jump").is_none(), "a sample on foot sends no jump");
+        let airborne = sample(1, 0.0, 0.0).with_jump(0.75);
+        let v = airborne.to_json();
+        assert_eq!(v.get("jump").and_then(Value::as_f64).map(|f| f as f32), Some(0.75));
+        assert_eq!(Sample::from_json(&v), Some(airborne), "a jump round trips");
+        let old = json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0});
+        assert_eq!(Sample::from_json(&old).map(|s| s.jump), Some(0.0), "an older payload without jump reads as on foot");
+        let junk = json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0, "jump": "high"});
+        assert_eq!(Sample::from_json(&junk).map(|s| s.jump), Some(0.0), "a non-numeric jump reads as on foot");
+        assert_eq!(Sample::from_json(&json!({"seq": 4, "depth": 1, "x": 2.0, "y": 3.0, "jump": 1e39})).map(|s| s.jump), Some(0.0), "a non-finite jump is refused");
+    }
+
+    #[test]
+    fn the_jump_keeps_the_feet_height_and_reaches_the_remote_view() {
+        let now = Instant::now();
+        let airborne = sample(1, 13.0, 14.0).with_jump(0.5);
+        assert_eq!(airborne.h, Some(5.0), "the feet height h does not include the jump");
+        let r = Remote::new(airborne, now, None);
+        let v = remote_view(5, "Ann".into(), &r, "DEFAULT".into(), (10, 10), now);
+        assert_eq!(v.jump, 0.5, "the remote view exposes the jump for the figure");
+        assert_eq!(v.h, 5.0);
+        let grounded = Remote::new(sample(2, 13.0, 14.0), now, None);
+        assert_eq!(remote_view(5, "Ann".into(), &grounded, "DEFAULT".into(), (10, 10), now).jump, 0.0);
     }
 
     #[test]

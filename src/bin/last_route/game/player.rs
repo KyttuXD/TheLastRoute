@@ -102,6 +102,55 @@ pub fn bob_rules() -> &'static BobRules {
     })
 }
 
+/// The hop tunables (data/player/jump.json): the apex of a hop above the walking surface (m) and its airtime (s). The
+/// take-off speed comes from the apex with PLAYER_GRAVITY (v = sqrt(2 g H)), so the fall is untouched; apex 0.41 is
+/// the Godot hop (3.15 m/s).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JumpRules {
+    pub apex_m: f32,
+    /// The airtime the apex gives (2 v / g): read by the tests and the mechanics docs, not by the body.
+    #[allow(dead_code)]
+    pub airtime_s: f32,
+}
+
+impl Default for JumpRules {
+    fn default() -> Self {
+        JumpRules { apex_m: 1.0, airtime_s: 0.82 }
+    }
+}
+
+impl JumpRules {
+    /// The take-off speed in m/s for the apex: sqrt(2 g H).
+    pub fn take_off_speed(&self) -> f32 {
+        (2.0 * PLAYER_GRAVITY * self.apex_m.max(0.0)).sqrt()
+    }
+}
+
+pub fn jump_rules() -> &'static JumpRules {
+    static RULES: std::sync::OnceLock<JumpRules> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        let d = JumpRules::default();
+        let v = crate::content::embedded::data_under("player/jump.json")
+            .next()
+            .and_then(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok());
+        let get = |k: &str, dv: f32| {
+            v.as_ref()
+                .and_then(|v| v.get(k))
+                .and_then(|x| x.as_f64())
+                .map(|x| x as f32)
+                .filter(|x| x.is_finite() && *x > 0.0)
+                .unwrap_or(dv)
+        };
+        JumpRules { apex_m: get("apex_m", d.apex_m), airtime_s: get("airtime_s", d.airtime_s) }
+    })
+}
+
+/// The highest the feet may rise over the walking surface (`height`) with the head under `ceiling_rel` (m above the
+/// level floor): the head is PLAYER_HEIGHT above the feet.
+pub fn head_cap(ceiling_rel: f32, height: f32) -> f32 {
+    ceiling_rel - PLAYER_HEIGHT - height
+}
+
 /// A fall that just ended: the body touched the ground at `y` (absolute feet y) after dropping `drop_height` metres,
 /// at `speed` m/s, at `pos`. `Player::take_landing` hands it over once; the game applies the effects (stun, stamina,
 /// noise) from it.
@@ -353,6 +402,19 @@ impl Player {
     /// Whether the body is in a fall (no ground under it, `update_movement` integrates its height).
     pub fn falling(&self) -> bool {
         self.fall_top.is_some()
+    }
+
+    /// Where the hop is in its airtime: 0 at take-off, 1 at landing. The vertical speed falls at g from +v to -v, so the
+    /// phase is linear in time, (v - vy) / 2v. 0 on the ground and in a fall (no hop).
+    pub fn jump_phase(&self) -> f32 {
+        if self.grounded || self.falling() {
+            return 0.0;
+        }
+        let v = jump_rules().take_off_speed();
+        if v <= 0.0 {
+            return 0.0;
+        }
+        ((v - self.vy) / (2.0 * v)).clamp(0.0, 1.0)
     }
 
     /// The landing the last fall left, once.
@@ -618,12 +680,18 @@ impl Player {
             self.after_move(dt, moving, sprinting, speed, speed_now);
             return;
         }
-        let (surface, min_feet) = if lifted { (rel, 0.0) } else { (0.0, rel) };
+        // In the air over a lifted surface the feet may not sink below its tread (`rel - height`), so a landing meets the
+        // real tread; on the ground the walking surface is the floor of the body (0), as before.
+        let (surface, min_feet) = if lifted {
+            (rel, if self.grounded { 0.0 } else { rel - self.height })
+        } else {
+            (0.0, rel)
+        };
         if self.feet_y <= min_feet {
             self.feet_y = min_feet;
             self.vy = 0.0;
             if jump_edge && !self.crouching && self.stun <= 0.0 {
-                self.vy = PLAYER_JUMP_VELOCITY;
+                self.vy = jump_rules().take_off_speed();
             }
         }
         // On the Inferno's noisy floor a grounded body walking downhill sticks to the surface instead of dropping in
@@ -636,14 +704,36 @@ impl Player {
         }
         self.vy -= PLAYER_GRAVITY * dt;
         self.feet_y = (self.feet_y + self.vy * dt).max(min_feet);
-        self.grounded = self.feet_y <= min_feet;
-        // The body rises and sinks with the flight under it: the height eases toward the surface it now stands on, and
-        // back to the floor off the stairs, so it never snaps through a tread.
-        self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
-        // a noisy cave floor is continuous by construction (the slope per cell is capped), so the body stands
-        // on it exactly: only a flight's treads are eased
-        if on_own && !neighbour && !on_flight {
+        // A landing on a lifted surface (the feet clamped on its tread this frame) sets the height to that tread and the
+        // feet to zero: the absolute feet do not move, so the body meets the real tread with no sink and no pop.
+        if lifted && !self.grounded && self.feet_y <= min_feet {
             self.height = surface;
+            self.feet_y = 0.0;
+            self.vy = 0.0;
+            self.grounded = true;
+        } else {
+            self.grounded = self.feet_y <= min_feet;
+            // The body rises and sinks with the flight under it: the height eases toward the surface it now stands on,
+            // and back to the floor off the stairs, so it never snaps through a tread.
+            self.height += (surface - self.height) * (1.0 - (-STAIR_FOLLOW_RATE * dt).exp());
+            // a noisy cave floor is continuous by construction (the slope per cell is capped), so the body stands
+            // on it exactly: only a flight's treads are eased
+            if on_own && !neighbour && !on_flight {
+                self.height = surface;
+            }
+        }
+        // The head: a hop stops where the head would reach the cell's ceiling (render/seams.rs `ceiling_y`, the drawn
+        // ceiling of the region's walls). The feet are capped under it and the rise ends there.
+        if self.feet_y > 0.0 {
+            let ceiling = crate::render::seams::ceiling_y(crate::hunters::gimmicks::xivvy::headroom_at(fac, self.pos));
+            let cap = head_cap(ceiling, self.height);
+            if self.feet_y > cap {
+                self.feet_y = cap.max(min_feet);
+                if self.vy > 0.0 {
+                    self.vy = 0.0;
+                }
+                self.grounded = self.feet_y <= min_feet;
+            }
         }
 
         self.after_move(dt, moving, sprinting, speed, speed_now);
@@ -1618,6 +1708,108 @@ mod tests {
         run_body(&mut g, FRAME, &Controls::default());
         run_body(&mut g, FRAME, &held);
         assert!(g.p.feet_y > 0.0, "a fresh press hops again");
+    }
+
+    /// The absolute ceiling over the body's cell in metres above the level floor (the drawn wall top).
+    fn head_ceiling(g: &Game) -> f32 {
+        crate::render::seams::ceiling_y(crate::hunters::gimmicks::xivvy::headroom_at(&g.fac, g.p.pos))
+    }
+
+    #[test]
+    fn the_hop_data_gives_the_take_off_speed_and_the_godot_hop_is_reachable() {
+        let r = jump_rules();
+        let v = r.take_off_speed();
+        assert!((v * v / (2.0 * PLAYER_GRAVITY) - r.apex_m).abs() < 1e-4, "the apex {} comes back from v {v}", r.apex_m);
+        let airtime = 2.0 * v / PLAYER_GRAVITY;
+        assert!((airtime - r.airtime_s).abs() <= FRAME, "airtime {airtime} s against the data {} s", r.airtime_s);
+        let godot = JumpRules { apex_m: 0.41, ..*r };
+        assert!((godot.take_off_speed() - PLAYER_JUMP_VELOCITY).abs() < 0.02, "apex 0.41 is the Godot hop: {}", godot.take_off_speed());
+    }
+
+    #[test]
+    fn the_head_cap_leaves_the_head_under_the_ceiling() {
+        // a 3 m tunnel under a body standing 0.4 m up: the feet may rise 0.7 m, so the head stops at the ceiling
+        assert!((head_cap(3.0, 0.4) - 0.7).abs() < 1e-5);
+        // a plain 1.0 m hop from the floor under a 3 m ceiling is not capped (head at 2.9 m)
+        assert!(head_cap(3.0, 0.0) >= 1.0);
+    }
+
+    #[test]
+    fn a_hop_lasts_the_data_airtime_within_a_frame() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.1, &Controls::default());
+        step_body(&mut g, &Controls { jump: true, ..Default::default() });
+        let mut frames = 1;
+        while !g.p.grounded && frames < 600 {
+            step_body(&mut g, &Controls::default());
+            frames += 1;
+        }
+        // the hop is whole frames: it lands within one frame of the data airtime whichever way the frame grid falls, so the
+        // allowed count runs from one frame under the rounded-down airtime to the rounded-up one
+        let want = jump_rules().airtime_s / FRAME;
+        let (lo, hi) = ((want.floor() as usize).saturating_sub(1), want.ceil() as usize);
+        assert!((lo..=hi).contains(&frames), "a hop of {frames} frames against the data's {want:.2} (allowed {lo}..={hi})");
+    }
+
+    #[test]
+    fn the_airtime_phase_runs_from_take_off_to_landing() {
+        let (mut g, s) = flight_game();
+        g.p.pos = off_stair(s);
+        run_body(&mut g, 0.1, &Controls::default());
+        assert_eq!(g.p.jump_phase(), 0.0, "on the ground the phase is 0");
+        let mut phases = Vec::new();
+        step_body(&mut g, &Controls { jump: true, ..Default::default() });
+        while !g.p.grounded && phases.len() < 300 {
+            phases.push(g.p.jump_phase());
+            step_body(&mut g, &Controls::default());
+        }
+        assert!(phases.len() > 2, "the hop has airborne frames");
+        assert!(phases.windows(2).all(|w| w[1] >= w[0] - 1e-4), "the phase only rises: {phases:?}");
+        assert!(phases[0] < 0.1, "the phase at take-off is {}", phases[0]);
+        assert!(*phases.last().unwrap() > 0.9, "the phase at landing is {}", phases.last().unwrap());
+    }
+
+    #[test]
+    fn the_head_never_passes_the_cell_ceiling_during_a_hop() {
+        let (mut g, s) = flight_game();
+        g.p.pos = on_flight(&g, s, 12);
+        run_body(&mut g, 0.5, &Controls::default());
+        let ceiling = head_ceiling(&g);
+        assert!(
+            g.p.height + PLAYER_HEIGHT < ceiling,
+            "the tread leaves room for a standing head: {} + {PLAYER_HEIGHT} vs {ceiling}",
+            g.p.height
+        );
+        let hop = Controls { jump: true, ..Default::default() };
+        let mut peak = 0.0_f32;
+        for i in 0..90 {
+            let c = if i == 0 { hop.clone() } else { Controls::default() };
+            step_body(&mut g, &c);
+            let head = g.p.height + g.p.feet_y + PLAYER_HEIGHT;
+            let ceil = head_ceiling(&g);
+            assert!(head <= ceil + 1e-3, "frame {i}: the head at {head} passes the ceiling {ceil}");
+            peak = peak.max(g.p.feet_y);
+        }
+        assert!(peak > 0.0, "the hop rose");
+    }
+
+    #[test]
+    fn a_hop_up_the_flight_lands_on_the_higher_tread_with_no_pop() {
+        let (mut g, s) = flight_game();
+        start_on_flight(&mut g, s);
+        run_body(&mut g, 0.3, &Controls { fwd: 1.0, ..Default::default() });
+        let mut last = g.p.y() + g.p.feet_y;
+        let mut worst = 0.0_f32;
+        for i in 0..60 {
+            let c = Controls { fwd: 1.0, jump: i == 0, ..Default::default() };
+            step_body(&mut g, &c);
+            let feet = g.p.y() + g.p.feet_y;
+            worst = worst.max((feet - last).abs());
+            last = feet;
+            assert!(!g.p.falling(), "a hop up the flight is not a fall (frame {i})");
+        }
+        assert!(worst <= 0.25, "the absolute feet step by at most {worst} m a frame");
     }
 
     #[test]

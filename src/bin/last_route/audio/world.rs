@@ -149,7 +149,8 @@ pub fn ambience(dt: f32, region: Option<&str>, duck: f32) {
                 return;
             }
             // render the wanted bed a slice a frame; the mixer keeps the previous bed until the new one is ready
-            let want = region.and_then(ambience_bed);
+            // the region's bed, looked up only when the region text changes (`Mixer::wanted_bed`)
+            let want = w.ambience.wanted_bed(region);
             let shown = BEDS.with(|c| c.borrow_mut().update(want, super::cues::ambience::bed_budget()));
             let out = w.ambience.step_ducked(dt, shown, duck);
             for (n, (voice, slot)) in AMBIENCE_VOICES.iter().zip(out.iter()).enumerate() {

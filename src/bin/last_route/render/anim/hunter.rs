@@ -19,6 +19,7 @@ use crate::hunters::brain::State;
 use crate::hunters::gimmicks::wolf_spider::Phase;
 use crate::hunters::secret_creatures::Rules as SecretRules;
 use macroquad::prelude::*;
+use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
 use std::rc::Rc;
 
@@ -563,7 +564,8 @@ pub struct HunterView {
     /// 0..1 ease of the corner-peek lean, and the direction it leans in (kept while it eases back out).
     peek_amount: f32,
     peek_toward: (f32, f32),
-    expression: String,
+    /// The face's name: a borrowed one from the data, or the emote's own face when it overrides (owned).
+    expression: Cow<'static, str>,
     blink_timer: f32,
     blink_left: f32,
     face_hold: f32,
@@ -631,7 +633,7 @@ impl HunterView {
             heavy_lean: 0.0,
             peek_amount: 0.0,
             peek_toward: (0.0, 0.0),
-            expression: String::new(),
+            expression: Cow::Borrowed(""),
             blink_timer: 2.0,
             blink_left: 0.0,
             face_hold: 0.0,
@@ -668,13 +670,13 @@ impl HunterView {
     }
 
     /// The scythe clip standing in for `clip` on a carrier whose rig has it, else `clip` itself.
-    fn scythe_clip(&self, clip: &str) -> String {
+    fn scythe_clip<'a>(&self, clip: &'a str) -> Cow<'a, str> {
         if self.carries_scythe {
             if let Some(c) = act::table().scythe.clips.get(clip).filter(|c| self.rig.has_clip(c)) {
-                return c.clone();
+                return Cow::Borrowed(c.as_str());
             }
         }
-        clip.to_string()
+        Cow::Borrowed(clip)
     }
 
     /// The leg speed scale for `clip` at `speed` (HunterStride.choose's last step).
@@ -732,7 +734,7 @@ impl HunterView {
     }
 
     /// The activity pose, eased in and out, over the finished clip / head / chase layers.
-    fn apply_activity(&mut self, rig: &Rig, pose: &mut [Local], delta: f32) {
+    fn apply_activity(&mut self, rig: &Rig, pose: &mut [Local], delta: f32, sample: bool) {
         let want = self.act_name.and_then(|n| act::table().find(n));
         if let Some(d) = want {
             if !self.act.is_some_and(|p| std::ptr::eq(p, d)) {
@@ -747,7 +749,7 @@ impl HunterView {
         if let Some(d) = self.act {
             if self.act_w <= 0.0 && want.is_none() {
                 self.act = None;
-            } else {
+            } else if sample {
                 act::apply(pose, rig, d, self.act_t, smoothstep01(self.act_w));
             }
         }
@@ -861,7 +863,8 @@ impl HunterView {
     }
 
     fn update_animation(&mut self, i: &Input, delta: f32) {
-        let mut clip = "idle".to_string();
+        // the clip name: a borrowed one from the data (no per-frame string), owned only for a runtime pick (a scythe, an emote)
+        let mut clip: Cow<'static, str> = Cow::Borrowed("idle");
         // a mechanic state with a clip of this rig takes the place of the locomotion clips (not of stun / waking)
         let mech = self.mechanic_def(i);
         let mech_clip = mech.and_then(|m| m.clip.as_deref()).filter(|c| self.rig.has_clip(c));
@@ -898,13 +901,13 @@ impl HunterView {
             clip = "stun_recover".into();
         } else if i.stun > 0.0 {
         } else if let Some(c) = mech_clip {
-            clip = c.to_string();
+            clip = Cow::Borrowed(c);
         } else if i.airborne {
             clip = "flight".into();
         } else if i.charging {
             clip = "charge".into();
         } else if let Some(f) = self.forced_clip() {
-            clip = f;
+            clip = Cow::Owned(f);
         } else {
             match i.state {
                 State::Chase => {
@@ -919,12 +922,12 @@ impl HunterView {
                 // a corner peek crouches in place with the lean pose (hunter_activity_poses.json), it does not walk
                 State::Peek => {
                     let p = &act::table().peek_clip;
-                    clip = if self.rig.has_clip(p) { p.clone() } else { "idle".into() };
+                    clip = if self.rig.has_clip(p) { Cow::Borrowed(p.as_str()) } else { "idle".into() };
                 }
                 State::Idle => {}
             }
         }
-        if mech_clip.is_none() && TRAVEL_CLIPS.contains(&clip.as_str()) {
+        if mech_clip.is_none() && TRAVEL_CLIPS.contains(&&*clip) {
             if self.gait_moving && self.still_time > STILL_CLIP_AFTER {
                 self.gait_moving = false;
             } else if !self.gait_moving && self.move_speed > GAIT_ENTER_SPEED {
@@ -941,11 +944,11 @@ impl HunterView {
         if clip == "flight" {
             speed = (0.85 + self.move_speed * 0.22).clamp(0.85, 2.3); // XivvyFlight.flight_clip_speed
         }
-        let travelling = mech_clip.is_none() && TRAVEL_CLIPS.contains(&clip.as_str());
+        let travelling = mech_clip.is_none() && TRAVEL_CLIPS.contains(&&*clip);
         if travelling {
             let (pick, mut scale) = self.choose(&clip, self.move_speed);
             if self.rig.has_clip(&pick) {
-                clip = pick;
+                clip = Cow::Owned(pick);
             }
             // Kathy's scythe walk has its own stride speed
             let carried = self.scythe_clip(&clip);
@@ -961,7 +964,7 @@ impl HunterView {
         if travelling {
             self.play_travel(&play);
         } else if let Some(m) = mech.filter(|_| mech_clip.is_some()) {
-            if self.player.current_animation() != clip || !self.player.playing {
+            if self.player.current_animation() != &*clip || !self.player.playing {
                 let rig = self.rig.clone();
                 self.player.play(&rig, &clip, m.blend);
             }
@@ -1058,7 +1061,7 @@ impl HunterView {
         self.player.current_animation()
     }
 
-    fn desired_expression(&mut self, i: &Input) -> String {
+    fn desired_expression(&mut self, i: &Input) -> Cow<'static, str> {
         if !i.active {
             return "neutral".into();
         }
@@ -1069,7 +1072,7 @@ impl HunterView {
             return "blank".into();
         }
         if self.emote_seen.is_some() && !self.emote_face.is_empty() && act::table().emote_face_override {
-            return self.emote_face.clone();
+            return Cow::Owned(self.emote_face.clone());
         }
         match i.state {
             State::Chase => {
@@ -1108,8 +1111,8 @@ impl HunterView {
         if wanted == self.expression {
             return;
         }
-        let quick = ["blink", "stun", "blank"].contains(&wanted.as_str())
-            || ["blink", "stun", "blank", ""].contains(&self.expression.as_str());
+        let quick = ["blink", "stun", "blank"].contains(&&*wanted)
+            || ["blink", "stun", "blank", ""].contains(&&*self.expression);
         if !quick && self.face_hold > 0.0 {
             return;
         }
@@ -1123,6 +1126,14 @@ impl HunterView {
     /// One frame: motion sampling, clip choice, the AnimationPlayer step, then the view's own layers (head look, chase
     /// style, heavy stun lean) in the original's order, and the model-space bone transforms.
     pub fn update(&mut self, i: &Input, delta: f32, clock: f32) -> (Vec<Local>, Output) {
+        self.update_lod(i, delta, clock, true)
+    }
+
+    /// `update` with the pose sample optional. Every clock, blend and layer weight advances on every call (the state
+    /// step); `sample` false skips the pose writes (the layers' bone pose, the activity and mechanic poses, the bone
+    /// transforms) and returns an empty pose and output. The scene passes false on a far hunter's frame that shows its
+    /// last mesh (data/render/hunters.json lod_bands, skip_beyond), so the state moves on without the pose work.
+    pub fn update_lod(&mut self, i: &Input, delta: f32, clock: f32, sample: bool) -> (Vec<Local>, Output) {
         let frame = delta.max(1.0 / 120.0);
         // sync_from_brain: smoothed move speed, teleport guard, still time
         let step = v2len((i.pos.0 - self.last_pos.0, i.pos.1 - self.last_pos.1));
@@ -1198,7 +1209,7 @@ impl HunterView {
         } else {
             self.facing
                 .update_head(delta, mode, self.yaw, i.pos, target, clock);
-            if let Some(h) = rig.bone("Head") {
+            if let Some(h) = rig.bone("Head").filter(|_| sample) {
                 let w = self.facing.weight;
                 let look = Quat::from_axis_angle(Vec3::Y, self.facing.head_yaw * w)
                     * Quat::from_axis_angle(Vec3::X, self.facing.head_pitch * w);
@@ -1217,7 +1228,7 @@ impl HunterView {
             l.idle += (idle - l.idle) * k;
             l.live += ((live as i32 as f32) - l.live) * k;
             l.chase = self.chase.weight;
-            if !self.profile.is_identity_pose() {
+            if sample && !self.profile.is_identity_pose() {
                 profile::apply(self.profile, &mut Bones::new(&rig, &mut pose), self.layers);
             }
         }
@@ -1261,7 +1272,7 @@ impl HunterView {
         );
         // the activity pose (lean, sniff, sweep, push, knock, listen, peek, crawl, lunge) over the clips and the chase layer
         if !self.rig.is_creature() {
-            self.apply_activity(&rig, &mut pose, delta);
+            self.apply_activity(&rig, &mut pose, delta, sample);
         }
         // a mechanic state's bone pose over everything the clips and the chase layer did, eased in and out
         let want = self.mechanic_def(i);
@@ -1280,7 +1291,7 @@ impl HunterView {
         if let Some(m) = self.mech {
             if self.mech_w <= 0.0 && want.is_none() {
                 self.mech = None;
-            } else {
+            } else if sample {
                 profile::apply_state(m, &mut Bones::new(&rig, &mut pose), smoothstep01(self.mech_w), self.mech_t);
             }
         }
@@ -1313,6 +1324,10 @@ impl HunterView {
             i.lift,
             i.pos.1 + i.sway.1 + self.peek_toward.1 * shift,
         );
+        if !sample {
+            // a far frame: the state above has moved on, the bone transforms are not needed (the scene shows its last mesh)
+            return (Vec::new(), Output { bones: Vec::new(), root: Mat4::IDENTITY, face_cell: 0, yaw: self.yaw });
+        }
         (pose.clone(), self.finish(pose, at, clock))
     }
 
@@ -1438,4 +1453,73 @@ pub fn model_space_stretched(rig: &Rig, pose: &[Local], stretch: &[f32]) -> Vec<
         out.push(m);
     }
     out
+}
+
+#[cfg(test)]
+mod lod_tests {
+    use super::super::clip::rig;
+    use super::*;
+
+    fn input(x: f32) -> Input<'static> {
+        Input {
+            pos: (x, 5.0),
+            brain_facing: (1.0, 0.0),
+            active: true,
+            stun: 0.0,
+            heavy_stun: false,
+            state: State::Idle,
+            direct_visible: false,
+            winded: false,
+            airborne: false,
+            lift: 0.0,
+            sway: (0.0, 0.0),
+            charging: false,
+            look_target: None,
+            path_ahead: None,
+            chase_style: "pump",
+            camera: vec3(0.0, 1.6, 0.0),
+            grabbing: false,
+            peek_lean: None,
+            creature: None,
+            mechanic: None,
+        }
+    }
+
+    /// A far frame skips the pose sample (no layer pose, no bone transforms) and still advances every clock: the two
+    /// views, one sampled and one far on every frame, agree on the state frame for frame.
+    #[test]
+    fn a_far_frame_skips_the_pose_but_the_state_moves_on() {
+        let r = rig("aki").expect("the aki rig is embedded");
+        let mut sampled = HunterView::new("aki", r.clone());
+        let mut far = HunterView::new("aki", r);
+        let i = input(0.0);
+        let dt = 1.0 / 30.0;
+        for f in 0..40 {
+            let t = f as f32 * dt;
+            let (_, out) = sampled.update_lod(&i, dt, t, true);
+            assert!(!out.bones.is_empty(), "a sampled frame builds the bone transforms");
+            let (far_pose, far_out) = far.update_lod(&i, dt, t, false);
+            assert!(far_pose.is_empty() && far_out.bones.is_empty(), "a far frame builds no pose");
+        }
+        assert_eq!(sampled.clip(), far.clip());
+        assert_eq!(sampled.blink_timer, far.blink_timer, "the blink clock advances on a far frame");
+        assert_eq!(sampled.still_time, far.still_time);
+        assert_eq!(sampled.move_speed, far.move_speed);
+        assert_eq!(sampled.stride_scale, far.stride_scale);
+        assert_eq!(sampled.playback_speed(), far.playback_speed());
+    }
+
+    /// `update` is the sampled path: the same pose length and bone count as `update_lod` with sample on.
+    #[test]
+    fn update_is_the_sampled_path() {
+        let r = rig("aki").expect("the aki rig is embedded");
+        let mut a = HunterView::new("aki", r.clone());
+        let mut b = HunterView::new("aki", r);
+        let i = input(0.0);
+        let (pa, oa) = a.update(&i, 1.0 / 30.0, 0.5);
+        let (pb, ob) = b.update_lod(&i, 1.0 / 30.0, 0.5, true);
+        assert_eq!(pa.len(), pb.len());
+        assert_eq!(oa.bones.len(), ob.bones.len());
+        assert_eq!(oa.face_cell, ob.face_cell);
+    }
 }

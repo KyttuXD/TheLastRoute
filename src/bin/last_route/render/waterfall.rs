@@ -8,6 +8,8 @@ use crate::content::embedded;
 use crate::world::route::sewer::core::{falls_between, Inputs, CHUNK, LEVEL, LOWER_LEVEL};
 use crate::world::route::sewer::water::surface_y;
 use crate::world::vertical::STOREY;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 pub const PATH: &str = "render/waterfall.json";
@@ -197,7 +199,8 @@ pub struct Puff {
 /// Everything drawn and played for one drop cell, in coordinates local to the lip's centre.
 #[derive(Clone, Debug)]
 pub struct Waterfall {
-    pub sheet: Vec<SheetQuad>,
+    /// Shared with the sheet cache (`sheet_cached`): the quads do not change with the clock.
+    pub sheet: Rc<[SheetQuad]>,
     pub mist: Vec<Puff>,
     pub foam_center: [f32; 3],
     pub light_pos: [f32; 3],
@@ -237,6 +240,38 @@ pub fn sheet(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32) -> Vec<She
             }
         })
         .collect()
+}
+
+/// The quads of `sheet`, kept per drop (its two heights and throw side) and per the sheet's own shape settings. The
+/// sheet does not depend on the clock, so the falls reuse the same quads frame after frame instead of rebuilding them.
+pub fn sheet_cached(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32) -> Rc<[SheetQuad]> {
+    type Key = (u32, u32, u32, u64, u32, u32, u32);
+    thread_local! {
+        static SHEETS: RefCell<Vec<(Key, Rc<[SheetQuad]>)>> = const { RefCell::new(Vec::new()) };
+    }
+    /// The most sheets kept; a full cache starts again (a window holds at most nine falls).
+    const MAX_SHEETS: usize = 32;
+    let key: Key = (
+        top_y.to_bits(),
+        bottom_y.to_bits(),
+        out.to_bits(),
+        cfg.curl_segments as u64,
+        cfg.throw_m.to_bits(),
+        cfg.curl_drop_m.to_bits(),
+        cfg.sheet_width_m.to_bits(),
+    );
+    SHEETS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, v)) = c.iter().find(|(k, _)| *k == key) {
+            return Rc::clone(v);
+        }
+        if c.len() >= MAX_SHEETS {
+            c.clear();
+        }
+        let v: Rc<[SheetQuad]> = sheet(cfg, top_y, bottom_y, out).into();
+        c.push((key, Rc::clone(&v)));
+        v
+    })
 }
 
 /// Mist at time `t` seconds: a fixed count of puffs, each on its own phase of the lifetime, rising from the
@@ -282,7 +317,7 @@ pub fn mist(cfg: &WaterfallCfg, surface_y: f32, out: f32, t: f32) -> Vec<Puff> {
 pub fn build(cfg: &WaterfallCfg, top_y: f32, bottom_y: f32, out: f32, t: f32) -> Waterfall {
     let foam_z = out * (cfg.throw_m + cfg.splash.offset_out_m);
     Waterfall {
-        sheet: sheet(cfg, top_y, bottom_y, out),
+        sheet: sheet_cached(cfg, top_y, bottom_y, out),
         mist: mist(cfg, bottom_y, out, t),
         foam_center: [0.0, bottom_y + 0.03, foam_z],
         light_pos: [0.0, bottom_y + cfg.splash.light_height_m, foam_z],
@@ -348,20 +383,21 @@ pub fn sites_in_window(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> 
 type SiteKey = (String, i32, (i32, i32));
 
 thread_local! {
-    static SITES: std::cell::RefCell<Option<(SiteKey, Vec<Site>)>> = const { std::cell::RefCell::new(None) };
+    static SITES: RefCell<Option<(SiteKey, Rc<[Site]>)>> = const { RefCell::new(None) };
 }
 
-/// `sites_in_window`, kept while the window stays the same (the scene asks every frame).
-pub fn sites_cached(seed: &str, level: i32, center: (i32, i32)) -> Vec<Site> {
+/// `sites_in_window`, kept while the window stays the same (the scene asks every frame). The answer is a shared handle
+/// to the cached list (a count bump, not a copy of the sites).
+pub fn sites_cached(seed: &str, level: i32, center: (i32, i32)) -> Rc<[Site]> {
     SITES.with(|c| {
         let mut c = c.borrow_mut();
         if let Some(((s, l, ce), v)) = &*c {
             if s == seed && *l == level && *ce == center {
-                return v.clone();
+                return Rc::clone(v);
             }
         }
-        let v = sites_in_window(seed, level, center);
-        *c = Some(((seed.to_string(), level, center), v.clone()));
+        let v: Rc<[Site]> = sites_in_window(seed, level, center).into();
+        *c = Some(((seed.to_string(), level, center), Rc::clone(&v)));
         v
     })
 }
@@ -471,7 +507,26 @@ mod tests {
             assert!((u.top_y - u.bottom_y - STOREY).abs() < 1e-4);
             assert!(u.lip[0] >= 0.0 && u.lip[0] < span && u.lip[1] >= 0.0 && u.lip[1] < span);
         }
-        assert_eq!(sites_cached(&seed, LEVEL, (0, 0)), upper, "the cached answer is the computed one");
+        assert_eq!(sites_cached(&seed, LEVEL, (0, 0)).to_vec(), upper, "the cached answer is the computed one");
+        // a second ask for the same window hands back the same list, not a fresh copy
+        let (first, again) = (sites_cached(&seed, LEVEL, (0, 0)), sites_cached(&seed, LEVEL, (0, 0)));
+        assert!(Rc::ptr_eq(&first, &again), "a repeat ask for the window is a cache hit");
+    }
+
+    #[test]
+    fn the_sheet_cache_returns_the_same_geometry_as_a_fresh_sheet() {
+        let c = cfg();
+        let fresh = sheet(&c, -0.5, -3.5, -1.0);
+        let cached = sheet_cached(&c, -0.5, -3.5, -1.0);
+        assert_eq!(cached.to_vec(), fresh, "the cached quads are the computed ones");
+        assert!(Rc::ptr_eq(&cached, &sheet_cached(&c, -0.5, -3.5, -1.0)), "the same drop reuses its quads");
+        // a different drop, side or sheet shape is a different sheet
+        assert_eq!(sheet_cached(&c, -0.5, -3.5, 1.0).to_vec(), sheet(&c, -0.5, -3.5, 1.0));
+        let mut wide = cfg();
+        wide.sheet_width_m = c.sheet_width_m * 2.0;
+        assert_eq!(sheet_cached(&wide, -0.5, -3.5, -1.0).to_vec(), sheet(&wide, -0.5, -3.5, -1.0));
+        // the clock moves the mist, never the sheet
+        assert_eq!(build(&c, -0.5, -3.5, -1.0, 0.0).sheet, build(&c, -0.5, -3.5, -1.0, 1.7).sheet);
     }
 
     fn some_seed() -> String {

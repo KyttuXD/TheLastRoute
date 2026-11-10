@@ -264,7 +264,21 @@ pub fn load_skin_in(dir: &Path, id: &str) -> Option<ValidSkin> {
 /// files over the size cap give None.
 pub fn skin_png(id: &str) -> Option<(String, Vec<u8>)> {
     // The canonical re-encoding is what is hashed, cached and uploaded, so every client agrees on the id.
-    load_skin(id).map(|v| (v.hash, v.png))
+    if let Some(valid) = load_skin(id) {
+        return Some((valid.hash, valid.png));
+    }
+    // A skin adopted from the account at sign-in is saved as its hash and lives in the cache (or in memory), not in the
+    // skins folder: the same lookup the worn skin uses (worn_skin_in), so the SKIN tab shows the account's skin too.
+    if is_skin_hash(id) {
+        return read_skin(id).and_then(|bytes| validate_skin(&bytes, max_bytes()).ok()).filter(|v| v.hash == id).map(|v| (v.hash, v.png));
+    }
+    None
+}
+
+/// Counts one more saved skin, so a caller that resolved the worn skin once resolves it again even though its id did not
+/// change (the account's skin was adopted at sign-in and its file has just become readable).
+pub fn bump_generation() {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// The lowercase hex SHA-256 of `bytes`: the id a skin PNG is known by (64 hex characters).
@@ -2014,6 +2028,29 @@ mod tests {
         assert!(!verify_skin(&sha256_hex(b"other"), &bytes), "bytes must hash to the id");
         let header_only = png_head(64, 64);
         assert!(!verify_skin(&sha256_hex(&header_only), &header_only), "a header with the right hash is still no skin");
+    }
+
+    #[test]
+    fn skin_png_returns_a_remembered_account_skin_by_its_hash() {
+        let valid = validate_skin(&fixture_png(false), max_bytes()).expect("the fixture is a valid skin");
+        remember_own(&valid.hash, &valid.png);
+        let (hash, png) = skin_png(&valid.hash).expect("the account's skin is found by its hash");
+        assert_eq!(hash, valid.hash);
+        assert_eq!(png, valid.png, "the canonical bytes are handed out");
+    }
+
+    #[test]
+    fn skin_png_gives_nothing_for_an_unknown_hash_default_or_a_non_hash() {
+        assert!(skin_png(&sha256_hex(b"no such skin anywhere")).is_none(), "a hash not held is nothing");
+        assert!(skin_png(SKIN_DEFAULT).is_none(), "DEFAULT has no file");
+        assert!(skin_png("NOT A HASH").is_none(), "a non-hash id is never read as a file");
+    }
+
+    #[test]
+    fn bump_generation_counts_one_more_saved_skin() {
+        let before = generation();
+        bump_generation();
+        assert!(generation() > before, "a bump is seen by callers that compare the generation");
     }
 
     fn png_head(w: u32, h: u32) -> Vec<u8> {

@@ -961,6 +961,7 @@ impl Session {
                     slim: flag("slim"),
                     speed: f(c, "speed").unwrap_or(0.0),
                     vy: f(c, "vy").unwrap_or(0.0),
+                    jump: f(c, "jump").unwrap_or(0.0),
                     clip: c.get("clip").and_then(|v| v.as_str()).and_then(crate::render::anim::runner::Pose::from_wire),
                     held: c.get("held").and_then(|v| v.as_str()).and_then(crate::net::held_wire::from_wire),
                     flash_pitch: None,

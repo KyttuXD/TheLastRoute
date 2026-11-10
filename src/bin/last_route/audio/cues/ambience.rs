@@ -145,6 +145,10 @@ pub fn settings() -> &'static Settings {
 /// The bed id a region id plays: its own bed, else its alias, else the data's fallback. Case and spaces are ignored.
 pub fn bed_for(region: &str) -> &'static str {
     let s = settings();
+    // an exact bed id (what the mixer passes on each frame) needs no trim or lowercase
+    if let Some((id, _)) = s.beds.get_key_value(region) {
+        return id.as_str();
+    }
     let key = region.trim().to_lowercase();
     if let Some((id, _)) = s.beds.get_key_value(key.as_str()) {
         return id.as_str();
@@ -1177,6 +1181,10 @@ pub fn bed_budget() -> std::time::Duration {
 pub struct Mixer {
     slots: [Slot; 2],
     active: usize,
+    /// The region text the bed was last looked up for, and that bed (`wanted_bed`): a frame in the same region does
+    /// not lowercase or look the region up again.
+    region_raw: Option<String>,
+    bed: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1204,6 +1212,17 @@ impl Mixer {
     /// original's `set_ambience_duck`).
     pub fn step(&mut self, dt: f32, region: Option<&str>) -> [SlotOut; 2] {
         self.step_ducked(dt, region, 0.0)
+    }
+
+    /// The bed id `region` plays (`None` for no region, or a region with no bed). The lookup (`bed_for`) runs only when
+    /// the region text changes, so a frame in the same region costs a string compare, not a lowercase.
+    pub fn wanted_bed(&mut self, region: Option<&str>) -> Option<&'static str> {
+        let r = region?;
+        if self.region_raw.as_deref() != Some(r) {
+            self.region_raw = Some(r.to_string());
+            self.bed = bed_for(r);
+        }
+        Some(self.bed).filter(|id| !id.is_empty())
     }
 
     pub fn step_ducked(&mut self, dt: f32, region: Option<&str>, duck: f32) -> [SlotOut; 2] {
@@ -1237,3 +1256,22 @@ impl Mixer {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The region's bed is looked up when the region text changes; the same text again answers from the cache.
+    #[test]
+    fn the_bed_is_looked_up_once_per_region_change() {
+        let mut m = Mixer::default();
+        assert_eq!(m.wanted_bed(None), None);
+        assert_eq!(m.wanted_bed(Some("Maze")), Some("maze"), "the lookup ignores case");
+        // the cached bed answers the same region (a sentinel proves no lookup ran)
+        m.bed = "sentinel";
+        assert_eq!(m.wanted_bed(Some("Maze")), Some("sentinel"), "a frame in the same region is a cache hit");
+        // a new region is looked up again
+        assert_eq!(m.wanted_bed(Some("ice")), Some(bed_for("ice")));
+        assert_eq!(m.wanted_bed(None), None, "no region is silence");
+    }
+}

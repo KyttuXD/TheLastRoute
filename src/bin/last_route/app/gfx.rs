@@ -175,7 +175,7 @@ impl Default for WebRules {
             default_tier: "LOW".into(),
             high_dpi: false,
             max_pixel_ratio: 1.0,
-            render_scale_cap: 0.5,
+            render_scale_cap: 0.25,
             page_paces_frames: true,
             sections_only_when_shown: true,
         }
@@ -689,7 +689,8 @@ mod tests {
 
     #[test]
     fn device_pixel_ratio_never_raises_the_target_past_the_data_limit() {
-        let mut w = WebRules::default();
+        // the cap is lifted here so only the pixel ratio is under test (the shipped cap is 0.25)
+        let mut w = WebRules { render_scale_cap: 1.0, ..WebRules::default() };
         // CSS-sized canvas: the ratio is ignored
         assert_eq!(w.target_scale(0.5, 2.0), 0.5);
         // device-pixel canvas at ratio 2, limit 1: the same pixels as the CSS canvas

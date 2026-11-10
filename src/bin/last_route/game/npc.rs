@@ -146,6 +146,8 @@ pub struct Tuning {
     pub pickup_useful: Vec<String>,
     /// Metres from the runner a locker may be for a bot to go to it (data `errand.locker.leash`).
     pub locker_leash: f32,
+    /// Seconds a bot waits after a scan finds no relay or locker errand before it scans again (data `errand.scan_cool`).
+    pub errand_scan_cool: f32,
     /// Seconds a bot stays hidden in a locker on a locker errand (data `errand.locker.dwell`).
     pub locker_dwell: f32,
     /// Searched points a bot remembers (data `searched.memory`).
@@ -522,6 +524,7 @@ impl Tuning {
                 .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
                 .unwrap_or_default(),
             locker_leash: num(&errand["locker"], "leash")?,
+            errand_scan_cool: num(errand, "scan_cool").unwrap_or(0.5).max(0.0),
             locker_dwell: num(&errand["locker"], "dwell")?,
             searched_memory: num(searched, "memory")?.max(0.0) as usize,
             searched_avoid: num(searched, "avoid_radius")?,
@@ -591,11 +594,14 @@ pub struct Collision {
     pub soft_margin: f32,
     /// The speed (m/s) of that soft steer at touching.
     pub soft_speed: f32,
+    /// From this many bots on, the collision pass finds each bot's neighbours in a grid instead of checking every pair
+    /// (data `collision.grid_min_bots`). Below it the pairs are checked in order, as before.
+    pub grid_min_bots: usize,
 }
 
 impl Default for Collision {
     fn default() -> Collision {
-        Collision { height: 1.2, push_cap: 0.15, soft_margin: 0.2, soft_speed: 2.5 }
+        Collision { height: 1.2, push_cap: 0.15, soft_margin: 0.2, soft_speed: 2.5, grid_min_bots: 12 }
     }
 }
 
@@ -608,6 +614,7 @@ impl Collision {
             push_cap: num("push_cap", d.push_cap),
             soft_margin: num("soft_margin", d.soft_margin),
             soft_speed: num("soft_speed", d.soft_speed),
+            grid_min_bots: v["grid_min_bots"].as_u64().map_or(d.grid_min_bots, |x| x as usize),
         }
     }
 }
@@ -743,6 +750,55 @@ pub struct CrossCache {
     pub age: f32,
 }
 
+/// What the bots' spot list and loot are built from (`Game::spot_inputs_into`). The lists are rebuilt when any of these
+/// changes, and only then.
+// the fields are compared as a whole (`PartialEq`), so the lint that wants each one read is off
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SpotInputs {
+    active: i32,
+    lamp_low: bool,
+    stamina_low: bool,
+    exit: bool,
+    /// Each relay centre of every resident level, with its level.
+    geo: Vec<(i32, (f32, f32))>,
+    /// The active level's relay flags.
+    relays: Vec<bool>,
+    /// Each active battery: its centre, whether it is taken, and whether the team has room for a battery.
+    batteries: Vec<((f32, f32), bool, bool)>,
+    /// Each floor pickup: its place, whether it is taken, its item, and whether the team has room for that item.
+    pickups: Vec<((f32, f32), bool, Item, bool)>,
+}
+
+/// The bots' spot list and loot, kept from frame to frame (`Game::npc_spots_refresh`).
+#[derive(Clone, Debug, Default)]
+pub struct SpotCache {
+    valid: bool,
+    inputs: SpotInputs,
+    next: SpotInputs,
+    spots: Vec<Spot>,
+    loot: Vec<(Claim, (f32, f32))>,
+    /// How many times the lists have been rebuilt (the tests read it).
+    #[cfg_attr(not(test), allow(dead_code))]
+    rebuilds: u32,
+}
+
+/// The buffers the bots' tick fills each frame, kept between frames so the tick allocates nothing in steady state. The
+/// game holds one (`Game::npc_scratch`): `update_npcs_in` takes it out for the tick and puts it back at the end.
+#[derive(Clone, Debug, Default)]
+pub struct NpcScratch {
+    by_level: Vec<(i32, Vec<Seen>, Vec<(f32, f32)>)>,
+    bodies: Vec<HunterBody>,
+    presses: Vec<Cell>,
+    closes: Vec<Cell>,
+    sink: Vec<Cell>,
+    search_all: Vec<(i32, (f32, f32))>,
+    downed: Vec<(i32, (f32, f32), Option<u32>)>,
+    peers: Vec<Peer>,
+    spot_cache: SpotCache,
+    grid: Vec<(i64, u32)>,
+}
+
 /// A bot's level-wide goal (the "goal" intent).
 #[derive(Clone, Debug, Default)]
 pub struct GoalState {
@@ -751,6 +807,8 @@ pub struct GoalState {
     pub spot: Option<Spot>,
     /// Seconds before the bot picks a goal again.
     pub cool: f32,
+    /// Seconds before the bot scans for a relay (index 0) or a locker (index 1) errand again after a scan found none.
+    pub errand_cool: [f32; 2],
     /// Seconds since the goal was picked.
     pub age: f32,
     /// Seconds stood at a relay.
@@ -2773,6 +2831,16 @@ fn peer_of(q: &Npc, downed: bool) -> Peer {
     }
 }
 
+/// The grid cell of a point, `reach` metres square.
+fn cell_of(p: (f32, f32), reach: f32) -> (i32, i32) {
+    ((p.0 / reach).floor() as i32, (p.1 / reach).floor() as i32)
+}
+
+/// One sortable key per grid cell: the x cell in the high half and the z cell in the low half.
+fn pack_cell(cx: i32, cz: i32) -> i64 {
+    ((cx as i64) << 32) | (cz as u32 as i64)
+}
+
 /// Keeps the bodies apart: each bot yields to the runner and to the hunters on its level and height (never moved) and to
 /// the other bots. Closer than `BODY_GAP` (for a hunter: its radius plus the bot's, never more than 0.9 of the catch radius,
 /// so a hunter that reaches a bot can still down it) it is moved out by the overlap (half of it against another bot, which
@@ -2788,6 +2856,7 @@ fn separate_bots(
     runner: Option<((f32, f32), f32)>,
     col: &Collision,
     dt: f32,
+    grid: &mut Vec<(i64, u32)>,
 ) {
     let hunter_touch = (crate::config::HUNTER_RADIUS + NAV_RADIUS).min(0.9 * super::revive::rules().npc_catch_radius);
     for (p, q) in peers.iter_mut().zip(npcs.iter()) {
@@ -2795,6 +2864,20 @@ fn separate_bots(
         p.y = q.y;
         p.level = q.level;
         p.solid = p.solid && q.walk.is_none() && q.hidden.is_none();
+    }
+    // a bot is only moved by a peer within `reach` (`contact` is zero beyond touching plus the margin), so a grid of cells
+    // that wide finds every peer that can push. Below `grid_min_bots` the pairs are checked in order, as they always were.
+    let reach = BODY_GAP + col.soft_margin;
+    let use_grid = peers.len() >= col.grid_min_bots && reach > 0.0;
+    grid.clear();
+    if use_grid {
+        for (j, p) in peers.iter().enumerate() {
+            if p.solid {
+                let (cx, cz) = cell_of(p.at, reach);
+                grid.push((pack_cell(cx, cz), j as u32));
+            }
+        }
+        grid.sort_unstable();
     }
     for i in 0..npcs.len() {
         if !peers[i].solid {
@@ -2809,13 +2892,37 @@ fn separate_bots(
                 soft = (soft.0 + s.0, soft.1 + s.1);
             }
         }
-        for (j, o) in peers.iter().enumerate() {
-            if j == i || !o.solid || (o.y - my_y).abs() > col.height {
-                continue;
+        if use_grid {
+            let (cx, cz) = cell_of(me, reach);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let key = pack_cell(cx + dx, cz + dz);
+                    let mut k = grid.partition_point(|e| e.0 < key);
+                    while k < grid.len() && grid[k].0 == key {
+                        let j = grid[k].1 as usize;
+                        k += 1;
+                        if j == i {
+                            continue;
+                        }
+                        let o = &peers[j];
+                        if !o.solid || (o.y - my_y).abs() > col.height {
+                            continue;
+                        }
+                        let (h, s) = contact(me, o.at, id, 0.5, BODY_GAP, col.soft_margin);
+                        hard = (hard.0 + h.0, hard.1 + h.1);
+                        soft = (soft.0 + s.0, soft.1 + s.1);
+                    }
+                }
             }
-            let (h, s) = contact(me, o.at, id, 0.5, BODY_GAP, col.soft_margin);
-            hard = (hard.0 + h.0, hard.1 + h.1);
-            soft = (soft.0 + s.0, soft.1 + s.1);
+        } else {
+            for (j, o) in peers.iter().enumerate() {
+                if j == i || !o.solid || (o.y - my_y).abs() > col.height {
+                    continue;
+                }
+                let (h, s) = contact(me, o.at, id, 0.5, BODY_GAP, col.soft_margin);
+                hard = (hard.0 + h.0, hard.1 + h.1);
+                soft = (soft.0 + s.0, soft.1 + s.1);
+            }
         }
         // a hunter is a body too, but it only pushes (no soft steer: a chaser must still be able to close in and down the bot)
         for o in hunters.iter().filter(|o| o.level == my_level && (o.y - my_y).abs() <= col.height) {
@@ -3006,6 +3113,9 @@ fn errand(n: &mut Npc, sc: &Scene, locker: bool, t: &Tuning, dt: f32, presses: &
         (t.relay_leash, t.relay_dwell)
     };
     let is_mine = |e: &Errand| matches!(e, Errand::Locker(_)) == locker;
+    // a scan that found nothing waits `errand_scan_cool` before the next one (per kind, so a relay scan never holds a locker one)
+    let kind = locker as usize;
+    n.goal.errand_cool[kind] = (n.goal.errand_cool[kind] - dt).max(0.0);
     match n.errand {
         Some(e) if is_mine(&e) => {
             let safe = match errand_spot(sc.fac, e) {
@@ -3020,13 +3130,21 @@ fn errand(n: &mut Npc, sc: &Scene, locker: bool, t: &Tuning, dt: f32, presses: &
         }
         // the other kind's errand is in hand; its own intent carries it on
         Some(_) => return false,
-        None => match pick_errand(n, sc, locker, leash, t) {
-            Some(e) => {
-                n.errand = Some(e);
-                n.dwell = 0.0;
+        None => {
+            if n.goal.errand_cool[kind] > 0.0 {
+                return false;
             }
-            None => return false,
-        },
+            match pick_errand(n, sc, locker, leash, t) {
+                Some(e) => {
+                    n.errand = Some(e);
+                    n.dwell = 0.0;
+                }
+                None => {
+                    n.goal.errand_cool[kind] = t.errand_scan_cool;
+                    return false;
+                }
+            }
+        }
     }
     let Some(e) = n.errand else { return false };
     let Some(spot) = errand_spot(sc.fac, e) else {
@@ -3650,21 +3768,30 @@ impl Game {
         self.npc_sync_water(t);
         let level = self.runner_level();
         let leader = self.p.pos;
+        // the tick's buffers are taken out of the game and put back at its end, so they keep their capacity
+        let mut s = std::mem::take(&mut self.npc_scratch);
         // the hunters of every level, as each bot sees them: only those on the bot's own level count
-        let mut by_level: Vec<(i32, Vec<Seen>, Vec<(f32, f32)>)> = vec![];
-        let mut bodies: Vec<HunterBody> = Vec::with_capacity(self.hunters.len() + 8);
+        if s.by_level.len() > 32 {
+            // a long run visits many levels; the list starts again rather than grow past this
+            s.by_level.clear();
+        }
+        for e in s.by_level.iter_mut() {
+            e.1.clear();
+            e.2.clear();
+        }
+        s.bodies.clear();
         for h in self.hunters.iter().chain(self.resident_hunters.iter_all()).filter(|h| h.active) {
-            let i = match by_level.iter().position(|e| e.0 == h.level) {
+            let i = match s.by_level.iter().position(|e| e.0 == h.level) {
                 Some(i) => i,
                 None => {
-                    by_level.push((h.level, vec![], vec![]));
-                    by_level.len() - 1
+                    s.by_level.push((h.level, vec![], vec![]));
+                    s.by_level.len() - 1
                 }
             };
-            by_level[i].1.push((h.pos, matches!(h.state, State::Chase)));
-            bodies.push(HunterBody { at: h.pos, y: h.y, level: h.level });
+            s.by_level[i].1.push((h.pos, matches!(h.state, State::Chase)));
+            s.bodies.push(HunterBody { at: h.pos, y: h.y, level: h.level });
             if matches!(h.state, State::Search) {
-                by_level[i].2.push(h.pos);
+                s.by_level[i].2.push(h.pos);
             }
         }
         // the facility of each resident level: the active one and the stack's (a bot elsewhere stands still)
@@ -3677,23 +3804,27 @@ impl Game {
         let nav: Option<&StackNav> = Some(&*self.stack_nav);
         let no_seen: &[Seen] = &[];
         let no_points: &[(f32, f32)] = &[];
-        let mut presses: Vec<Cell> = vec![];
-        let mut closes: Vec<Cell> = vec![];
-        let loot = self.npc_loot(t);
-        let spots = self.npc_spots(t, &facs);
-        let search_all: Vec<(i32, (f32, f32))> = by_level.iter().flat_map(|e| e.2.iter().map(move |p| (e.0, *p))).collect();
+        s.presses.clear();
+        s.closes.clear();
+        // the spots and the loot are rebuilt only when what they are built from has changed
+        self.npc_spots_refresh(t, &facs, &mut s.spot_cache);
+        s.search_all.clear();
+        for e in s.by_level.iter() {
+            s.search_all.extend(e.2.iter().map(|p| (e.0, *p)));
+        }
         let chunk = crate::world::infinite::CHUNK as f32;
         let infinite = self.inf.is_some();
         // the downed bodies a bot may walk to revive: the runner, and the bots that are down
-        let mut downed: Vec<(i32, (f32, f32), Option<u32>)> = vec![];
+        s.downed.clear();
         if self.downed.is_some() {
-            downed.push((level, leader, None));
+            s.downed.push((level, leader, None));
         }
         for n in self.npcs.iter().filter(|n| self.downed_npcs.contains_key(&n.id)) {
-            downed.push((n.level, n.at, Some(n.id)));
+            s.downed.push((n.level, n.at, Some(n.id)));
         }
         // the teammates a bot may look at or answer, and whether the runner is emoting
-        let mut peers: Vec<Peer> = self.npcs.iter().map(|q| peer_of(q, self.downed_npcs.contains_key(&q.id))).collect();
+        s.peers.clear();
+        s.peers.extend(self.npcs.iter().map(|q| peer_of(q, self.downed_npcs.contains_key(&q.id))));
         // the runner's body for the collision pass: not while it is down or inside a locker
         let runner_body = (!self.runner_downed() && self.p.hidden.is_none()).then(|| (leader, self.p.y()));
         let runner_emoting = self.emote.active().is_some();
@@ -3741,7 +3872,8 @@ impl Game {
                 }
                 continue;
             };
-            let (seen, searching) = by_level
+            let (seen, searching) = s
+                .by_level
                 .iter()
                 .find(|e| e.0 == n.level)
                 .map_or((no_seen, no_points), |e| (&e.1[..], &e.2[..]));
@@ -3754,10 +3886,10 @@ impl Game {
                 searching,
                 runner_level: level,
                 nav,
-                loot: if own { &loot[..] } else { &[] },
-                spots: &spots,
-                search_all: &search_all,
-                downed: &downed,
+                loot: if own { &s.spot_cache.loot[..] } else { &[] },
+                spots: &s.spot_cache.spots,
+                search_all: &s.search_all,
+                downed: &s.downed,
             };
             // a bot on a flight or ladder finishes the edge before it thinks about anything else
             if n.walk.is_some() {
@@ -3767,14 +3899,14 @@ impl Game {
                 n.life.head_pitch -= n.life.head_pitch * k;
                 n.life.gaze = None;
                 n.life.gaze_left = 0.0;
-                let gap = lead_gap(n, &peers);
+                let gap = lead_gap(n, &s.peers);
                 advance_edge(n, dt, &facs, gap);
                 continue;
             }
             n.y = floor_y_of(n.level) + local_ground(fac, n.at.0, n.at.1);
             // doors are the active facility's: another level's bot never queues a press or a close on it
-            let mut sink: Vec<Cell> = vec![];
-            let door_presses = if own { &mut presses } else { &mut sink };
+            s.sink.clear();
+            let door_presses: &mut Vec<Cell> = if own { &mut s.presses } else { &mut s.sink };
             note_searched(n, searching, t);
             n.flee.alert = if sees(n, fac, seen, &t.flee) || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
             if n.hidden.is_some() {
@@ -3820,7 +3952,7 @@ impl Game {
                     }
                 }
             }
-            let around = Around { fac: sc.fac, leader, runner_level: level, runner_emoting, peers: &peers, seen };
+            let around = Around { fac: sc.fac, leader, runner_level: level, runner_emoting, peers: &s.peers, seen };
             liven(n, &around, life_ran, t, dt);
             // a bot clear of the door it last passed shuts it (the runner's press refuses a shut leaf on a body)
             if let Some(d) = n.last_door {
@@ -3828,16 +3960,17 @@ impl Game {
                 if clear {
                     n.last_door = None;
                     if own && sc.fac.door_is_open(d) {
-                        closes.push(d);
+                        s.closes.push(d);
                     }
                 }
             }
         }
-        separate_bots(&mut self.npcs, &mut peers, &bodies, &facs, runner_body, &t.collision, dt);
-        self.npc_press_doors(presses);
-        self.npc_close_doors(closes);
+        separate_bots(&mut self.npcs, &mut s.peers, &s.bodies, &facs, runner_body, &t.collision, dt, &mut s.grid);
+        self.npc_press_doors(&s.presses);
+        self.npc_close_doors(&s.closes);
         self.npc_claims(content);
         self.npc_catches();
+        self.npc_scratch = s;
     }
 
     /// How many more bots an owner summon may add before the room cap (data `summon.room_cap`).
@@ -3845,30 +3978,53 @@ impl Game {
         Tuning::get().summon_room_cap.saturating_sub(self.npcs.len())
     }
 
-    /// The places the bots may make their goal (data `goals`): every relay of every resident level (the active level's
-    /// not yet recovered), the active level's batteries and floor items the team has room for (a battery while the
-    /// lamp is low, the heal item while stamina is low, any other useful item as a pickup) and its exit once its relays
-    /// are all recovered.
-    fn npc_spots(&self, t: &Tuning, facs: &[(i32, &Facility)]) -> Vec<Spot> {
+    /// Refreshes the bots' spot list and loot (data `goals`, `pickup.useful`) from the floor. The lists are rebuilt only when
+    /// their inputs change (`SpotInputs`: the taken flags, the lamp and stamina low flags, the grants the team has room for
+    /// and the exit), so a steady frame only compares them.
+    fn npc_spots_refresh(&self, t: &Tuning, facs: &[(i32, &Facility)], cache: &mut SpotCache) {
+        self.spot_inputs_into(t, facs, &mut cache.next);
+        if cache.valid && cache.next == cache.inputs {
+            return;
+        }
+        std::mem::swap(&mut cache.inputs, &mut cache.next);
+        cache.valid = true;
+        cache.rebuilds += 1;
+        self.build_spots(t, facs, cache);
+    }
+
+    /// The inputs of the spot list, written into the given value (its buffers are reused, so this allocates nothing once grown).
+    fn spot_inputs_into(&self, t: &Tuning, facs: &[(i32, &Facility)], out: &mut SpotInputs) {
+        let g = &t.goals;
+        out.active = self.fac.level;
+        out.lamp_low = self.p.lamp < g.low_lamp * crate::config::MAX_LAMP_CHARGE;
+        out.stamina_low = self.p.stamina < g.low_stamina * crate::config::MAX_STAMINA;
+        out.exit = self.fac.has_lift && self.relays_collected >= self.fac.relays.len() as i32;
+        out.geo.clear();
+        for &(level, fac) in facs {
+            out.geo.extend(fac.relays.iter().map(|c| (level, c.center())));
+        }
+        out.relays.clear();
+        out.relays.extend_from_slice(&self.relays_taken);
+        let battery_grant = self.can_grant(Item::Battery);
+        out.batteries.clear();
+        for (i, c) in self.fac.batteries.iter().enumerate() {
+            out.batteries.push((c.center(), self.batteries_taken.get(i).copied().unwrap_or(true), battery_grant));
+        }
+        out.pickups.clear();
+        for p in self.pickups.iter() {
+            out.pickups.push((p.pos, p.taken, p.item, self.can_grant(p.item)));
+        }
+    }
+
+    /// Builds the spot list and the loot into `cache` from the floor. The useful items are read from a set built here
+    /// (data `pickup.useful`), so the list is not scanned per pickup each frame.
+    fn build_spots(&self, t: &Tuning, facs: &[(i32, &Facility)], cache: &mut SpotCache) {
         let g = &t.goals;
         let active = self.fac.level;
+        let wanted: std::collections::HashSet<&str> = t.pickup_useful.iter().map(String::as_str).collect();
+        let useful = |item: Item| wanted.contains(crate::net::held_wire::wire(item)) && self.can_grant(item);
+        let (lamp_low, stamina_low, exit) = (cache.inputs.lamp_low, cache.inputs.stamina_low, cache.inputs.exit);
         let open = |fac: &Facility, p: (f32, f32)| fac.nearest_open(p.0, p.1, NAV_RADIUS).map_or(cell_at(p), cell_at);
-        let mut v = vec![];
-        for &(level, fac) in facs {
-            for (i, c) in fac.relays.iter().enumerate() {
-                if level == active && self.relays_taken.get(i).copied().unwrap_or(true) {
-                    continue;
-                }
-                let pos = c.center();
-                let claim = (level == active).then_some(Claim::Relay(i));
-                v.push(Spot { kind: SpotKind::Relay, level, cell: open(fac, pos), pos, claim });
-            }
-        }
-        let lamp_low = self.p.lamp < g.low_lamp * crate::config::MAX_LAMP_CHARGE;
-        let stamina_low = self.p.stamina < g.low_stamina * crate::config::MAX_STAMINA;
-        let useful = |item: Item| {
-            t.pickup_useful.iter().any(|w| w == crate::net::held_wire::wire(item)) && self.can_grant(item)
-        };
         let kind_of = |item: Item| {
             let wire = crate::net::held_wire::wire(item);
             if wire == g.heal_item && stamina_low {
@@ -3879,47 +4035,39 @@ impl Game {
                 SpotKind::Pickup
             }
         };
+        cache.spots.clear();
+        cache.loot.clear();
+        for &(level, fac) in facs {
+            for (i, c) in fac.relays.iter().enumerate() {
+                if level == active && self.relays_taken.get(i).copied().unwrap_or(true) {
+                    continue;
+                }
+                let pos = c.center();
+                let claim = (level == active).then_some(Claim::Relay(i));
+                cache.spots.push(Spot { kind: SpotKind::Relay, level, cell: open(fac, pos), pos, claim });
+            }
+        }
         if useful(Item::Battery) {
             for (i, c) in self.fac.batteries.iter().enumerate() {
                 if !self.batteries_taken.get(i).copied().unwrap_or(true) {
                     let pos = c.center();
                     let kind = kind_of(Item::Battery);
-                    v.push(Spot { kind, level: active, cell: open(&self.fac, pos), pos, claim: Some(Claim::Battery(i)) });
+                    cache.spots.push(Spot { kind, level: active, cell: open(&self.fac, pos), pos, claim: Some(Claim::Battery(i)) });
+                    cache.loot.push((Claim::Battery(i), pos));
                 }
             }
         }
         for (i, p) in self.pickups.iter().enumerate() {
             if !p.taken && useful(p.item) {
-                v.push(Spot { kind: kind_of(p.item), level: active, cell: open(&self.fac, p.pos), pos: p.pos, claim: Some(Claim::Pickup(i)) });
+                let kind = kind_of(p.item);
+                cache.spots.push(Spot { kind, level: active, cell: open(&self.fac, p.pos), pos: p.pos, claim: Some(Claim::Pickup(i)) });
+                cache.loot.push((Claim::Pickup(i), p.pos));
             }
         }
-        if self.fac.has_lift && self.relays_collected >= self.fac.relays.len() as i32 {
+        if exit {
             let pos = self.fac.exit.center();
-            v.push(Spot { kind: SpotKind::Exit, level: active, cell: open(&self.fac, pos), pos, claim: None });
+            cache.spots.push(Spot { kind: SpotKind::Exit, level: active, cell: open(&self.fac, pos), pos, claim: None });
         }
-        v
-    }
-
-    /// The untaken batteries and floor items of the active level that the bots take (data `pickup.useful`) and that the
-    /// team has room for.
-    fn npc_loot(&self, t: &Tuning) -> Vec<(Claim, (f32, f32))> {
-        let useful = |item: Item| {
-            t.pickup_useful.iter().any(|w| w == crate::net::held_wire::wire(item)) && self.can_grant(item)
-        };
-        let mut v = vec![];
-        if useful(Item::Battery) {
-            for (i, c) in self.fac.batteries.iter().enumerate() {
-                if !self.batteries_taken.get(i).copied().unwrap_or(true) {
-                    v.push((Claim::Battery(i), c.center()));
-                }
-            }
-        }
-        for (i, p) in self.pickups.iter().enumerate() {
-            if !p.taken && useful(p.item) {
-                v.push((Claim::Pickup(i), p.pos));
-            }
-        }
-        v
     }
 
     /// Applies what the bots reached this frame, through the same functions as the player's interact (`claim_relay`,
@@ -3977,8 +4125,8 @@ impl Game {
 
     /// The bots' interact presses, through the runner's path (`press_door`). A door already open (another bot or the
     /// runner got there first) is left alone, since a press would shut it.
-    fn npc_press_doors(&mut self, presses: Vec<Cell>) {
-        for cell in presses {
+    fn npc_press_doors(&mut self, presses: &[Cell]) {
+        for &cell in presses {
             if !self.fac.door_is_open(cell) {
                 self.press_door(cell);
             }
@@ -3987,8 +4135,8 @@ impl Game {
 
     /// The bots shutting doors behind them: a press on an open door, through the same path, which a body in the
     /// leaf's sweep refuses.
-    fn npc_close_doors(&mut self, closes: Vec<Cell>) {
-        for cell in closes {
+    fn npc_close_doors(&mut self, closes: &[Cell]) {
+        for &cell in closes {
             if self.fac.door_is_open(cell) {
                 self.press_door(cell);
             }
@@ -4458,7 +4606,7 @@ mod tests {
     fn bot_frame(g: &mut Game, goal: (f32, f32), dt: f32) {
         let mut presses = vec![];
         walk_toward(&mut g.npcs[0], &g.fac, goal, false, Tuning::get(), dt, &mut presses);
-        g.npc_press_doors(presses);
+        g.npc_press_doors(&presses);
         let bodies: Vec<(f32, f32)> = std::iter::once(g.p.pos).chain(g.npcs.iter().map(|n| n.at)).collect();
         g.fac.update_doors(&[], &bodies, dt);
     }
@@ -6149,6 +6297,136 @@ mod level_tests {
         assert!(tail.walk.as_ref().unwrap().s > s0, "with room ahead it walks");
     }
 
+    /// The spot list is built once and kept: a steady floor only compares its inputs, and a relay taken rebuilds it.
+    #[test]
+    fn the_spot_list_is_rebuilt_only_when_its_inputs_change() {
+        let (mut g, _) = super::tests::run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let t = Tuning::get();
+        let mut cache = SpotCache::default();
+        let cells = |c: &SpotCache| -> Vec<(SpotKind, Cell)> { c.spots.iter().map(|s| (s.kind, s.cell)).collect() };
+        {
+            let facs = [(g.fac.level, &g.fac)];
+            g.npc_spots_refresh(t, &facs, &mut cache);
+        }
+        assert_eq!(cache.rebuilds, 1, "the first frame builds the list");
+        let first = cells(&cache);
+        for _ in 0..10 {
+            let facs = [(g.fac.level, &g.fac)];
+            g.npc_spots_refresh(t, &facs, &mut cache);
+        }
+        assert_eq!(cache.rebuilds, 1, "a steady floor rebuilds nothing, however many frames pass");
+        assert_eq!(cells(&cache), first, "and the kept list is the one a fresh build makes");
+        let mut fresh = SpotCache::default();
+        {
+            let facs = [(g.fac.level, &g.fac)];
+            g.npc_spots_refresh(t, &facs, &mut fresh);
+        }
+        assert_eq!(cells(&fresh), first);
+        assert!(!g.fac.relays.is_empty(), "the test floor has a relay");
+        g.relays_taken = vec![false; g.fac.relays.len()];
+        {
+            let facs = [(g.fac.level, &g.fac)];
+            g.npc_spots_refresh(t, &facs, &mut cache);
+        }
+        let before = cache.rebuilds;
+        g.relays_taken[0] = true;
+        {
+            let facs = [(g.fac.level, &g.fac)];
+            g.npc_spots_refresh(t, &facs, &mut cache);
+        }
+        assert_eq!(cache.rebuilds, before + 1, "a relay taken changes the inputs, so the list is rebuilt once");
+        assert!(
+            !cache.spots.iter().any(|s| s.claim == Some(Claim::Relay(0))),
+            "the relay taken is no longer a spot"
+        );
+    }
+
+    /// A relay scan that finds nothing waits the scan cool-down before it scans again. Once the wait is over the bot
+    /// scans and takes the errand.
+    #[test]
+    fn an_errand_scan_that_finds_nothing_waits_then_scans_again() {
+        let (mut g, _) = super::tests::run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        assert!(!g.fac.relays.is_empty(), "the test floor has a relay");
+        g.npcs[0].joined = true;
+        // a relay trip in the data's tuning: relays only, a long leash and a short dwell
+        let mut trip = Tuning::get().clone();
+        trip.intents = vec!["relay".to_string()];
+        trip.relay_leash = 1000.0;
+        trip.relay_dwell = 0.5;
+        trip.errand_scan_cool = 1.0;
+        let dt = 1.0 / 60.0;
+        // every relay already visited: the scan finds nothing and starts its cool-down
+        g.npcs[0].visited = (0..g.fac.relays.len()).map(Errand::Relay).collect();
+        g.update_npcs_with(dt, &trip);
+        assert!(g.npcs[0].goal.errand_cool[0] > 0.9, "the failed scan sets the cool-down ({})", g.npcs[0].goal.errand_cool[0]);
+        assert_eq!(g.npcs[0].errand, None);
+        // the relays are fresh again, but the bot waits out the cool-down before it scans
+        g.npcs[0].visited.clear();
+        for _ in 0..(0.5 / dt) as usize {
+            g.update_npcs_with(dt, &trip);
+        }
+        assert_eq!(g.npcs[0].errand, None, "no scan while the cool-down runs");
+        for _ in 0..(2.0 / dt) as usize {
+            g.update_npcs_with(dt, &trip);
+            if g.npcs[0].errand.is_some() {
+                break;
+            }
+        }
+        assert!(matches!(g.npcs[0].errand, Some(Errand::Relay(_))), "after the cool-down the bot takes a relay errand");
+    }
+
+    /// The grid finds the same neighbours as the pair scan, so a crowd is pushed to the same places (up to the rounding of
+    /// the sums, whose order differs). The grid is used for a crowd of this size and not for a pair.
+    #[test]
+    fn the_collision_grid_pushes_a_crowd_where_the_pair_scan_does() {
+        let (mut g, _) = super::tests::run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        let (level, pos, y) = (g.runner_level(), g.p.pos, g.p.y());
+        g.npcs.clear();
+        for k in 0..40 {
+            let a = k as f32 * 2.399;
+            let r = 0.12 * (1.0 + (k % 7) as f32);
+            g.push_npc((pos.0 + r * a.cos(), pos.1 + r * a.sin()), level, 50, None, 0.0);
+        }
+        for n in g.npcs.iter_mut() {
+            n.y = y;
+        }
+        let mut pair_bots = g.npcs.clone();
+        let mut grid_bots = g.npcs.clone();
+        let facs = [(g.fac.level, &g.fac)];
+        let pair_col = Collision { grid_min_bots: usize::MAX, ..Collision::default() };
+        let grid_col = Collision { grid_min_bots: 0, ..Collision::default() };
+        let (mut pair_grid, mut grid_grid): (Vec<(i64, u32)>, Vec<(i64, u32)>) = (vec![], vec![]);
+        for _ in 0..5 {
+            let mut pp: Vec<Peer> = pair_bots.iter().map(|q| peer_of(q, false)).collect();
+            separate_bots(&mut pair_bots, &mut pp, &[], &facs, Some((pos, y)), &pair_col, FRAME, &mut pair_grid);
+            let mut gp: Vec<Peer> = grid_bots.iter().map(|q| peer_of(q, false)).collect();
+            separate_bots(&mut grid_bots, &mut gp, &[], &facs, Some((pos, y)), &grid_col, FRAME, &mut grid_grid);
+        }
+        assert!(pair_grid.is_empty(), "the pair scan builds no grid");
+        assert_eq!(grid_grid.len(), 40, "the grid holds every solid bot");
+        for (a, b) in pair_bots.iter().zip(grid_bots.iter()) {
+            assert!(pdist(a.at, b.at) < 1e-4, "bot {} is at {:?} by the pairs and {:?} by the grid", a.id, a.at, b.at);
+        }
+    }
+
+    /// The tick keeps its buffers between frames: once a crowd has grown them, more frames do not grow them again.
+    #[test]
+    fn the_tick_keeps_its_buffers_between_frames() {
+        let (mut g, _) = super::tests::run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
+        g.npcs[0].joined = true;
+        let t = Tuning::get();
+        let dt = 1.0 / 60.0;
+        for _ in 0..30 {
+            g.update_npcs_with(dt, t);
+        }
+        let caps = (g.npc_scratch.peers.capacity(), g.npc_scratch.presses.capacity(), g.npc_scratch.grid.capacity());
+        for _ in 0..300 {
+            g.update_npcs_with(dt, t);
+        }
+        let after = (g.npc_scratch.peers.capacity(), g.npc_scratch.presses.capacity(), g.npc_scratch.grid.capacity());
+        assert_eq!(caps, after, "the same bots need no new room");
+    }
+
     /// Two bots and the runner on one spot part to a body apart, each on open ground, and the runner never moves.
     #[test]
     fn two_bots_and_the_runner_in_a_pile_part_to_a_body_apart_on_open_ground() {
@@ -6163,7 +6441,7 @@ mod level_tests {
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
         let facs = [(c.g.fac.level, &c.g.fac)];
         for _ in 0..120 {
-            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME, &mut Vec::new());
         }
         let (a, b) = (c.g.npcs[0].at, c.g.npcs[1].at);
         let tol = BODY_GAP - 0.02;
@@ -6187,18 +6465,18 @@ mod level_tests {
         let at = c.g.npcs[0].at;
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, true)).collect();
         let facs = [(c.g.fac.level, &c.g.fac)];
-        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME, &mut Vec::new());
         assert_eq!(c.g.npcs[0].at, at, "a downed bot is not pushed");
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y + 2.0)), &Collision::default(), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y + 2.0)), &Collision::default(), FRAME, &mut Vec::new());
         assert_eq!(c.g.npcs[0].at, at, "a runner two metres up is not in the way");
         c.g.npcs[0].hidden = Some(0);
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME, &mut Vec::new());
         assert_eq!(c.g.npcs[0].at, at, "a bot in a locker stays put");
         c.g.npcs[0].hidden = None;
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
-        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME);
+        separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((pos, y)), &Collision::default(), FRAME, &mut Vec::new());
         assert!(pdist(c.g.npcs[0].at, at) > 0.0, "a free bot on the runner is pushed out");
         assert!(pdist(c.g.npcs[0].at, at) <= Collision::default().push_cap + Collision::default().soft_speed * FRAME + 1e-4, "by at most the cap and the steer");
     }
@@ -6242,7 +6520,7 @@ mod level_tests {
         // on open ground the runner behind it pushes it east
         {
             let facs = [(level, &c.g.fac)];
-            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME);
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME, &mut Vec::new());
         }
         assert!(c.g.npcs[0].at.0 > at.0, "with no drop the push moves the bot east: {:?}", c.g.npcs[0].at);
         c.g.npcs[0].at = at;
@@ -6250,7 +6528,7 @@ mod level_tests {
         let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
         let facs = [(level, &c.g.fac)];
         for _ in 0..30 {
-            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME);
+            separate_bots(&mut c.g.npcs, &mut peers, &[], &facs, Some((runner, y)), &Collision::default(), FRAME, &mut Vec::new());
             assert!(!c.g.fac.is_drop(cell_at(c.g.npcs[0].at)), "the bot is never pushed onto the drop: {:?}", c.g.npcs[0].at);
         }
         assert_eq!(c.g.npcs[0].at, at, "the refused push leaves it where it was");
@@ -6319,7 +6597,7 @@ mod level_tests {
             let facs = [(level, &fac)];
             let mut peers: Vec<Peer> = c.g.npcs.iter().map(|q| peer_of(q, false)).collect();
             for _ in 0..120 {
-                separate_bots(&mut c.g.npcs, &mut peers, &[hunter], &facs, None, &Collision::default(), FRAME);
+                separate_bots(&mut c.g.npcs, &mut peers, &[hunter], &facs, None, &Collision::default(), FRAME, &mut Vec::new());
             }
             (c.g.npcs[0].at, hunter.at)
         };

@@ -25,7 +25,15 @@
 use super::facility::Cell;
 use super::vertical::{STEPS_PER_CELL, STOREY};
 use std::f32::consts::{PI, TAU};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
+
+thread_local! {
+    /// Cache of already-built footprints, keyed by the flight and the rules pointer. A footprint is a pure
+    /// function of those two, and facility generation and rendering ask for the same ones repeatedly.
+    static WELL_FOOTPRINT_CACHE: RefCell<Option<HashMap<u64, Footprint>>> = const { RefCell::new(None) };
+}
 
 const FILE: &str = include_str!("../data/flights.json");
 
@@ -878,6 +886,24 @@ pub fn landing_row_with(rules: &FlightRules, f: &Flight) -> Vec<Cell> {
 
 /// The cells of the opening, in the flight's own frame.
 pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
+    // Cache key: all of the flight's fields plus the rules address (rules are static).
+    let mut key: u64 = 0xcbf29ce484222325;
+    let mix = |key: &mut u64, x: u64| {
+        *key ^= x;
+        *key = key.wrapping_mul(0x100000001b3);
+    };
+    mix(&mut key, rules as *const FlightRules as usize as u64);
+    mix(&mut key, f.kind as u64);
+    mix(&mut key, f.shape as u64);
+    mix(&mut key, f.upper_level as u64);
+    mix(&mut key, f.anchor_cell.x as u64);
+    mix(&mut key, f.anchor_cell.y as u64);
+    mix(&mut key, f.run.0 as u64);
+    mix(&mut key, f.run.1 as u64);
+    mix(&mut key, f.clockwise as u64);
+    if let Some(cached) = WELL_FOOTPRINT_CACHE.with(|c| c.borrow().as_ref().and_then(|m| m.get(&key).cloned())) {
+        return cached;
+    }
     let (landing, foot) = ends(rules, f);
     let mut hole = Vec::new();
     match f.kind {
@@ -915,8 +941,7 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
             }
         },
     }
-    hole.sort();
-    hole.dedup();
+    // `hole` is generated once per cell, so it needs no sort or dedup.
     // the directions the clear margins run: behind the landing, beyond the foot
     let (up_dir, low_dir) = match (f.kind, f.shape) {
         (FlightKind::Ladder, _) => (f.run, f.run),
@@ -931,11 +956,11 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
     let mut lower_clear: Vec<Cell> = (0..=rules.margin_cells).map(|m| step(foot, low_dir, m)).collect();
     upper_clear.extend(zone.iter().copied());
     lower_clear.extend(zone.iter().copied());
-    upper_clear.sort();
+    upper_clear.sort_unstable();
     upper_clear.dedup();
-    lower_clear.sort();
+    lower_clear.sort_unstable();
     lower_clear.dedup();
-    Footprint {
+    let result = Footprint {
         lower_open: hole.clone(),
         upper_hole: hole,
         landing,
@@ -944,7 +969,11 @@ pub fn well_footprint_with(rules: &FlightRules, f: &Flight) -> Footprint {
         lower_clear,
         step_cell: (f.kind == FlightKind::Ladder).then_some(landing),
         slab: rules.slab,
-    }
+    };
+    WELL_FOOTPRINT_CACHE.with(|c| {
+        c.borrow_mut().get_or_insert_with(HashMap::new).insert(key, result.clone());
+    });
+    result
 }
 
 pub fn well_footprint(f: &Flight) -> Footprint {

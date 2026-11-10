@@ -1011,6 +1011,21 @@ mod tests {
                     }
                     got.extend_from_slice(&b[..n]);
                 }
+                // Drain the request body (Content-Length) before replying: closing with unread bytes resets the socket on Windows.
+                if let Some(end) = find(&got, b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+                    let want = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    while got.len() < end + 4 + want {
+                        let n = s.read(&mut b).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        got.extend_from_slice(&b[..n]);
+                    }
+                }
                 seen.push(String::from_utf8_lossy(&got).to_string());
                 let _ = s.write_all(&reply);
             }

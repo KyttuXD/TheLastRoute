@@ -63,6 +63,16 @@ pub struct Config {
     pub head_yaw_lag: f32,
     /// how fast the head eases toward its aim, per second
     pub head_smoothing: f32,
+    /// the head's largest turn from the body toward the aim yaw, either way (radians)
+    pub head_aim_yaw_limit: f32,
+    /// how far the aim may lead the body before the body turns: standing, and walking or sprinting (radians)
+    pub body_still_free: f32,
+    pub body_moving_free: f32,
+    /// seconds the aim must stay past the free range before the body turns, and how fast it turns (per second)
+    pub body_follow_delay: f32,
+    pub body_follow_smoothing: f32,
+    /// the jump height at its peak, metres: a remote jump's wire height over this maps onto the jump clip
+    pub jump_peak: f32,
 }
 
 fn at<'a>(j: &'a serde_json::Value, path: &str) -> Result<&'a serde_json::Value, String> {
@@ -165,7 +175,16 @@ impl Config {
             head_yaw_limit: num(&j, "head.yaw_limit_deg")?.to_radians(),
             head_yaw_lag: num(&j, "head.yaw_lag_s")?,
             head_smoothing: num(&j, "head.smoothing")?,
+            head_aim_yaw_limit: num(&j, "head.aim_yaw_limit_deg")?.to_radians(),
+            body_still_free: num(&j, "body.still_free_deg")?.to_radians(),
+            body_moving_free: num(&j, "body.moving_free_deg")?.to_radians(),
+            body_follow_delay: num(&j, "body.follow_delay_s")?,
+            body_follow_smoothing: num(&j, "body.follow_smoothing")?,
+            jump_peak: num(&j, "jump.peak_m")?,
         };
+        if cfg.jump_peak <= 0.0 {
+            return Err("anim.json: key \"jump.peak_m\" must be above 0".to_string());
+        }
         for pose in Pose::ALL {
             let key = pose.key();
             if !cfg.clips.contains_key(key) {
@@ -275,6 +294,20 @@ pub struct RunnerState {
     pub speed: f32,
     /// moving opposite to the way the runner faces: a paced clip plays time-reversed (see `ClipChoice::backward`)
     pub backward: bool,
+    /// a remote jump's place in its jump or fall clip, 0 (takeoff) .. 1 (landing), from the wire (see [`air_phase`]);
+    /// None plays the air clip in time
+    pub air_phase: Option<f32>,
+}
+
+/// Where a remote runner is in its jump clip: `jump_m` is its height above the floor, `vy` its vertical speed. The rise
+/// (vy >= 0) plays the first half of the clip, going up to the peak, and the fall the second half, back down to 0 at landing.
+pub fn air_phase(jump_m: f32, vy: f32) -> f32 {
+    let f = (jump_m / config().jump_peak).clamp(0.0, 1.0);
+    if vy >= 0.0 {
+        0.5 * f
+    } else {
+        1.0 - 0.5 * f
+    }
 }
 
 impl RunnerState {
@@ -435,6 +468,11 @@ pub fn player_rig(slim: bool) -> Option<Rc<Rig>> {
 
 // ------------------------------------------------------------------------------------------------ view
 
+/// `a` turned into -PI..PI (radians), so a difference of two headings is the short way round.
+pub fn wrap_angle(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
 /// One runner's animation state, kept between frames (the immutable `Game` does not carry it).
 pub struct RunnerView {
     pub rig: Rc<Rig>,
@@ -451,6 +489,11 @@ pub struct RunnerView {
     /// the head's tilt up (+) or down (-) and turn left (+) or right (-) now, radians, relative to the body
     pub head_pitch: f32,
     pub head_yaw: f32,
+    /// the body's facing now, radians (+ left like the head): it turns only once the head has turned as far as its free
+    /// range (see [`RunnerView::aim_head`]), so it is drawn with this yaw, not the aim
+    pub body_yaw: f32,
+    /// seconds the aim has been past the body's free range; the body turns once this passes `body_follow_delay`
+    follow_timer: f32,
     primed: bool,
 }
 
@@ -466,17 +509,48 @@ impl RunnerView {
             pitch: 0.0,
             head_pitch: 0.0,
             head_yaw: 0.0,
+            body_yaw: 0.0,
+            follow_timer: 0.0,
             primed: false,
         }
     }
 
-    /// Eases the head toward its aim: `pitch` is the runner's aim (+ up), `turn_rate` the body's yaw rate in radians a
-    /// second (+ turning left). The head trails a turn, so its yaw goes against the turn and back to the front.
-    pub fn aim_head(&mut self, pitch: f32, turn_rate: f32, dt: f32) {
+    /// Sets the body's facing to `yaw` and clears the follow timer: the first frame of a figure, or a rebuilt one, starts
+    /// with its body where its aim is.
+    pub fn seed_yaw(&mut self, yaw: f32) {
+        self.body_yaw = yaw;
+        self.follow_timer = 0.0;
+    }
+
+    /// Eases the head toward its aim: `pitch` is the runner's aim (+ up), `aim_yaw` its aim's yaw (the facing, + left) in
+    /// the same frame as `body_yaw`, `turn_rate` the body's yaw rate in radians a second (+ turning left), and `moving`
+    /// whether the body is walking or sprinting (the free range is smaller then).
+    ///
+    /// Head first: the head turns toward the aim, up to `head_aim_yaw_limit`, and the body stays. When the aim is past the
+    /// free range (`body_still_free` or `body_moving_free`), the overshoot runs a timer; after `body_follow_delay` the body
+    /// eases (`body_follow_smoothing`) until the aim is back at the free range's edge. In range, the timer resets.
+    /// The head trails a turn, so its yaw goes against the turn and back to the front.
+    pub fn aim_head(&mut self, pitch: f32, aim_yaw: f32, turn_rate: f32, moving: bool, dt: f32) {
         let c = config();
+        let dt = dt.max(0.0);
+        let free = if moving { c.body_moving_free } else { c.body_still_free };
+        let off = wrap_angle(aim_yaw - self.body_yaw);
+        if off.abs() > free {
+            self.follow_timer += dt;
+            if self.follow_timer >= c.body_follow_delay {
+                let target = aim_yaw - off.signum() * free;
+                let k = 1.0 - (-c.body_follow_smoothing * dt).exp();
+                self.body_yaw = wrap_angle(self.body_yaw + wrap_angle(target - self.body_yaw) * k);
+            }
+        } else {
+            self.follow_timer = 0.0;
+        }
+        // the head's share of the aim, after the body has moved
+        let off = wrap_angle(aim_yaw - self.body_yaw).clamp(-c.head_aim_yaw_limit, c.head_aim_yaw_limit);
         let goal_pitch = pitch.clamp(-c.head_pitch_limit, c.head_pitch_limit);
-        let goal_yaw = (-turn_rate * c.head_yaw_lag).clamp(-c.head_yaw_limit, c.head_yaw_limit);
-        let k = 1.0 - (-c.head_smoothing * dt.max(0.0)).exp();
+        let lag = (-turn_rate * c.head_yaw_lag).clamp(-c.head_yaw_limit, c.head_yaw_limit);
+        let goal_yaw = (off + lag).clamp(-c.head_aim_yaw_limit, c.head_aim_yaw_limit);
+        let k = 1.0 - (-c.head_smoothing * dt).exp();
         self.head_pitch += (goal_pitch - self.head_pitch) * k;
         self.head_yaw += (goal_yaw - self.head_yaw) * k;
     }
@@ -529,7 +603,15 @@ impl RunnerView {
             self.play(&rig, &choice.clip, choice.blend, false);
             self.player.speed_scale = 1.0;
         }
-        self.player.advance(&rig, dt);
+        // a remote jump is placed on its air clip by the wire's height, so the clip spans the real airtime
+        match state.air_phase.filter(|_| matches!(state.pose(), Pose::Jump | Pose::Fall)) {
+            Some(p) => {
+                let len = rig.length(&self.player.assigned);
+                self.player.seek(p.clamp(0.0, 1.0) * len);
+                self.player.advance(&rig, 0.0);
+            }
+            None => self.player.advance(&rig, dt),
+        }
     }
 
     /// ModelSlot.play_if_available; a switch between walk / sprint / chase keeps the stride phase.
@@ -798,13 +880,13 @@ mod tests {
         assert!(v.locals()[head].r.angle_between(rest) < 1e-6);
         // aimed up: the head's forward (the body's -Z) rises
         for _ in 0..200 {
-            v.aim_head(0.6, 0.0, 1.0 / 60.0);
+            v.aim_head(0.6, 0.0, 0.0, false, 1.0 / 60.0);
         }
         let forward = v.locals()[head].r * macroquad::prelude::vec3(0.0, 0.0, -1.0);
         assert!(forward.y > 0.4, "the head looks up: {forward:?}");
         // a hostile aim is clamped to the limit, so the head never flips over
         for _ in 0..600 {
-            v.aim_head(9.0, 0.0, 1.0 / 60.0);
+            v.aim_head(9.0, 0.0, 0.0, false, 1.0 / 60.0);
         }
         assert!(v.head_pitch <= config().head_pitch_limit + 1e-4);
         assert!((v.head_pitch - config().head_pitch_limit).abs() < 1e-2, "{}", v.head_pitch);
@@ -814,14 +896,129 @@ mod tests {
     fn the_head_trails_a_turn_then_comes_back_to_the_front() {
         let mut v = RunnerView::load(false).expect("the player rig is embedded");
         for _ in 0..30 {
-            v.aim_head(0.0, 4.0, 1.0 / 60.0); // turning left fast
+            v.aim_head(0.0, 0.0, 4.0, false, 1.0 / 60.0); // turning left fast
         }
         assert!(v.head_yaw < -0.05, "the head lags the turn, looking back: {}", v.head_yaw);
         assert!(v.head_yaw >= -config().head_yaw_limit - 1e-4, "the turn is capped");
         for _ in 0..300 {
-            v.aim_head(0.0, 0.0, 1.0 / 60.0);
+            v.aim_head(0.0, 0.0, 0.0, false, 1.0 / 60.0);
         }
         assert!(v.head_yaw.abs() < 1e-3, "a still body brings the head to the front");
+    }
+
+    fn frame() -> f32 {
+        1.0 / 60.0
+    }
+
+    #[test]
+    fn the_head_turns_before_the_body_within_the_free_range() {
+        let mut v = RunnerView::load(false).expect("the player rig is embedded");
+        // 0.5 rad (29 degrees) is inside the standing free range (55 degrees): the head takes it, the body stays
+        for _ in 0..120 {
+            v.aim_head(0.0, 0.5, 0.0, false, frame());
+        }
+        assert!((v.head_yaw - 0.5).abs() < 0.02, "the head looks at the aim: {}", v.head_yaw);
+        assert_eq!(v.body_yaw, 0.0, "the body does not turn inside its free range");
+        // walking narrows the free range to 20 degrees: 0.3 rad (17 degrees) still stays head-only
+        let mut w = RunnerView::load(false).expect("rig");
+        for _ in 0..120 {
+            w.aim_head(0.0, 0.3, 0.0, true, frame());
+        }
+        assert_eq!(w.body_yaw, 0.0, "a walking body keeps its facing for a 17 degree look");
+        assert!((w.head_yaw - 0.3).abs() < 0.02);
+    }
+
+    #[test]
+    fn the_head_is_capped_at_the_aim_limit_and_the_body_follows_after_the_delay() {
+        let c = config();
+        let mut v = RunnerView::load(false).expect("rig");
+        let aim = 1.5; // 86 degrees: past the standing free range (55 degrees)
+        for _ in 0..10 {
+            v.aim_head(0.0, aim, 0.0, false, frame());
+        }
+        assert_eq!(v.body_yaw, 0.0, "the body waits out the follow delay");
+        assert!(v.head_yaw <= c.head_aim_yaw_limit + 1e-4, "the head is capped: {}", v.head_yaw);
+        for _ in 0..240 {
+            v.aim_head(0.0, aim, 0.0, false, frame());
+        }
+        let target = aim - c.body_still_free;
+        assert!((v.body_yaw - target).abs() < 0.02, "the body turns until the aim is at its free edge: {} vs {target}", v.body_yaw);
+    }
+
+    #[test]
+    fn the_follow_timer_resets_when_the_aim_comes_back_in_range() {
+        let mut v = RunnerView::load(false).expect("rig");
+        for _ in 0..5 {
+            v.aim_head(0.0, 1.5, 0.0, false, frame());
+        }
+        assert!(v.follow_timer > 0.0, "past the free range the timer runs");
+        v.aim_head(0.0, 0.2, 0.0, false, frame());
+        assert_eq!(v.follow_timer, 0.0, "back in range the timer resets");
+        // a new overshoot waits the whole delay again
+        for _ in 0..10 {
+            v.aim_head(0.0, 1.5, 0.0, false, frame());
+        }
+        assert_eq!(v.body_yaw, 0.0, "the delay starts over after a reset");
+    }
+
+    #[test]
+    fn seeding_puts_the_body_at_the_aim_and_clears_the_timer() {
+        let mut v = RunnerView::load(false).expect("rig");
+        for _ in 0..5 {
+            v.aim_head(0.0, 1.5, 0.0, false, frame());
+        }
+        v.seed_yaw(-0.7);
+        assert_eq!(v.body_yaw, -0.7);
+        assert_eq!(v.follow_timer, 0.0, "a reseeded body starts a fresh delay");
+    }
+
+    #[test]
+    fn wrap_takes_the_short_way_round() {
+        use std::f32::consts::PI;
+        assert!((wrap_angle(3.5) - (3.5 - 2.0 * PI)).abs() < 1e-5);
+        assert!((wrap_angle(-PI - 0.1) - (PI - 0.1)).abs() < 1e-5);
+        assert!((wrap_angle(0.25) - 0.25).abs() < 1e-6);
+        // an aim just across the seam from the body is a small turn, not a full circle
+        let mut v = RunnerView::load(false).expect("rig");
+        v.body_yaw = PI - 0.1;
+        v.aim_head(0.0, -PI + 0.1, 0.0, false, frame());
+        assert!(v.head_yaw.abs() < 0.2, "the head turns the short way: {}", v.head_yaw);
+    }
+
+    #[test]
+    fn the_air_phase_maps_the_height_onto_the_rise_and_the_fall() {
+        let peak = config().jump_peak;
+        assert_eq!(air_phase(0.0, 2.0), 0.0, "at takeoff the clip starts");
+        assert!((air_phase(peak, 0.5) - 0.5).abs() < 1e-6, "at the peak the clip is halfway, rising");
+        assert!((air_phase(peak, -0.5) - 0.5).abs() < 1e-6, "and halfway, falling");
+        assert!((air_phase(0.0, -2.0) - 1.0).abs() < 1e-6, "back on the floor the clip ends");
+        assert!(air_phase(peak * 3.0, 1.0) <= 0.5 + 1e-6, "a height past the peak stays at the peak");
+    }
+
+    #[test]
+    fn a_remote_jump_plays_the_air_clip_at_its_phase_not_in_time() {
+        let mut v = RunnerView::load(false).expect("rig");
+        let clip = config().clip("jump");
+        let len = v.rig.length(&clip);
+        let up = |phase| RunnerState { airborne_up: true, air_phase: Some(phase), ..st() };
+        v.update(&up(0.25), 0.0);
+        assert!((v.player.position() - 0.25 * len).abs() < 1e-3, "the clip is at the phase: {}", v.player.position());
+        // a second of wire time does not move the clip on: the phase drives it
+        v.update(&up(0.25), 1.0);
+        assert!((v.player.position() - 0.25 * len).abs() < 1e-3, "the phase holds, time does not move it");
+        v.update(&up(0.75), 1.0 / 60.0);
+        assert!((v.player.position() - 0.75 * len).abs() < 1e-3, "the phase moves it on: {}", v.player.position());
+    }
+
+    #[test]
+    fn a_local_jump_without_a_phase_still_plays_in_time() {
+        let mut v = RunnerView::load(false).expect("rig");
+        let clip = config().clip("jump");
+        let len = v.rig.length(&clip);
+        let jump = RunnerState { airborne_up: true, ..st() };
+        v.update(&jump, 0.0);
+        v.update(&jump, len * 0.5);
+        assert!((v.player.position() - len * 0.5).abs() < 1e-3, "time plays the clip: {}", v.player.position());
     }
 
     #[test]

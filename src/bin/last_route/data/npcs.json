@@ -53,6 +53,7 @@
   "errand": {
     "safe_range": 14.0,
     "reach": 1.2,
+    "scan_cool": 0.5,
     "relay": { "leash": 12.0, "dwell": 4.0, "claim_time": 2.0 },
     "locker": { "leash": 10.0, "dwell": 6.0 },
     "_source": "Rust-only figures: a relay or locker errand is taken within the leash of the runner, when no hunter is within safe_range of it"
@@ -83,6 +84,7 @@
   },
   "collision": {
     "height": 1.2,
+    "grid_min_bots": 12,
     "push_cap": 0.15,
     "soft_margin": 0.2,
     "soft_speed": 2.5,

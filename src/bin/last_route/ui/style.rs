@@ -16,6 +16,7 @@ use crate::app::assets::Assets;
 use macroquad::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+
 pub const fn hex(v: u32) -> Color {
     Color::new(
         ((v >> 16) & 255) as f32 / 255.0,
@@ -1037,8 +1038,7 @@ pub fn backdrop(strength: f32) {
         radius -= 12;
     }
     // the checker archive: diamonds fading in from a quarter of the way across
-    let tile = (v.x.min(v.y) * 0.13).max(28.0);
-    let start_x = v.x * 0.24;
+    let tile = (v.x.min(v.y) * 0.13).max(48.0);    let start_x = v.x * 0.24;
     let mut y = -tile;
     let mut row = 0;
     while y < v.y + tile {
@@ -1070,13 +1070,11 @@ pub fn backdrop(strength: f32) {
             1.0,
             rgba(0.82, 0.68, 0.76, 0.022),
         );
-        y += 8.0;
-    }
+        y += 16.0;    }
     let mut x = 56.0;
     while x < v.x {
         line(vec2(x, 0.0), vec2(x, v.y), 1.0, rgba(1.0, 1.0, 1.0, 0.008));
-        x += 56.0;
-    }
+        x += 112.0;    }
     // the two perimeter rails
     if v.x >= 20.0 && v.y >= 20.0 {
         stroke(

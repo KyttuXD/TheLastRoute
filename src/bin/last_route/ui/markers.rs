@@ -315,6 +315,7 @@ mod tests {
             slim: false,
             speed: 0.0,
             vy: 0.0,
+            jump: 0.0,
             clip: None,
             held: None,
             flash_pitch: None,

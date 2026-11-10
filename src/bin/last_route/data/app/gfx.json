@@ -9,7 +9,7 @@
     "default_tier": "LOW",
     "high_dpi": false,
     "max_pixel_ratio": 1.0,
-    "render_scale_cap": 0.5,
+    "render_scale_cap": 0.25,
     "page_paces_frames": true,
     "sections_only_when_shown": true
   }

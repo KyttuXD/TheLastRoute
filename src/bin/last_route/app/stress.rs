@@ -71,6 +71,10 @@ const NPC_TARGET: usize = 8;
 const NPC_SMART: i32 = 70;
 /// The active hunters the hunters scenario keeps up.
 const HUNTER_TARGET: usize = 6;
+/// The crowd scenario packs this many hunters into one spot near the runner.
+const CROWD_TARGET: usize = 32;
+/// The pathfinding scenario keeps this many hunters chasing while the runner retreats.
+const PATHFIND_TARGET: usize = 12;
 /// Summons spread on a golden-angle ring round the runner (the admin's ADMIN_HUNTER_RING_*).
 const RING_START: f32 = 2.5;
 const RING_STEP: f32 = 1.2;
@@ -93,6 +97,10 @@ pub enum Scenario {
     Npcs,
     /// Walk with 6 hunters kept active, summoned as the admin does.
     Hunters,
+    /// Pack a large crowd of hunters into one spot near the runner (god mode keeps the run alive).
+    Crowd,
+    /// A dense chase: flashlight on, running backwards with hunters chasing.
+    Pathfinding,
     /// Walk, and press interact on the focus every 3 s.
     Interact,
     /// Fly 20 s, then npcs, hunters and interact in turn, 10 s each.
@@ -105,6 +113,8 @@ impl Scenario {
             "fly" => Scenario::Fly,
             "npcs" => Scenario::Npcs,
             "hunters" => Scenario::Hunters,
+            "crowd" => Scenario::Crowd,
+            "pathfind" => Scenario::Pathfinding,
             "interact" => Scenario::Interact,
             "mixed" => Scenario::Mixed,
             _ => return None,
@@ -116,6 +126,8 @@ impl Scenario {
             Scenario::Fly => "fly",
             Scenario::Npcs => "npcs",
             Scenario::Hunters => "hunters",
+            Scenario::Crowd => "crowd",
+            Scenario::Pathfinding => "pathfind",
             Scenario::Interact => "interact",
             Scenario::Mixed => "mixed",
         }
@@ -315,6 +327,12 @@ impl Stress {
         if self.scenario.mode(t) != Scenario::Fly {
             self.steer(g, t, dt, facing, route_prev, &mut c);
         }
+        let mode = self.scenario.mode(t);
+        if mode == Scenario::Crowd {
+            c.fwd = 0.0;
+        } else if mode == Scenario::Pathfinding {
+            c.fwd = -1.0;
+        }
         // every INTERACT_SECONDS in the interact mode: press interact when the crosshair is on
         // something (or to step out of a locker the last press hid the runner in)
         let tick = (t / INTERACT_SECONDS) as u32;
@@ -412,24 +430,39 @@ impl Stress {
             // the run's own NPCs (data/npcs.json) would skew the fly and hunters timings; only the admin's stay
             g.npcs.retain(|n| n.key.is_none());
         }
+        if matches!(mode, Scenario::Crowd | Scenario::Pathfinding) {
+            // keep the crowd chasing (god prevents capture; no_target stays off) and light the beam
+            g.admin.god = true;
+            g.admin.no_target = false;
+            if g.p.lamp > 0.0 {
+                g.p.flashlight_on = true;
+            }
+        }
         match mode {
             Scenario::Npcs => keep_npcs(g),
-            Scenario::Hunters => self.keep_hunters(g, content),
+            Scenario::Hunters => self.keep_hunters(g, content, HUNTER_TARGET, false),
+            Scenario::Crowd => self.keep_hunters(g, content, CROWD_TARGET, true),
+            Scenario::Pathfinding => self.keep_hunters(g, content, PATHFIND_TARGET, false),
             _ => {}
         }
     }
 
-    /// Tops the active hunters up to `HUNTER_TARGET`, placed as the admin summon places them.
-    fn keep_hunters(&mut self, g: &mut Game, content: &Content) {
+    /// Tops the active hunters up to `target`, placed as the admin summon places them, or all at one spot when `crowded`.
+    fn keep_hunters(&mut self, g: &mut Game, content: &Content, target: usize, crowded: bool) {
         if content.hunters.is_empty() || g.report.is_some() {
             return;
         }
         let mut have = g.hunters.iter().filter(|h| h.active).count();
         let mut slot = 0usize;
         // a bounded number of tries, so a floor with no room cannot stall the frame
-        while have < HUNTER_TARGET && slot < HUNTER_TARGET {
+        while have < target && slot < target {
             let def = &content.hunters[self.summoned as usize % content.hunters.len()];
-            if summon(g, &def.id, content, self.summoned, slot) {
+            let placed = if crowded {
+                crowd(g, &def.id, content, self.summoned)
+            } else {
+                summon(g, &def.id, content, self.summoned, slot)
+            };
+            if placed {
                 have += 1;
             }
             self.summoned += 1;
@@ -560,6 +593,29 @@ pub fn summon(g: &mut Game, id: &str, content: &Content, seq: u32, slot: usize) 
         def.clone(),
         at,
         &format!("{}:STRESS:{id}:{seq}", g.level_seed()),
+        g.difficulty,
+    );
+    if let Gimmick::Solyth(s) = &mut b.gimmick {
+        s.heat_locked = g.meters.heat_locked;
+    }
+    b.activate_at(g.p.pos);
+    g.hunters.push(b);
+    true
+}
+
+/// The crowd scenario: one hunter per `seq`, all placed in the same open cell beside the runner (the point of the test is
+/// a large crowd sharing a spot, not the admin's ring).
+fn crowd(g: &mut Game, id: &str, content: &Content, seq: u32) -> bool {
+    let Some(def) = content.hunter(id) else {
+        return false;
+    };
+    let Some(at) = g.fac.nearest_open(g.p.pos.0, g.p.pos.1, HUNTER_RADIUS) else {
+        return false;
+    };
+    let mut b = Brain::new(
+        def.clone(),
+        at,
+        &format!("{}:CROWD:{id}:{seq}", g.level_seed()),
         g.difficulty,
     );
     if let Gimmick::Solyth(s) = &mut b.gimmick {
@@ -715,7 +771,7 @@ mod tests {
 
     #[test]
     fn scenarios_parse_and_mixed_cycles_its_phases() {
-        for n in ["fly", "npcs", "hunters", "interact", "mixed"] {
+        for n in ["fly", "npcs", "hunters", "crowd", "pathfind", "interact", "mixed"] {
             assert_eq!(Scenario::parse(n).unwrap().name(), n);
         }
         assert!(Scenario::parse("nope").is_none());

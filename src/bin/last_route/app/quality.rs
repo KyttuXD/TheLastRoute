@@ -134,7 +134,7 @@ impl Config {
     pub fn fallback() -> Config {
         let rule = |max_cores, max_memory_gb, mobile, software, tier| HardwareRule { gpu_contains: Vec::new(), max_cores, max_memory_gb, mobile, software, tier };
         Config {
-            tier_scale: [0.32, 0.40, 0.50],
+            tier_scale: [0.25, 0.40, 0.50],
             notches: vec![
                 Notch::FULL,
                 Notch { render_scale: 1.0, lamps: 16, cull_scale: 0.9, prop_scale: 0.85, stream_scale: 0.75 },
@@ -807,7 +807,7 @@ mod tests {
         let c = Config::parse(FILE).unwrap();
         assert_eq!(&c, config());
         assert_eq!(c, Config::fallback(), "data/app/quality.json and Config::fallback drifted apart");
-        assert_eq!(c.tier_scale, [0.32, 0.40, 0.50], "the shipped tier scales are the old LOW, MEDIUM and HIGH");
+        assert_eq!(c.tier_scale, [0.25, 0.40, 0.50], "the shipped tier scales: LOW 0.25 (the floor), MEDIUM 0.40, HIGH 0.50");
         assert_eq!(c.max_notch(), 3);
         let by_notch: Vec<f32> = (0..=3).map(|n| (c.render_scale(Tier::High, n) * 100.0).round() / 100.0).collect();
         assert_eq!(by_notch, vec![0.50, 0.50, 0.42, 0.35]);
@@ -816,15 +816,19 @@ mod tests {
 
     #[test]
     fn a_broken_table_is_refused_with_the_field_named() {
-        let bad = |from: &str, to: &str| Config::parse(&FILE.replacen(from, to, 1)).unwrap_err();
+        // every edit must find its text in the shipped file, or the case would pass by changing nothing
+        let bad = |from: &str, to: &str| {
+            assert!(FILE.contains(from), "the test's pattern is not in the shipped file: {from}");
+            Config::parse(&FILE.replacen(from, to, 1)).unwrap_err()
+        };
         assert!(bad("lr.quality/1", "lr.quality/2").contains("schema"));
         assert!(Config::parse("{").is_err());
         assert!(Config::parse("{}").unwrap_err().contains("schema"));
         // a tier scale out of range, a missing tier, an unknown tier
-        assert!(bad("\"render_scale\": 0.32 }", "\"render_scale\": 3.0 }").contains("tiers.LOW"));
-        assert!(bad("\"LOW\": { \"render_scale\": 0.32 },", "").contains("tiers.LOW"));
+        assert!(bad("\"render_scale\": 0.25 }", "\"render_scale\": 3.0 }").contains("tiers.LOW"));
+        assert!(bad("\"LOW\": { \"render_scale\": 0.25 },", "").contains("tiers.LOW"));
         assert!(bad("\"HIGH\": { \"render_scale\": 0.50 }", "\"HIGH\": { \"render_scale\": 0.50 }, \"ULTRA\": { \"render_scale\": 0.5 }").contains("ULTRA"));
-        assert!(bad("\"LOW\": { \"render_scale\": 0.32 }", "\"LOW\": { \"render_scale\": 0.45 }").contains("must not fall"));
+        assert!(bad("\"LOW\": { \"render_scale\": 0.25 }", "\"LOW\": { \"render_scale\": 0.45 }").contains("must not fall"));
         // notch 0 is the tier as it is, and a later row never asks for more than the one before
         assert!(bad("{ \"render_scale\": 1.0, \"lamps\": 16, \"cull_scale\": 1.0, \"prop_scale\": 1.0, \"stream_scale\": 1.0 },", "{ \"render_scale\": 0.9, \"lamps\": 16, \"cull_scale\": 1.0, \"prop_scale\": 1.0, \"stream_scale\": 1.0 },").contains("notches[0]"));
         assert!(bad("\"lamps\": 8,", "\"lamps\": 17,").contains("lamps"));
@@ -1103,9 +1107,9 @@ mod tests {
     }
 
     #[test]
-    fn the_named_tiers_are_fixed_and_keep_their_old_scales() {
+    fn the_named_tiers_are_fixed_at_their_shipped_scales() {
         let mut m = manager(Some(hw(2, 1.0)));
-        for (name, scale, tier) in [("LOW", 0.32, Tier::Low), ("MEDIUM", 0.40, Tier::Medium), ("HIGH", 0.50, Tier::High)] {
+        for (name, scale, tier) in [("LOW", 0.25, Tier::Low), ("MEDIUM", 0.40, Tier::Medium), ("HIGH", 0.50, Tier::High)] {
             let live = play(&mut m, name, true, 60.0, 30.0);
             assert_eq!((live.tier, live.render_scale, live.notch, live.scales), (tier, scale, 0, Scales::FULL), "{name} does not adapt");
         }

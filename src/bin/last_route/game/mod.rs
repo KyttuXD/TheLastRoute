@@ -288,6 +288,8 @@ pub struct Game {
     pub admin: Admin,
     /// NPC teammates the admin spawned this run (game/npc.rs, phase one), and the next id (never reused).
     pub npcs: Vec<npc::Npc>,
+    /// The buffers the bots' tick reuses between frames (game/npc.rs NpcScratch), so the tick allocates nothing in steady state.
+    pub npc_scratch: npc::NpcScratch,
     pub npc_next: u32,
     /// Hunters met this run (within 7.5 m, in line of sight) not yet handed to the dossier.
     sightings: Vec<String>,
@@ -448,6 +450,7 @@ impl Game {
             stack_nav: std::sync::Arc::new(crate::hunters::flight_edges::StackNav::empty()),
             admin: Admin::default(),
             npcs: vec![],
+            npc_scratch: Default::default(),
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),
@@ -604,6 +607,7 @@ impl Game {
             stack_nav: std::sync::Arc::new(crate::hunters::flight_edges::StackNav::empty()),
             admin: Admin::default(),
             npcs: vec![],
+            npc_scratch: Default::default(),
             npc_next: 0,
             sightings: vec![],
             sighted: Default::default(),

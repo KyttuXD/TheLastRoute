@@ -658,6 +658,10 @@ pub async fn run(
     // the VSYNC row, as last applied to the live GL context; the FPS LIMIT row paces the loop
     let mut vsync_applied: Option<bool> = None;
     let mut pacer = pacing::Pacer::default();
+  #[cfg(target_arch = "wasm32")]
+  let mut menu_storage_state = false;
+  #[cfg(target_arch = "wasm32")]
+  let mut screen_storage_state: Option<Screen> = None;
     // the room: the open session (host or guest), the request still in flight, and the directory it talks to
     // (`--backend=` applies here like to the menus; release builds use the primary server)
     let net_cfg: BackendConfig = BackendConfig::from_args(std::env::args().skip(1), cfg!(debug_assertions)).0;
@@ -731,6 +735,21 @@ pub async fn run(
 
     loop {
         frame += 1;
+
+        // menus are capped at 30 FPS (native via the pacer, web via the page's rAF throttle)
+        let in_menu = playing.is_none() && loading.is_none() && !stress_on;
+        #[cfg(target_arch = "wasm32")]
+        if in_menu != menu_storage_state {
+            crate::app::web_storage::set("menu", if in_menu { "1" } else { "0" });
+            menu_storage_state = in_menu;
+        }
+
+        // the screen name is written only when it changes: a write and a format! every frame cost the browser's frame time
+        #[cfg(target_arch = "wasm32")]
+        if screen_storage_state != Some(ui.screen) {
+            crate::app::web_storage::set("screen", &format!("{:?}", ui.screen));
+            screen_storage_state = Some(ui.screen);
+        }
         gfx::boot_guard_tick();
         // a stress run takes --stress-vsync without touching the saved setting
         let vsync = stress_vsync.unwrap_or(settings.vsync);
@@ -825,6 +844,7 @@ pub async fn run(
                 skins::mark_account_holds(&hash);
                 settings.skin = hash;
                 settings.skin_slim = slim;
+                skins::bump_generation();
                 if !stress_on {
                     settings.save();
                 }
@@ -1116,6 +1136,7 @@ pub async fn run(
                         worn.get().slim,
                         crate::net::runner_figure::local_hide(g),
                     )
+                    .with_jump(g.p.feet_y)
             }),
             _ => None,
         };
@@ -1532,7 +1553,7 @@ pub async fn run(
             };
             let detail = format!("DEFAULT // {mode} // {}", l.diff.name());
             menus::draw_loading(&w.assets, &l.room, &detail, l.shown);
-            if l.shown >= 1.0 {
+            if l.shown >= 1.0 - 1e-4 {
                 playing = l.built.take();
                 loading = None;
                 death = None;
@@ -2505,10 +2526,11 @@ pub async fn run(
         // the focus is read from the OS each frame (app/platform.rs); a screenshot or capture run counts as focused
         frame_cap::set_focused(screenshot.is_some() || capture.is_some() || platform::window_focused());
         let focused = frame_cap::focused();
+        let base_cap = if in_menu { Some(30) } else { settings.frame_cap_fps() };
         pacer.wait(if stress_on {
             stress_cap
         } else {
-            frame_cap::effective_cap(settings.frame_cap_fps(), focused, settings.pause_on_focus_loss, &bindings::rules().frame)
+            frame_cap::effective_cap(base_cap, focused, settings.pause_on_focus_loss, &bindings::rules().frame)
         });
         if !stress_on && !cfg!(target_arch = "wasm32") {
             let nap = frame_cap::unfocused_sleep(focused, settings.pause_on_focus_loss, &bindings::rules().frame);
@@ -2840,7 +2862,7 @@ mod remote_level_tests {
     use super::*;
 
     fn view(peer: u32, h: f32, level: i32) -> RemoteView {
-        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, clip: None, held: None, flash_pitch: None, look_pitch: 0.0, emote: None, hide: None, hide_since: None }
+        RemoteView { peer, name: String::new(), x: 1.0, y: 2.0, yaw: 0.0, h, level, skin: String::new(), moving: false, sprinting: false, crouching: false, slim: false, speed: 0.0, vy: 0.0, jump: 0.0, clip: None, held: None, flash_pitch: None, look_pitch: 0.0, emote: None, hide: None, hide_since: None }
     }
 
     #[test]
@@ -2915,6 +2937,7 @@ fn shot_remote(g: &Game) -> RemoteView {
         slim: false,
         speed: 0.0,
         vy: 0.0,
+        jump: 0.0,
         clip: None,
         hide: None,
         held: None,

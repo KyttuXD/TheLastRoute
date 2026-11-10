@@ -28,6 +28,8 @@
 //! (bit-exact with SeededRandom). Ordered Godot dictionaries (warren nodes, tree edges) are
 //! ordered `Vec`s here, so pop_at and index draws land on the same entries.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use serde_json::{json, Value};
@@ -36,6 +38,13 @@ use crate::world::rng::Rng;
 use crate::world::route::concept_map::{self, ChunkClass};
 use crate::world::route::{fixtures, grid, hunter_spawns, music_boxes, pickups, props, regions};
 use std::cell::Cell;
+
+thread_local! {
+    /// Cache of already-built chunk layouts. A layout is a pure function of the world text, the chunk
+    /// coordinate and the active region mode (Godot parity on or off).
+    static CHUNK_LAYOUT_CACHE: RefCell<Option<HashMap<(String, i32, i32, i32, bool), Option<ChunkLayout>>>> =
+        const { RefCell::new(None) };
+}
 
 thread_local! {
     /// True while `with_godot_regions` runs: level 0 then uses Godot's region draw instead of the concept map.
@@ -2459,7 +2468,14 @@ pub fn chunk_layout_godot(world: &str, c: Coord) -> Option<ChunkLayout> {
 /// `_region_layout` (934), the seam carve `_carve_edges` (978), the level-0 stairwell step (984-1000).
 /// Stairs are always empty on this route (stair_links, line 1399).
 pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
+    let cache_key = (world.to_string(), c.x, c.y, c.z, godot_regions());
+    if let Some(cached) = CHUNK_LAYOUT_CACHE.with(|cache| cache.borrow().as_ref().and_then(|m| m.get(&cache_key).cloned())) {
+        return cached;
+    }
     if c.y != 0 {
+        CHUNK_LAYOUT_CACHE.with(|cache| {
+            cache.borrow_mut().get_or_insert_with(HashMap::new).insert(cache_key, None);
+        });
         return None;
     }
     let gen = Gen { world };
@@ -2476,6 +2492,9 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
     } else if region == "apartment" {
         gen.mixed_apartment(c, region, &mut grid)
     } else {
+        CHUNK_LAYOUT_CACHE.with(|cache| {
+            cache.borrow_mut().get_or_insert_with(HashMap::new).insert(cache_key, None);
+        });
         return None;
     };
     // (dx, dz) of west, east, north, south: `edges` in _build_chunk (lines 957-962)
@@ -2567,7 +2586,7 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
         })
         .collect();
     pickups::ensure_pickups_reachable(&grid, props_now, &mut music_pickups);
-    Some(ChunkLayout {
+    let result = Some(ChunkLayout {
         coord: c,
         region,
         rooms: parts.rooms,
@@ -2583,7 +2602,11 @@ pub fn chunk_layout(world: &str, c: Coord) -> Option<ChunkLayout> {
         music_pickups,
         music_boxes: music,
         hunter_spawns: hunters,
-    })
+    });
+    CHUNK_LAYOUT_CACHE.with(|cache| {
+        cache.borrow_mut().get_or_insert_with(HashMap::new).insert(cache_key, result.clone());
+    });
+    result
 }
 
 #[cfg(test)]

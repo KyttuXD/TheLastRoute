@@ -85,9 +85,9 @@ impl Default for Settings {
             sensitivity: crate::config::MOUSE_SENSITIVITY,
             fullscreen: false,
             vsync: true,
-            fps_limit: 0.0,
-            quality: "AUTO".into(),
-            adaptive_quality: cfg!(target_arch = "wasm32"),
+            fps_limit: 60.0,
+            quality: "LOW".into(),
+            adaptive_quality: true,
             ads: "off".into(),
             graphics_api: "AUTO".into(),
             pause_on_focus_loss: true,
@@ -164,7 +164,7 @@ impl Settings {
         );
         s.fullscreen = b("fullscreen", false);
         s.vsync = b("vsync", true);
-        s.fps_limit = f("fps_limit", 0.0).max(0.0);
+        s.fps_limit = f("fps_limit", 60.0).max(0.0);
         s.pause_on_focus_loss = b("pause_on_focus_loss", true);
         s.teammate_waypoints = b("teammate_waypoints", true);
         s.reduced_motion = b("reduced_motion", false);
@@ -381,7 +381,7 @@ mod tests {
             vsync: false,
             fps_limit: 90.0,
             quality: "MEDIUM".into(),
-            adaptive_quality: !cfg!(target_arch = "wasm32"),
+            adaptive_quality: false,
             ads: "gentle".into(),
             graphics_api: "METAL".into(),
             pause_on_focus_loss: false,
@@ -401,7 +401,7 @@ mod tests {
         let back = Settings::from_json(&json);
         assert_eq!(back.to_json(), json);
         assert_eq!(back.quality, "MEDIUM");
-        assert_eq!(back.adaptive_quality, !cfg!(target_arch = "wasm32"), "the saved choice, not the default, comes back");
+        assert!(!back.adaptive_quality, "the saved choice, not the default, comes back");
         assert_eq!(back.ads, "gentle");
         assert_eq!(back.graphics_api, "METAL");
         assert_eq!(back.username, "ALICE");
@@ -416,14 +416,14 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_quality_defaults_on_for_the_browser_and_off_native_and_old_files_load() {
-        let default_on = cfg!(target_arch = "wasm32");
-        assert_eq!(Settings::default().adaptive_quality, default_on);
-        // a settings file from before the row existed takes the platform's default; a saved choice wins either way
-        assert_eq!(Settings::from_json(&serde_json::json!({ "quality": "AUTO" })).adaptive_quality, default_on);
+    fn adaptive_quality_defaults_on_everywhere_and_old_files_load() {
+        // the governor is on by default on every platform
+        assert!(Settings::default().adaptive_quality);
+        // a settings file from before the row existed takes the default; a saved choice wins either way
+        assert!(Settings::from_json(&serde_json::json!({ "quality": "AUTO" })).adaptive_quality);
         assert!(Settings::from_json(&serde_json::json!({ "adaptive_quality": true })).adaptive_quality);
         assert!(!Settings::from_json(&serde_json::json!({ "adaptive_quality": false })).adaptive_quality);
-        assert_eq!(Settings::from_json(&serde_json::json!({ "adaptive_quality": "yes" })).adaptive_quality, default_on);
+        assert!(Settings::from_json(&serde_json::json!({ "adaptive_quality": "yes" })).adaptive_quality);
     }
 
     #[test]

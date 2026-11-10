@@ -278,6 +278,7 @@ fn blend(a: &Sample, b: &Sample, k: f32) -> Sample {
     };
     s.vx = a.vx + (b.vx - a.vx) * k;
     s.vz = a.vz + (b.vz - a.vz) * k;
+    s.jump = a.jump + (b.jump - a.jump) * k;
     // an emote is not blended: the newer sample's value shows
     s.emote = b.emote;
     s.emote_seq = b.emote_seq;
@@ -336,6 +337,7 @@ mod tests {
             vy: 0.0,
             vx: 0.0,
             vz: 0.0,
+            jump: 0.0,
             slim: false,
             hide: None,
             held: None,

@@ -12,7 +12,7 @@ use super::style::*;
 use super::text_field::{self, pasted};
 use crate::app::assets::Assets;
 use crate::app::settings::Settings;
-use crate::net::world_sync::SKIN_DEFAULT;
+use crate::net::world_sync::{is_skin_hash, SKIN_DEFAULT};
 use crate::shared::file_pick::{self, Outcome};
 use crate::shared::skins::{self, ValidSkin};
 use macroquad::prelude::*;
@@ -293,6 +293,10 @@ struct SkinUi {
     shown_slim: bool,
     /// What `shown` was built for: the applied skin id and the save generation.
     shown_key: Option<(String, u64)>,
+    /// The applied skin is a saved account hash whose file is not readable yet: looked for again at `retry_at`.
+    waiting_account: bool,
+    /// The time (seconds, the frame clock) of the next look for a waiting account skin.
+    retry_at: f64,
     status: String,
     /// A muted second line under the status (a folder path).
     detail: String,
@@ -320,6 +324,8 @@ impl Default for SkinUi {
             shown: None,
             shown_slim: false,
             shown_key: None,
+            waiting_account: false,
+            retry_at: 0.0,
             status: String::new(),
             detail: String::new(),
             url: TextBox::default(),
@@ -761,10 +767,19 @@ fn draw_front(tex: &Texture2D, area: Rect) {
     part((40.0, 8.0), (8.0, 8.0), cx - 4.0 * k, top);
 }
 
-/// Rebuilds the cached preview picture and arm layout when the pick, the applied skin or the saved file changed.
-fn refresh_shown(s: &mut SkinUi, st: &Settings) {
+/// How often a saved account skin that is not readable yet is looked for again (its file may still be on its way).
+const ACCOUNT_SKIN_RETRY_SECS: f64 = 0.5;
+
+/// The caption while a saved account skin is being looked for (player-facing text, upper case).
+const CHECKING_LABEL: &str = "CHECKING ACCOUNT SKIN";
+
+/// Rebuilds the cached preview picture and arm layout when the pick, the applied skin or the saved file changed. A saved
+/// account skin that is not readable yet is looked for again every [`ACCOUNT_SKIN_RETRY_SECS`] (a disk read only then),
+/// and that miss is never kept as the answer.
+fn refresh_shown(s: &mut SkinUi, st: &Settings, now: f64) {
     let key = (st.skin.clone(), skins::generation());
-    if s.shown.is_some() && s.shown_key.as_ref() == Some(&key) {
+    let current = s.shown.is_some() && s.shown_key.as_ref() == Some(&key);
+    if current && (!s.waiting_account || now < s.retry_at) {
         return;
     }
     let (png, slim) = match &s.pick {
@@ -772,6 +787,8 @@ fn refresh_shown(s: &mut SkinUi, st: &Settings) {
         None if st.skin == SKIN_DEFAULT => (None, false),
         None => (skins::skin_png(&st.skin).map(|(_, bytes)| bytes), st.skin_slim),
     };
+    s.waiting_account = s.pick.is_none() && is_skin_hash(&st.skin) && png.is_none();
+    s.retry_at = now + ACCOUNT_SKIN_RETRY_SECS;
     s.shown = Some(png.as_deref().and_then(texture_of));
     s.shown_slim = slim;
     s.shown_key = Some(key);
@@ -779,18 +796,22 @@ fn refresh_shown(s: &mut SkinUi, st: &Settings) {
 
 /// The preview box: the chosen skin (or the pick waiting for APPLY), else the default mannequin.
 fn draw_preview(a: &Assets, s: &mut SkinUi, st: &Settings, area: Rect) {
-    refresh_shown(s, st);
+    refresh_shown(s, st, get_time());
     let p = pal();
     sbox(area, p.inset, p.field_edge, 1.0, p.corner);
     let slim = preview_slim(&st.arms, s.shown_slim);
     let tex = s.shown.as_ref().and_then(Option::as_ref);
     if a.npc_body.is_some() {
         SKIN_PREVIEW.with(|pv| pv.borrow_mut().draw(a, area, tex, slim, get_frame_time()));
+        if s.waiting_account {
+            label_c(a, F::Body, CHECKING_LABEL, area.x + area.w * 0.5, area.y + 4.0, 6.0, p.muted);
+        }
         return;
     }
     // Fallback: the flat front, when the 3D preview target cannot be made.
     match tex {
         Some(tex) => draw_front(tex, area),
+        None if s.waiting_account => label_c(a, F::Body, CHECKING_LABEL, area.x + area.w * 0.5, area.y + area.h * 0.5 - 4.0, 6.0, p.muted),
         None => label_c(a, F::Body, "DEFAULT", area.x + area.w * 0.5, area.y + area.h * 0.5 - 4.0, 7.0, p.muted),
     }
 }
@@ -933,6 +954,40 @@ pub fn draw(a: &Assets, st: &mut Settings, ox: f32, oy: f32, changed: &mut bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_account_skin_is_looked_for_again_on_the_timer() {
+        let mut s = SkinUi::default();
+        let mut st = Settings::default();
+        st.skin = skins::sha256_hex(b"skin tab retry test");
+        refresh_shown(&mut s, &st, 0.0);
+        assert!(s.waiting_account, "a saved hash with no file is still being checked");
+        assert_eq!(s.retry_at, 0.5);
+        refresh_shown(&mut s, &st, 0.25);
+        assert_eq!(s.retry_at, 0.5, "no look before the retry time");
+        refresh_shown(&mut s, &st, 0.5);
+        assert_eq!(s.retry_at, 1.0, "the look is repeated after the interval");
+    }
+
+    #[test]
+    fn a_bumped_generation_makes_the_preview_resolve_again() {
+        let mut s = SkinUi::default();
+        let mut st = Settings::default();
+        st.skin = skins::sha256_hex(b"skin tab bump test");
+        refresh_shown(&mut s, &st, 0.0);
+        let first = s.shown_key.clone();
+        skins::bump_generation();
+        refresh_shown(&mut s, &st, 0.0);
+        assert_ne!(s.shown_key, first, "the same id is resolved again after a bump");
+    }
+
+    #[test]
+    fn the_default_skin_is_not_waiting_for_an_account_file() {
+        let mut s = SkinUi::default();
+        let st = Settings::default();
+        refresh_shown(&mut s, &st, 0.0);
+        assert!(!s.waiting_account, "DEFAULT has no file to wait for");
+    }
 
     #[test]
     fn a_drop_with_no_path_and_no_bytes_is_unreadable_not_too_big() {

@@ -265,6 +265,22 @@ pub fn warn_unrigged_once(id: &str) {
     }
 }
 
+/// A far hunter's last posed mesh, moved by `by` (x, z) to where the hunter stands now. Between LOD updates the pose
+/// stays frozen while the position follows the simulation, so the copy is drawn at the live spot. `shift` is a scratch
+/// mesh whose buffers are reused, so the copy does not allocate once it is warm.
+pub fn shift_stale(src: &Mesh, shift: &mut Mesh, by: (f32, f32)) {
+    shift.vertices.clear();
+    shift.vertices.extend(src.vertices.iter().map(|v| {
+        let mut v = *v;
+        v.position.x += by.0;
+        v.position.z += by.1;
+        v
+    }));
+    shift.indices.clear();
+    shift.indices.extend_from_slice(&src.indices);
+    shift.texture = src.texture.clone();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +291,28 @@ mod tests {
             *builds += 1;
             i.push(0);
         });
+    }
+
+    /// A far hunter's pose is frozen (no rebuild) while its position moves every frame: the drawn copy follows it.
+    #[test]
+    fn frozen_pose_still_walks() {
+        let t = CacheTuning::default();
+        let mut c = HunterMeshCache::new();
+        let pose = pose_key(&t, &Mat4::IDENTITY, &[], 0);
+        c.get_or_build(&t, 0usize, "a", pose, tint_key(&t, WHITE), None, |v, i| {
+            v.push(Vertex::new(1.0, 0.0, 2.0, 0.0, 0.0, WHITE));
+            i.push(0);
+        });
+        let mut shift = Mesh { vertices: Vec::new(), indices: Vec::new(), texture: None };
+        for step in 1..=3 {
+            // the hunter has walked (0.5 m, -0.25 m) per step on x and z since it was posed
+            let by = (0.5 * step as f32, -0.25 * step as f32);
+            let src = c.stale(0usize, "a").expect("a far hunter keeps its last mesh");
+            shift_stale(src, &mut shift, by);
+            assert_eq!(src.vertices[0].position, vec3(1.0, 0.0, 2.0), "the stored pose is untouched");
+            assert_eq!(shift.vertices[0].position, vec3(1.0 + by.0, 0.0, 2.0 + by.1), "the drawn copy is at the live spot");
+        }
+        assert_eq!(c.rebuilds, 1, "the pose was never rebuilt while it was frozen");
     }
 
     #[test]

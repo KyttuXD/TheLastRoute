@@ -148,7 +148,12 @@ pub fn bot_state(bots: &BotSpec, speed: f32, climbing: bool, falling: bool) -> R
 
 /// What a remote runner's sample says it is doing: the pose it names, or an older client's three flags.
 pub fn remote_state(r: &RemoteView) -> RunnerState {
-    RunnerState::from_sample(r.clip, r.moving, r.sprinting, r.crouching, r.vy, r.speed)
+    let mut state = RunnerState::from_sample(r.clip, r.moving, r.sprinting, r.crouching, r.vy, r.speed);
+    // an airborne runner's jump clip is placed by its wire height and vertical speed, so it spans the real airtime
+    if state.airborne_up || state.airborne_down {
+        state.air_phase = Some(driver::air_phase(r.jump, r.vy));
+    }
+    state
 }
 
 /// The state of this runner's own body, for the sample it sends (`Sample::with_body`) and for anything that draws it.
@@ -173,6 +178,8 @@ pub fn local_state(g: &Game) -> RunnerState {
         speed: p.move_vel.0.hypot(p.move_vel.1),
         // the sample's pose is the walk clip either way; a viewer reads a backwards step from the sample's position
         backward: false,
+        // the host plays its own jump in time
+        air_phase: None,
     }
 }
 
@@ -214,6 +221,12 @@ pub fn pick(skin: &str, has_skin: &dyn Fn(&str) -> bool) -> Pick {
 /// frame puts the active floor at 0). A runner on a flight is drawn at its height whatever its label says.
 pub fn runner_draw_y(h: f32, active_floor_y: f32) -> f32 {
     h - active_floor_y
+}
+
+/// The scene y a remote runner's figure is drawn at: [`runner_draw_y`] plus the runner's jump height from the wire, so a
+/// jumping runner leaves the floor in every view that draws it.
+pub fn remote_draw_y(r: &RemoteView, active_floor_y: f32) -> f32 {
+    runner_draw_y(r.h, active_floor_y) + r.jump
 }
 
 /// The body alpha a fade amount draws with: Godot's `transparency = fade`, so 0 is opaque and 0.55 is 45% opaque.
@@ -446,6 +459,26 @@ pub fn looked_head(base: f32, look: f32) -> f32 {
 /// The most a head may turn from the body with a bot's look added (radians): a safety cap above the data's limit.
 const LOOK_YAW_CAP: f32 = 1.5;
 
+/// Whether a body in this state holds its head straight: down, stunned, or on a ladder.
+fn holds_head(state: &RunnerState) -> bool {
+    matches!(state.pose(), Pose::Down | Pose::Stun | Pose::Climb)
+}
+
+/// Aims one driven figure's head and body at its facing `yaw`: the head turns first, and the body follows once the head is
+/// past its free range (`RunnerView::aim_head`). `first` seeds the body to the facing, for a new figure or a rebuilt one.
+/// A body that holds its head aims straight ahead of itself, so its head stays level and its body keeps its facing.
+fn aim(v: &mut RunnerView, first: bool, yaw: f32, look_pitch: f32, turn: f32, state: &RunnerState, dt: f32) {
+    if first {
+        v.seed_yaw(yaw);
+    }
+    if holds_head(state) {
+        let body = v.body_yaw;
+        v.aim_head(0.0, body, 0.0, false, dt);
+    } else {
+        v.aim_head(look_pitch, yaw, turn, state.moving, dt);
+    }
+}
+
 /// Draws one driven figure and returns its held flashlight's lamp point (see [`draw_body`]). `look_pitch` is the runner's
 /// aim (+ up) that tilts its head; a bot passes where it looks. `look_yaw` turns the head from the body (+ left); a
 /// runner or an older peer passes 0. The figure's own ground step since its last frame says whether a moving state is
@@ -459,9 +492,11 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_yaw: f32, l
             *fig = Figure { last_at: fig.last_at, ..Figure::new(epoch, slim) };
         }
         fig.seen = epoch;
+        // a new figure, or one rebuilt for a slim switch, has no earlier facing: its body starts where it looks
+        let first = fig.last_yaw.is_none();
         // the body's turn rate (radians a second, + left), for the head's lag; 0 on the first frame
         let turn = match (fig.last_yaw, dt > 1e-5) {
-            (Some(last), true) => ((yaw - last + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI) / dt,
+            (Some(last), true) => (driver::wrap_angle(yaw - last)) / dt,
             _ => 0.0,
         };
         fig.last_yaw = Some(yaw);
@@ -476,16 +511,10 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_yaw: f32, l
             }
             v.last_pos = Some(here);
             v.update(&state, dt);
-            // a body down, stunned or on a ladder holds its head straight
-            let free = !matches!(state.pose(), Pose::Down | Pose::Stun | Pose::Climb);
-            if free {
-                v.aim_head(look_pitch, turn, dt);
-            } else {
-                v.aim_head(0.0, 0.0, dt);
-            }
+            aim(v, first, yaw, look_pitch, turn, &state, dt);
             // a bot's look turns the head from the body; the driver's own easing is kept for the next frame
             let eased = v.head_yaw;
-            if free {
+            if !holds_head(&state) {
                 v.head_yaw = looked_head(eased, look_yaw);
             }
             let mut locals = v.locals();
@@ -493,14 +522,15 @@ fn draw_driven(a: &Assets, key: FigureKey, pos: Vec3, yaw: f32, look_yaw: f32, l
             if let Some((id, _, t)) = &emoting {
                 pose_emote(&v.rig, &mut locals, id, *t);
             }
-            (v.rig.clone(), locals, v.fade, v.pitch)
+            (v.rig.clone(), locals, v.fade, v.pitch, v.body_yaw)
         })
     });
     match driven {
-        Some((rig, locals, fade, pitch)) => {
+        Some((rig, locals, fade, pitch, body_yaw)) => {
             let alpha = body_alpha(fade);
             let held = held_wire::shown(held, false, state.pose(), alpha);
-            draw_body(a, Look { pos, yaw, pitch, alpha }, pick, slim, Some((&rig, &locals)), held)
+            // the body is drawn at its own facing, which trails the aim (the head turns first); the aim is for the head
+            draw_body(a, Look { pos, yaw: body_yaw, pitch, alpha }, pick, slim, Some((&rig, &locals)), held)
         }
         None => draw_body(a, Look { pos, yaw, pitch: 0.0, alpha: 1.0 }, pick, slim, None, None),
     }
@@ -593,7 +623,7 @@ pub fn flashlight_lamps(g: &Game, remotes: &[RemoteView]) -> Vec<crate::render::
         .filter(|r| !hidden_for_good(r) && r.hide.is_none())
         .filter(|r| r.flash_pitch.is_some())
         .map(|r| {
-            let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
+            let pos = vec3(r.x, remote_draw_y(r, active_y), r.y);
             crate::render::beam::remote_lamp(crate::render::beam::flashlight_apex(pos, r.yaw, r.crouching))
         })
         .collect()
@@ -614,7 +644,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
         // The mannequin failed to load: a plain grey post keeps the runner visible in the 3D view.
         let mut b = crate::render::builder::Builder::new(Some(a.white.clone()));
         for r in remotes {
-            b.cube(vec3(r.x, runner_draw_y(r.h, active_y) + 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, GRAY, 2.0);
+            b.cube(vec3(r.x, remote_draw_y(r, active_y) + 0.85, r.y), vec3(0.42, 1.7, 0.42), r.yaw, GRAY, 2.0);
         }
         b.draw_and_clear();
         return;
@@ -625,7 +655,7 @@ pub fn draw_runners(g: &Game, a: &Assets, mat: &Material, rt: &RenderTarget, rem
             continue;
         }
         let tex = pick(&r.skin, &|id| a.skin_texture(id).is_some());
-        let pos = vec3(r.x, runner_draw_y(r.h, active_y), r.y);
+        let pos = vec3(r.x, remote_draw_y(r, active_y), r.y);
         let held = if r.hide.is_some() { None } else { r.held };
         let lamp = draw_driven(a, FigureKey::Peer(r.peer), pos, r.yaw, 0.0, r.look_pitch, &tex, r.slim, &remote_state(r), held, remote_emote(r), dt, epoch);
         // a lit flashlight shows its beam to everyone who sees the runner (render/beam.rs); a hidden runner has none.
@@ -744,6 +774,7 @@ mod tests {
             slim: false,
             speed: 0.0,
             vy,
+            jump: 0.0,
             clip,
             held: None,
             flash_pitch: None,
@@ -761,7 +792,64 @@ mod tests {
     }
 
     #[test]
-    fn default_runner_uses_the_atlas_and_an_unknown_skin_falls_back() {
+    fn a_remote_jump_is_drawn_off_the_floor_by_its_wire_height() {
+        let mut r = remote(None, false, false, false, 0.0);
+        r.h = 2.0;
+        r.jump = 0.5;
+        assert_eq!(remote_draw_y(&r, 0.0), 2.5, "the height plus the jump");
+        assert_eq!(remote_draw_y(&r, -1.0), 3.5, "the active floor is taken off both");
+        r.jump = 0.0;
+        assert_eq!(remote_draw_y(&r, 0.0), runner_draw_y(r.h, 0.0), "on the ground the draw is unchanged");
+    }
+
+    #[test]
+    fn a_remote_jump_places_its_air_clip_by_height_and_vertical_speed() {
+        let peak = driver::config().jump_peak;
+        let mut up = remote(Some(Pose::Jump), false, false, false, 1.0);
+        up.jump = peak * 0.5;
+        let s = remote_state(&up);
+        assert_eq!(s.pose(), Pose::Jump);
+        let phase = |s: &RunnerState| s.air_phase.expect("an airborne runner has a phase");
+        assert!((phase(&s) - 0.25).abs() < 1e-5, "rising at half the peak is a quarter into the clip");
+        let mut down = remote(Some(Pose::Fall), false, false, false, -1.0);
+        down.jump = peak * 0.5;
+        assert!((phase(&remote_state(&down)) - 0.75).abs() < 1e-5, "falling at half the peak is three quarters in");
+        let ground = remote(None, true, false, false, 0.0);
+        assert_eq!(remote_state(&ground).air_phase, None, "a runner on the floor has no air phase");
+    }
+
+    #[test]
+    fn a_rebuilt_figure_starts_its_body_at_its_aim() {
+        let mut v = RunnerView::load(false).expect("the player rig is embedded");
+        let still = RunnerState::default();
+        // a new figure: its body is where it looks, and its head is level
+        aim(&mut v, true, 1.2, 0.0, 0.0, &still, 1.0 / 60.0);
+        assert!((v.body_yaw - 1.2).abs() < 1e-6, "the first frame seeds the body: {}", v.body_yaw);
+        assert!(v.head_yaw.abs() < 1e-3, "the head is level on the first frame");
+        // turn the aim far past the free range: the body starts to follow
+        for _ in 0..120 {
+            aim(&mut v, false, 3.0, 0.0, 0.0, &still, 1.0 / 60.0);
+        }
+        assert!((v.body_yaw - 1.2).abs() > 0.1, "the body follows a turn past the free range: {}", v.body_yaw);
+        // a slim switch rebuilds the figure: the new body starts where the aim is, not where the old body was
+        aim(&mut v, true, -0.7, 0.0, 0.0, &still, 1.0 / 60.0);
+        assert!((v.body_yaw + 0.7).abs() < 1e-6, "a rebuilt figure reseeds: {}", v.body_yaw);
+    }
+
+    #[test]
+    fn a_figure_that_holds_its_head_keeps_its_body_facing() {
+        let mut v = RunnerView::load(false).expect("rig");
+        v.seed_yaw(0.4);
+        let down = RunnerState { down: true, ..RunnerState::default() };
+        for _ in 0..120 {
+            aim(&mut v, false, 2.5, 0.0, 0.0, &down, 1.0 / 60.0);
+        }
+        assert_eq!(v.body_yaw, 0.4, "a downed body does not turn to its aim");
+        assert!(v.head_yaw.abs() < 1e-3, "and its head stays straight");
+    }
+
+    #[test]
+    fn a_default_runner_uses_the_atlas_and_an_unknown_skin_falls_back() {
         let none = |_: &str| false;
         assert_eq!(pick(SKIN_DEFAULT, &|_| true), Pick::Atlas, "DEFAULT is always the atlas");
         assert_eq!(pick("NO_SUCH_SKIN", &none), Pick::Atlas, "an unknown id draws the atlas");

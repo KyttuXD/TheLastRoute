@@ -15,6 +15,24 @@
 <!-- macroquad/miniquad JavaScript runtime, then the quad-snd audio plugin, then the game -->
 <!-- the bundle's quad_net plugin assigns register_plugin without declaring it (a strict-mode error otherwise) -->
 <script>var register_plugin;</script>
+<!-- throttle the menu to 30 FPS on low-end devices; the game sets the 'menu' key in localStorage -->
+<script>
+(function () {
+  let last = 0;
+  const orig = window.requestAnimationFrame;
+  window.requestAnimationFrame = function (cb) {
+    if (localStorage.getItem('menu') === '1') {
+      const now = performance.now();
+      const wait = 1000 / 30 - (now - last);
+      if (wait > 0) {
+        return window.setTimeout(function () { window.requestAnimationFrame(cb); }, wait);
+      }
+      last = now;
+    }
+    return orig(cb);
+  };
+})();
+</script>
 <script src="mq_js_bundle.js"></script>
 <script src="audio.js"></script>
 <script src="update.js"></script>
