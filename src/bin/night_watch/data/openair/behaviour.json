@@ -1,0 +1,49 @@
+{
+  "schema": "nw.behaviour/1",
+  "note": "Open Air's idle behaviour (contract 9.1): the shared defaults with the four hunters of this mode. Tasks only happen where the nav file has a task spot for them, and those spots are always as far from the player as the hunter's own stand spot, never nearer.",
+  "stare": {
+    "pose": "stare_camera",
+    "speed": 1.0,
+    "pulse_hz": 0.7,
+    "pulse_strength": 0.35,
+    "subtitle": "Something in the feed is looking back at you."
+  },
+  "tasks": {
+    "wipe_counter": {"pose": "reach_out", "speed": 1.6, "label": "wipes the counter"},
+    "check_locker": {"pose": "locker_lean", "speed": 1.0, "label": "checks a locker"},
+    "sort_boxes": {"pose": "kneel", "speed": 1.0, "label": "sorts boxes"},
+    "tap_terminal": {"pose": "reach_out", "speed": 2.4, "label": "taps a terminal"},
+    "sit": {"pose": "sit", "speed": 1.0, "label": "sits down"},
+    "pace": {"pose": null, "speed": 1.0, "pace": true, "label": "paces"}
+  },
+  "default": {
+    "first_delay_s": [2.0, 6.0],
+    "weights": {"stare": 2.0, "task": 3.0, "wait": 3.0},
+    "stare_s": [3.0, 6.0],
+    "task_s": [5.0, 10.0],
+    "wait_s": [3.0, 8.0],
+    "roam_hops": 0,
+    "tasks": {"wipe_counter": 1.0, "check_locker": 1.0, "sort_boxes": 1.0, "tap_terminal": 1.0, "sit": 1.0, "pace": 1.0}
+  },
+  "hunters": {
+    "verrine": {
+      "weights": {"stare": 3.0, "task": 2.0, "wait": 3.0},
+      "stare_s": [4.0, 8.0],
+      "tasks": {"pace": 3.0, "check_locker": 2.0, "tap_terminal": 1.0, "sort_boxes": 1.0, "sit": 0.0, "wipe_counter": 0.0}
+    },
+    "wynelle": {
+      "weights": {"stare": 3.0, "task": 0.0, "wait": 4.0},
+      "stare_s": [3.0, 7.0],
+      "wait_s": [4.0, 10.0]
+    },
+    "ysolde": {
+      "weights": {"stare": 1.0, "task": 4.0, "wait": 3.0},
+      "task_s": [6.0, 12.0],
+      "tasks": {"sit": 3.0, "sort_boxes": 2.0, "pace": 2.0, "check_locker": 0.0, "tap_terminal": 0.0, "wipe_counter": 0.0}
+    },
+    "quenelle": {
+      "weights": {"stare": 2.0, "task": 3.0, "wait": 3.0},
+      "tasks": {"pace": 3.0, "check_locker": 2.0, "sort_boxes": 1.0, "sit": 0.0, "tap_terminal": 0.0, "wipe_counter": 0.0}
+    }
+  }
+}

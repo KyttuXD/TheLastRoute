@@ -1,0 +1,16 @@
+{
+  "suite": "inferno",
+  "description": "The Inferno level (-3) stays on its own storey while the runner moves through it.",
+  "ported_from": "world/levels.rs, game/endless.rs (level_allowed, change_storey), headless agent runs",
+  "defaults": { "seed": "BRAVO", "difficulty": "standard", "mode": "infinite", "god": true, "no_target": true },
+  "tests": [
+    {
+      "name": "level -3 stays the Inferno while walking",
+      "start_run": { "level": -3, "god": true, "no_target": true },
+      "steps": [
+        { "cmd": "step", "frames": 90, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -3 }, { "path": "run.depth", "value": 4 }, { "path": "run.active", "value": true } ] }
+      ]
+    }
+  ]
+}

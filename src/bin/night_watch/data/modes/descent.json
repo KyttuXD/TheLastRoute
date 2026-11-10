@@ -1,0 +1,69 @@
+{
+	"schema": "nw.mode/1",
+	"id": "descent",
+	"order": 5,
+	"menu": {
+		"id": "descent",
+		"num": 6,
+		"label": "6. THE DESCENT",
+		"title": "THE DESCENT",
+		"tag": "WIRES · SIGNALS · PIPES",
+		"playable": true,
+		"resumable": true,
+		"office": "descent",
+		"cast": [
+			"elise"
+		],
+		"art": [
+			"elise"
+		],
+		"custom": [
+			{
+				"id": "elise",
+				"label": "Elise"
+			}
+		],
+		"presets": [
+			{
+				"id": "slow-ride",
+				"name": "Slow Ride",
+				"ai": {
+					"elise": 5
+				}
+			},
+			{
+				"id": "service-run",
+				"name": "Service Run",
+				"ai": {
+					"elise": 10
+				}
+			},
+			{
+				"id": "express",
+				"name": "Express",
+				"ai": {
+					"elise": 15
+				}
+			},
+			{
+				"id": "free-fall",
+				"name": "Free Fall",
+				"ai": {
+					"elise": 20
+				}
+			}
+		],
+		"blurb": "An elevator ride down the shaft. Repair the wires, the signal panel and the pipes before she reaches the window.",
+		"hint": "",
+		"levels": [
+			"DESCENT 1",
+			"DESCENT 2",
+			"DESCENT 3",
+			"DESCENT 4",
+			"DESCENT 5"
+		],
+		"scored": 5,
+		"open": false,
+		"customLevel": null
+	}
+}

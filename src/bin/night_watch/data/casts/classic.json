@@ -1,0 +1,103 @@
+{
+	"schema": "nw.cast/1",
+	"id": "classic",
+	"hunters": [
+		{
+			"id": "dovelle",
+			"floor": 0,
+			"doors": [
+				"doorL"
+			],
+			"start": "stage",
+			"retreat_to": "dining",
+			"push_to": "stage",
+			"levels": [
+				2,
+				4,
+				6,
+				9,
+				12,
+				16
+			],
+			"combo": {
+				"with": "ravelle",
+				"min_level": 8,
+				"patience_ms": 1400
+			}
+		},
+		{
+			"id": "nyxie",
+			"power_out": true,
+			"levels": [
+				3,
+				5,
+				7,
+				9,
+				11,
+				13
+			]
+		},
+		{
+			"id": "ravelle",
+			"floor": 1,
+			"doors": [
+				"doorR",
+				"doorL"
+			],
+			"start": "kitchen",
+			"retreat_to": "dining",
+			"push_to": "kitchen",
+			"alternate": true,
+			"levels": [
+				0,
+				3,
+				5,
+				7,
+				10,
+				14
+			]
+		},
+		{
+			"id": "ilyra",
+			"floor": 3,
+			"doors": [
+				"doorL"
+			],
+			"start": "backstage",
+			"retreat_to": "closet",
+			"push_to": "stage",
+			"levels": [
+				0,
+				0,
+				0,
+				5,
+				8,
+				12
+			],
+			"freezes_when_watched": true
+		},
+		{
+			"id": "aki",
+			"floor": 2,
+			"doors": [
+				"doorR"
+			],
+			"start": "closet",
+			"retreat_to": "corner",
+			"push_to": "closet",
+			"levels": [
+				0,
+				0,
+				4,
+				6,
+				9,
+				13
+			],
+			"only_when_cams_down": true
+		},
+		{
+			"id": "kathy",
+			"solo_night": true
+		}
+	]
+}

@@ -1,0 +1,112 @@
+{
+	"schema": "nw.mode/1",
+	"id": "classic",
+	"order": 0,
+	"rules": "classic",
+	"building": "classic",
+	"cast": "classic",
+	"levels": 7,
+	"menu": {
+		"id": "classic",
+		"num": 1,
+		"label": "1. CLASSIC",
+		"title": "CLASSIC",
+		"tag": "DOORS · LIGHTS · CAMERAS",
+		"playable": true,
+		"resumable": true,
+		"office": "classic",
+		"cast": [
+			"dovelle",
+			"nyxie",
+			"ravelle",
+			"ilyra",
+			"aki"
+		],
+		"art": [
+			"dovelle",
+			"nyxie"
+		],
+		"custom": [
+			{
+				"id": "dovelle",
+				"label": "Dovelle"
+			},
+			{
+				"id": "nyxie",
+				"label": "Nyxie"
+			},
+			{
+				"id": "ravelle",
+				"label": "Ravelle"
+			},
+			{
+				"id": "ilyra",
+				"label": "Ilyra"
+			},
+			{
+				"id": "aki",
+				"label": "Aki"
+			}
+		],
+		"presets": [
+			{
+				"id": "first-shift",
+				"name": "First Shift",
+				"ai": {
+					"dovelle": 8,
+					"nyxie": 0,
+					"ravelle": 0,
+					"ilyra": 0,
+					"aki": 0
+				}
+			},
+			{
+				"id": "two-doors",
+				"name": "Two Doors",
+				"ai": {
+					"dovelle": 10,
+					"nyxie": 0,
+					"ravelle": 10,
+					"ilyra": 0,
+					"aki": 0
+				}
+			},
+			{
+				"id": "quiet-halls",
+				"name": "Quiet Halls",
+				"ai": {
+					"dovelle": 0,
+					"nyxie": 0,
+					"ravelle": 0,
+					"ilyra": 15,
+					"aki": 15
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20/20",
+				"ai": {
+					"dovelle": 20,
+					"nyxie": 20,
+					"ravelle": 20,
+					"ilyra": 20,
+					"aki": 20
+				}
+			}
+		],
+		"blurb": "Two doors, two lights, eight cameras and one power meter. Close a door on whoever is waiting and she goes. If the power dies, so do the doors.",
+		"hint": "",
+		"levels": [
+			"NIGHT 1",
+			"NIGHT 2",
+			"NIGHT 3",
+			"NIGHT 4",
+			"NIGHT 5",
+			"NIGHT 6",
+			"NIGHT 7"
+		],
+		"scored": 7,
+		"open": false,
+		"customLevel": null
+	}
+}

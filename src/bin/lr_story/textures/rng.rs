@@ -91,8 +91,10 @@ impl GodotRng {
         if from == to {
             return from;
         }
-        let bound = (from as i64 - to as i64).unsigned_abs() as u32 + 1;
-        (self.bounded(bound) as i64 + from.min(to) as i64) as i32
+        // The span is up to 2^32 values, which does not fit a u32 bound: the full range takes a raw draw instead.
+        let span = (from as i64 - to as i64).unsigned_abs() + 1;
+        let pick = if span > u32::MAX as u64 { self.randi() as u64 } else { self.bounded(span as u32) as u64 };
+        (pick as i64 + from.min(to) as i64) as i32
     }
 }
 

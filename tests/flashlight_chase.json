@@ -1,0 +1,22 @@
+{
+  "suite": "flashlight_chase",
+  "description": "A hunter still chases a runner who is moving backwards with the flashlight on.",
+  "ported_from": "run_flow.json capture tests, hunters.json, meters.json",
+  "defaults": { "seed": 1, "difficulty": "standard", "mode": "finite", "god": true },
+  "tests": [
+    {
+      "name": "flashlight on while running backwards does not stop a hunter chase",
+      "start_run": { "god": true },
+      "steps": [
+        { "cmd": "admin", "name": "give", "item": "flashlight" },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        { "cmd": "act", "act": { "move": [0, -1] } },
+        { "cmd": "step_until", "expect": [ { "any": "hunters", "where": [ { "path": "state", "value": "chase" } ] } ], "max_frames": 120, "check_every": 1, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.walked", "op": ">", "value": 0 } ] }
+      ]
+    }
+  ]
+}

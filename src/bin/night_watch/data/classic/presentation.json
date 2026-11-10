@@ -1,0 +1,32 @@
+{
+	"schema": "nw.classic.view/1",
+	"id": "classic",
+	"flinch_s": 0.7,
+	"retreat_s": 1.4,
+	"static_s": 0.14,
+	"note_s": 2.5,
+	"stare_note_s": 3.5,
+	"stare_static_scale": 0.14,
+	"win_clock": "6:00 AM",
+	"win_text": "You held the desk until 6 AM.",
+	"win_more": "Night {next} is open.",
+	"win_last": "You cleared every night.",
+	"win_title": "NIGHT {n} COMPLETE",
+	"caught_title": "CAUGHT",
+	"caught_body": "{name} reached you on night {n}.",
+	"power_out_call": "The power is out.",
+	"meet_notes": {
+		"met": "Her eyes meet yours. She is gone.",
+		"miss": "Nothing there.",
+		"locked": "Wait."
+	},
+	"hum": {"pan": 0.8, "volume": 0.9, "muffled_volume": 0.35},
+	"nyxie": {"door": "doorL", "to": [-0.7, 0.0, -0.9]},
+	"player": {
+		"footprint": [-2.5, -2.0, 2.5, 2.0],
+		"pitch": -0.1,
+		"seat": [0.0, 0.0, -0.6]
+	},
+	"hint_actions": ["nw_door_left", "nw_door_right", "nw_light_left", "nw_light_right", "nw_lamp", "nw_monitor"],
+	"office_view_z": -12.0
+}

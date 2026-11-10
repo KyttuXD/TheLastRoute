@@ -1,0 +1,30 @@
+# The KYTTU - LRS (lr_story) room server (src/bin/lr_story_server): accounts, guest names, rooms and the UDP relay for multiplayer story
+# packs. Installed on VPS 2 as /etc/systemd/system/lr-story-server.service by packaging/story-server/deploy-vps2.sh.
+# The HTTP API listens on LR_STORY_HTTP_PORT (8307) and is reached through Caddy at /api/* on
+# lastroutestory.games.kyttuslab.org; the relay is UDP on LR_STORY_RELAY_PORT (1307), open in ufw.
+[Unit]
+Description=KYTTU - LRS room server (HTTP 8307, relay UDP 1307)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=lr-story
+Group=lr-story
+WorkingDirectory=/opt/lr-story-server/current
+EnvironmentFile=/etc/lr-story-server/lr-story-server.env
+ExecStart=/opt/lr-story-server/current/lr_story_server
+StateDirectory=lr-story-server
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lr-story-server
+
+[Install]
+WantedBy=multi-user.target

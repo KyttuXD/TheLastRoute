@@ -1,0 +1,70 @@
+{
+	"schema": "nw.rules/1",
+	"id": "classic",
+	"ruleset": "classic",
+	"params": {
+		"night_ms": 270000,
+		"tuned_night_ms": 480000,
+		"nights": 7,
+		"tuned_nights": 6,
+		"door_grace_ms": [
+			9000,
+			8200,
+			7500,
+			6900,
+			6400,
+			5800
+		],
+		"night_pace": [
+			1.3,
+			1.24,
+			1.18,
+			1.12,
+			1.06,
+			1.03
+		],
+		"light_push_ms": [
+			2000,
+			2500,
+			3000,
+			3500,
+			4000,
+			4500
+		],
+		"door_capacity": 2,
+		"t_closed_ms": 450,
+		"focus": 0.75,
+		"power_base_tuned": 0.1,
+		"power_per_device_tuned": 0.07,
+		"kathy_night": 7,
+		"kathy": {
+			"level": 20,
+			"pace_scale": 0.65,
+			"grace_scale": 0.45,
+			"hold_ms": [
+				2500,
+				20000
+			],
+			"hold_tail_ms": 4500,
+			"hum_ms": 1100,
+			"glow_period_ms": 1500,
+			"glow_on_ms": 450
+		},
+		"kathy_dip_cycle_ms": 2600,
+		"kathy_dips": [
+			[
+				0,
+				180
+			],
+			[
+				780,
+				900
+			],
+			[
+				1500,
+				1760
+			]
+		],
+		"kathy_miss_lock_ms": 2000
+	}
+}

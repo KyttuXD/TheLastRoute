@@ -1,0 +1,111 @@
+{
+	"schema": "nw.mixed.tuning/1",
+	"hour_ms": 45000,
+	"night_ms": 270000,
+	"fair": {
+		"tell_floor_ms": 1500, "cooldown_ms": 1200, "tell_jitter": 0.2, "jitter": 0.3, "give_up_ms": 1200,
+		"choke_ms": 2000, "end_clear_ms": 10000, "min_dwell_ms": 2500, "cue_foot_ms": 4000
+	},
+	"door": {
+		"seal_max": 20000, "seal_regen": 0.3, "seal_min_to_shut": 1500, "seal_reserve": 2600, "hold_ms": 8000, "pop_cool_ms": 900
+	},
+	"vent": {
+		"seal_max": 9000, "seal_regen": 0.35, "min_to_seal": 1200, "reserve": 2600, "hold_ms": 6000, "linger_ms": 2200,
+		"pop_cool_ms": 1100, "light_ms": 700, "light_cool_ms": 2400, "keys": ["L", "R", "T"]
+	},
+	"moods": {
+		"list": ["patient", "hungry", "shy", "reckless"],
+		"min_ms": 30000, "max_ms": 60000,
+		"speed": {"patient": 0.8, "hungry": 1.25, "shy": 1.0, "reckless": 1.4},
+		"tell": {"patient": 1.0, "hungry": 0.85, "shy": 1.0, "reckless": 1.3},
+		"cue_ms": [14000, 24000]
+	},
+	"director": {
+		"spike_len_ms": [10000, 13000], "spike_warn_ms": 2500, "breather_ms": [8000, 11000], "spike_first_ms": 45000,
+		"beat_rate": {"lull": 0.65, "build": 1.0, "spike": 1.8, "breather": 0.0},
+		"beat_len": {"lull": [12000, 20000], "build": [10000, 16000]},
+		"feint_ms": {"lull": [9000, 16000], "build": [16000, 26000]},
+		"tension_floor_from": 225000, "tension_floor": [0.35, 0.85]
+	},
+	"max_walkers": 4,
+	"chaos_breather_floor_ms": 4000,
+	"shifts": [
+		{"id": "quiet", "name": "QUIET", "speed": 0.8, "tell_ms": 3600, "min_tell_ms": 3000, "start_ms": 50000, "roster": [3, 3], "spikes": [2, 2], "grace_ms": 90000, "new_max": 1},
+		{"id": "steady", "name": "STEADY", "speed": 1.0, "tell_ms": 1900, "start_ms": 32000, "roster": [3, 5], "spikes": [2, 3], "grace_ms": 75000, "new_max": 2},
+		{"id": "restless", "name": "RESTLESS", "speed": 1.15, "tell_ms": 1750, "start_ms": 24000, "roster": [4, 5], "spikes": [3, 3], "grace_ms": 75000, "new_max": 2},
+		{"id": "chaos", "name": "CHAOS", "chaos": true, "speed": 1.3, "tell_ms": 1650, "start_ms": 15000, "roster": [6, 7], "spikes": [4, 6], "grace_ms": 75000,
+			"new_max": 2, "must": ["verrine", "glyra"], "min_types": 4, "breather_ms": [4500, 6500]},
+		{"id": "endless", "name": "ENDLESS", "endless": true, "speed": 1.0, "tell_ms": 1900, "start_ms": 32000, "roster": [3, 4], "spikes": [1, 1], "grace_ms": 75000, "new_max": 2}
+	],
+	"endless": {
+		"seal": {"max": 8000, "regen": 0.25, "budget": 2400},
+		"ramp": {
+			"pace_from": 2, "pace_step": 0.04, "pace_cap": 2.0, "tell_from": 3, "tell_step": 45, "tell_min": 1600,
+			"gap_start": 46000, "gap_step": 3000, "gap_min": 10000, "rotate_ms": 135000,
+			"roster_by_gen": [[3, 4], [4, 5], [4, 5], [5, 6]],
+			"floor_from": 45000, "floor_max": 0.85, "floor_span": 5.0,
+			"budget_from": 10, "budget_step": 100, "budget_min": 1400, "event_from": 4, "event_p": 0.5
+		},
+		"max_ms": 45000000
+	},
+	"chaos_events": {
+		"mood": {"weight": 3, "ms": 0, "needs": ""},
+		"wake": {"weight": 2, "ms": 0, "needs": "vent"},
+		"strain": {"weight": 2, "ms": 60000, "needs": "", "hold_ms": 5000, "regen": 0.5},
+		"flicker": {"weight": 3, "ms": 20000, "needs": ""},
+		"decoy": {"weight": 3, "ms": 0, "needs": ""},
+		"boxfast": {"weight": 2, "ms": 30000, "needs": "winder", "factor": 2.0}
+	},
+	"chaos_order": ["mood", "wake", "strain", "flicker", "decoy", "boxfast"],
+	"decoy_quiet_ms": 3000,
+	"decoy_types": ["path", "watched", "monitor", "vent", "winder"],
+	"chaos_hours": [1, 5],
+	"type_order": ["counter", "watched", "monitor", "path", "vent", "winder"],
+	"types": {
+		"counter": {"label": "Counter", "does": "builds while you stay on one camera", "answer": "switch camera, or lower the monitor"},
+		"watched": {"label": "Watched", "does": "moves only when no camera is on her", "answer": "keep a camera on her, or shut the door when she is at it"},
+		"monitor": {"label": "Monitor-gated", "does": "waits in the office and steps closer as you raise or lower the monitor", "answer": "stop touching the monitor, or shut her side's door"},
+		"path": {"label": "Path walker", "does": "walks a route through the building one room at a time", "answer": "shut the door she is at, or hold a camera on her at the hall to turn her back"},
+		"vent": {"label": "Vent crawler", "does": "crawls the vent run (CAM 9) to one of the three office vents", "answer": "seal that vent before she arrives, or flash the vent light when she is at its branch"},
+		"winder": {"label": "Winder", "does": "hums with a music box on one camera; when it runs down she walks to a door", "answer": "view the box's camera and hold wind, or shut the door she is at"}
+	},
+	"pool": [
+		{"id": "haelith", "type": "counter", "name": "Haelith"},
+		{"id": "ilyra", "type": "watched", "name": "Ilyra"},
+		{"id": "aki", "type": "watched", "name": "Aki"},
+		{"id": "opalie", "type": "monitor", "name": "Opalie"},
+		{"id": "dovelle", "type": "path", "name": "Dovelle"},
+		{"id": "ravelle", "type": "path", "name": "Ravelle"},
+		{"id": "verrine", "type": "vent", "name": "Verrine"},
+		{"id": "glyra", "type": "winder", "name": "Glyra"}
+	],
+	"walker_types": ["path", "watched", "winder"],
+	"new_types": ["vent", "winder"],
+	"timing": {
+		"path": {"step_ms": 11000, "rest_ms": 16000},
+		"watched": {"step_ms": 9000, "rest_ms": 18000},
+		"counter": {"grace_ms": 7000, "span_ms": 22000, "arm_at": 0.65, "cue_at": 0.2, "calm_decay": 3.0},
+		"monitor": {"arrive_ms": 30000, "idle_leave_ms": 16000, "steps_to_arm": 3, "decay_ms": 8000, "rest_ms": 20000},
+		"vent": {"step_ms": 9500, "rest_ms": 18000},
+		"winder": {"step_ms": 12000, "rest_ms": 16000, "cranky_ms": 7000}
+	},
+	"pulse_ms": {"knock": [750, 300], "breath": [800, 320], "whisper": [850, 340], "fog": [1100, 260], "scrape": [900, 360], "thump": [800, 320]},
+	"tell_kind": {"path": "knock", "watched": "breath", "monitor": "whisper", "counter": "fog", "vent": "scrape", "winder": "thump"},
+	"tune": {"span_ms": 50000, "wind_per_sec": 0.12, "restart_at": 0.12, "slow_at": 0.5, "grace_floor": 0.25, "hum_ms": [380, 880]},
+	"box_rooms": ["stage", "dining", "backstage", "westhall", "closet", "kitchen", "easthall", "corner"],
+	"cam_rooms": ["stage", "dining", "backstage", "westhall", "closet", "kitchen", "easthall", "corner", "vent"],
+	"routes": [
+		{"id": "L-stage", "side": "L", "rooms": ["stage", "backstage", "westhall", "doorL"]},
+		{"id": "L-kitchen", "side": "L", "rooms": ["kitchen", "dining", "westhall", "doorL"]},
+		{"id": "L-closet", "side": "L", "rooms": ["closet", "westhall", "doorL"]},
+		{"id": "R-stage", "side": "R", "rooms": ["stage", "dining", "easthall", "doorR"]},
+		{"id": "R-kitchen", "side": "R", "rooms": ["kitchen", "dining", "easthall", "doorR"]},
+		{"id": "R-corner", "side": "R", "rooms": ["corner", "easthall", "doorR"]}
+	],
+	"vent_routes": [
+		{"id": "V-L", "side": "L", "rooms": ["vent", "vent", "vent", "vent", "ventL"], "spots": [0, 1, 2, 3]},
+		{"id": "V-R", "side": "R", "rooms": ["vent", "vent", "vent", "vent", "ventR"], "spots": [0, 1, 2, 4]},
+		{"id": "V-T", "side": "T", "rooms": ["vent", "vent", "vent", "ventT"], "spots": [0, 1, 2]}
+	],
+	"vent_near": {"L": [3], "R": [4], "T": [2]}
+}

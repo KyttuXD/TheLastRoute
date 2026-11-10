@@ -56,7 +56,7 @@ impl PropDrawScale {
 /// Reads the table from `assets` (the folder that holds `data/`). The error names the file.
 pub fn load_table(assets: &Path) -> Result<PropDrawScale, String> {
     let path = assets.join("data").join(TABLE_PATH);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let text = crate::assets_vfs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     PropDrawScale::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -101,6 +101,15 @@ mod tests {
         assert!(close(draw_scale(&t, "woodenChair"), 1.5));
         // The whole Godot table is ported: 183 entries.
         assert_eq!(t.len(), 183);
+    }
+
+    #[test]
+    fn the_five_lab_and_office_props_keep_their_draw_scales_from_the_file() {
+        let t = shipped();
+        for (id, want) in [("labStool", 1.5), ("labCoolingUnit", 1.5), ("fumeHood", 1.2), ("serverRack", 1.5), ("officeDesk", 1.5)] {
+            assert!(close(draw_scale(&t, id), want), "{id}");
+        }
+        assert!(close(draw_scale(&t, "notAProp"), 1.0));
     }
 
     #[test]

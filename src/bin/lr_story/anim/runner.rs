@@ -306,9 +306,15 @@ impl RunnerState {
         };
         let airborne = matches!(pose, Pose::Jump | Pose::Fall);
         RunnerState {
-            moving: moving || matches!(pose, Pose::Walk | Pose::Sprint | Pose::Chased | Pose::Swim),
-            sprinting: sprinting || matches!(pose, Pose::Sprint | Pose::Chased),
-            crouching: crouching || pose == Pose::Crouch,
+            // A named pose wins over the flags: Idle and Crouch are not moving whatever the flag says, Walk is not
+            // sprinting, and only Crouch crouches. Poses that say nothing about movement keep the flag.
+            moving: match pose {
+                Pose::Walk | Pose::Sprint | Pose::Chased | Pose::Swim => true,
+                Pose::Idle | Pose::Crouch => false,
+                _ => moving,
+            },
+            sprinting: matches!(pose, Pose::Sprint | Pose::Chased),
+            crouching: pose == Pose::Crouch,
             airborne_up: airborne && vy >= 0.0,
             airborne_down: airborne && vy < 0.0,
             climbing: pose == Pose::Climb,
@@ -419,6 +425,10 @@ pub fn player_rig(slim: bool) -> Option<Rc<Rig>> {
 
 // ------------------------------------------------------------------------------------------------ view
 
+/// The fastest ground speed a body is believed to move at (m/s). Sprinting is 6.25 m/s; a profile can scale it, but
+/// nothing near this.
+pub const MAX_GROUND_MPS: f32 = 40.0;
+
 /// One runner's animation state, kept between frames (the immutable `Game` does not carry it).
 pub struct RunnerView {
     pub rig: Rc<Rig>,
@@ -454,10 +464,15 @@ impl RunnerView {
         player_rig(slim).map(RunnerView::new)
     }
 
-    /// Ground speed (m/s) from the last seen position; remembers `pos`. 0 on the first call or a zero step.
+    /// Ground speed (m/s) from the last seen position; remembers `pos`. 0 on the first call or a zero step. A step that
+    /// implies more than `MAX_GROUND_MPS` is a gap or a teleport (the view was not updated for a while, the body was
+    /// moved), not running, so it reads 0 instead of spiking the speed and the stride.
     pub fn speed_from(&mut self, pos: (f32, f32), dt: f32) -> f32 {
         let v = match self.last_pos {
-            Some(p) if dt > 1e-5 => ((pos.0 - p.0).powi(2) + (pos.1 - p.1).powi(2)).sqrt() / dt,
+            Some(p) if dt > 1e-5 => {
+                let v = ((pos.0 - p.0).powi(2) + (pos.1 - p.1).powi(2)).sqrt() / dt;
+                if v > MAX_GROUND_MPS { 0.0 } else { v }
+            }
             _ => 0.0,
         };
         self.last_pos = Some(pos);
@@ -716,5 +731,33 @@ mod tests {
         let mut view = RunnerView::load(false).expect("rig");
         assert_eq!(view.speed_from((0.0, 0.0), 0.1), 0.0);
         assert!((view.speed_from((0.3, 0.4), 0.1) - 5.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_first_sample_after_a_gap_does_not_spike() {
+        let mut view = RunnerView::load(false).expect("rig");
+        view.speed_from((0.0, 0.0), 0.016);
+        // The view was not drawn for a while and the body is 30 m away now: that is no 1875 m/s run.
+        assert_eq!(view.speed_from((30.0, 0.0), 0.016), 0.0);
+        // The next normal step reads normally.
+        assert!((view.speed_from((30.0, 0.064), 0.016) - 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_named_pose_wins_over_the_flags() {
+        // Idle with a stray moving/sprinting flag is still idle.
+        let s = RunnerState::from_sample(Some(Pose::Idle), true, true, false, 0.0, 3.0);
+        assert_eq!(s.pose(), Pose::Idle);
+        // Walk with a sprinting flag is a walk; Walk with a crouching flag is a walk.
+        let s = RunnerState::from_sample(Some(Pose::Walk), true, true, true, 0.0, 3.0);
+        assert_eq!(s.pose(), Pose::Walk);
+        // Crouch with a moving flag is a crouch; Sprint stays a sprint.
+        assert_eq!(RunnerState::from_sample(Some(Pose::Crouch), true, false, false, 0.0, 0.0).pose(), Pose::Crouch);
+        assert_eq!(RunnerState::from_sample(Some(Pose::Sprint), false, false, false, 0.0, 6.0).pose(), Pose::Sprint);
+        // Jump rises on vy >= 0, falls below; speed carries through. No named pose: the flags decide.
+        assert_eq!(RunnerState::from_sample(Some(Pose::Jump), false, false, false, 1.0, 0.0).pose(), Pose::Jump);
+        assert_eq!(RunnerState::from_sample(Some(Pose::Jump), false, false, false, -1.0, 0.0).pose(), Pose::Fall);
+        assert_eq!(RunnerState::from_sample(None, true, true, false, 0.0, 6.0).pose(), Pose::Sprint);
+        assert_eq!(RunnerState::from_sample(Some(Pose::Walk), false, false, false, 0.0, 2.5).speed, 2.5);
     }
 }

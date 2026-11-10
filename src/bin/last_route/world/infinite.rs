@@ -36,9 +36,6 @@ const STAIR_BAYS_BY_PARITY: [[usize; 2]; 2] = [[0, 3], [1, 2]];
 const STAIR_CHANCE: f64 = 0.3;
 /// Godot `INFERNO_LEVEL` (streamed_route_generator.gd:34): the depth floor. Nothing is built or linked below it.
 pub const INFERNO_LEVEL: i32 = -3;
-/// Relays and batteries per chunk (estimated: "denser interactables", spread over many chunks).
-const CHUNK_RELAYS: usize = 3;
-const CHUNK_BATTERIES: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ChunkKey {
@@ -182,20 +179,17 @@ fn backpack_pickup(backpacks: &[String], level: i32, rng: &mut Rng) -> Option<Pi
 /// The old builder: a `Facility::generate` floor re-dressed as streamed rooms, with Rust's own
 /// loot, seams, stair flights and fixtures.
 pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Facility, Fixtures) {
-    let origin = k.cx == 0 && k.cy == 0 && k.level == 0;
     let text = format!("{seed}:L{}:C{},{}", k.level, k.cx, k.cy);
-    let opt = Options {
-        relay_count: CHUNK_RELAYS,
-        battery_count: CHUNK_BATTERIES,
-        safe_zone_count: if origin { 2 } else { 0 },
-        ..Default::default()
-    };
-    let mut f = Facility::generate(&text, &opt, cat);
+    // The streamed layout below replaces Facility::generate's generic room
+    // graph and population wholesale. Start with its initialized grids without
+    // paying to build and then discard that temporary finite floor.
+    let mut f = Facility::blank(&text, CHUNK, CHUNK);
     f.level = k.level;
     // CREATE ROOM uses Godot's streamed route, whose room banks and shared halls
     // differ from the finite floor generator. Rebuild the chunk topology before
     // seams, stairs and fixtures are added so every downstream system sees the
     // same bounded rooms and circulation mask.
+    let _chunk_layout_perf = crate::app::perf::section("chunk layout");
     let region = region_for(seed, k);
     // level -1: the ported Godot sewer geometry replaces the generic facility floor when the generator gives a chunk
     let sewer_floor = if k.level == super::route::sewer::core::LEVEL || k.level == super::route::sewer::core::LOWER_LEVEL {
@@ -210,6 +204,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         Some(sc) => apply_sewer_floor(&mut f, sc, seed, k, cat),
         None => f.apply_godot_streamed_layout(&text, region, cat),
     }
+    drop(_chunk_layout_perf);
     // level -3: carve the caverns, halls and crevices (world::inferno) over the maze layout
     if crate::world::levels::layer_name(k.level) == Some("inferno") {
         let inf = super::inferno::InfernoChunk::carve(seed, k);
@@ -224,6 +219,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
     f.has_lift = false;
     f.exit = Cell::new(-10000, -10000);
     // loot (the region's data/loot table): a base battery, then each roll by its chance
+    let _chunk_loot_perf = crate::app::perf::section("chunk loot");
     let loot = loot.table_for(region);
     let mut rng = Rng::new(&format!("{text}:LOOT"));
     let mut free: Vec<Cell> = f
@@ -294,11 +290,13 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         }
     }
     f.pickups = pickups;
+    drop(_chunk_loot_perf);
     let mut sewer_coins: Vec<Cell> = vec![];
     if let Some(sc) = &sewer_floor {
         sewer_coins = apply_sewer_dressing(&mut f, seed, sc);
     }
 
+    let _chunk_links_perf = crate::app::perf::section("chunk links");
     // seams: open the chunk's border where its boundaries open, then run a 3-wide hall inward
     let sides = [
         (format!("V:{}:{}:{}", k.level, k.cx, k.cy), 0),
@@ -377,13 +375,18 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
         }
         f.stairs.push(s);
     }
+    drop(_chunk_links_perf);
     f.level = k.level;
+    let _chunk_grid_perf = crate::app::perf::section("chunk grid");
     f.rebuild_grids();
+    drop(_chunk_grid_perf);
+    let _chunk_fixtures_perf = crate::app::perf::section("chunk fixtures");
     let (mut fix, box_cell) = fixtures::place_with_box(&f);
     fixtures::adopt_extra_hiding(&mut f, &fix.extra_hiding);
     // the floor's music box is a collectable pickup (game/music_box.rs), not a fixture
     f.pickups.extend(box_cell.map(|c| (c, Pickup::MusicBox)));
     fix.coins.extend(sewer_coins);
+    drop(_chunk_fixtures_perf);
     (f, fix)
 }
 
@@ -557,7 +560,10 @@ pub fn window(
                 cy: center.1 + dy,
                 level,
             };
-            let entry = cache.entry(k).or_insert_with(|| chunk(seed, k, cat, loot));
+            let entry = cache.entry(k).or_insert_with(|| {
+                let _chunk_build_perf = crate::app::perf::section("chunk build");
+                chunk(seed, k, cat, loot)
+            });
             let (ox, oy) = ((dx + 1) * CHUNK, (dy + 1) * CHUNK);
             let sh = |c: Cell| Cell::new(c.x + ox, c.y + oy);
             if dx == 0 && dy == 0 {

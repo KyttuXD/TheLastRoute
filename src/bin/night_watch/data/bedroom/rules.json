@@ -1,0 +1,191 @@
+{
+	"schema": "nw.bedroom.rules/1",
+	"id": "bedroom",
+	"cast": [
+		"loxelle",
+		"javelle",
+		"haelith"
+	],
+	"names": {
+		"loxelle": "Loxelle",
+		"javelle": "Javelle",
+		"haelith": "Haelith"
+	},
+	"pan": {
+		"loxelle": -0.85,
+		"javelle": 0.85,
+		"haelith": 0
+	},
+	"variety": {
+		"waitSpread": 0.25,
+		"doorTempo": 0.1,
+		"haelithTempo": 0.2,
+		"swapFirst": 0.3
+	},
+	"t": {
+		"stageJitter": 0.4,
+		"holdNeedMs": 700,
+		"lightNeedMs": 600,
+		"afkMs": 14000,
+		"afkBonus": 4,
+		"afkSpeed": 1.5,
+		"bedGain": 8,
+		"bedGainPerLevel": 0.9,
+		"bedLitDrainPerSec": 35,
+		"bedVisibleAt": 80,
+		"bedStirAt": 45
+	},
+	"flash_base_seconds": [
+		120,
+		105,
+		90,
+		75,
+		60,
+		50
+	],
+	"nights": [
+		{
+			"ai": {
+				"loxelle": 3,
+				"javelle": 0,
+				"haelith": 0
+			},
+			"breathMs": 3200,
+			"nearMs": 4200,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 3000
+			},
+			"rest": {
+				"loxelle": 7000,
+				"javelle": 7000
+			}
+		},
+		{
+			"ai": {
+				"loxelle": 7,
+				"javelle": 7,
+				"haelith": 0
+			},
+			"breathMs": 2560,
+			"nearMs": 3360,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 4500
+			},
+			"rest": {
+				"loxelle": 5000,
+				"javelle": 5000
+			}
+		},
+		{
+			"ai": {
+				"loxelle": 9,
+				"javelle": 9,
+				"haelith": 5
+			},
+			"breathMs": 2560,
+			"nearMs": 3360,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 4000
+			},
+			"rest": {
+				"loxelle": 5000,
+				"javelle": 5000
+			}
+		},
+		{
+			"ai": {
+				"loxelle": 16,
+				"javelle": 11,
+				"haelith": 7
+			},
+			"breathMs": 2560,
+			"nearMs": 3360,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 3000
+			},
+			"rest": {
+				"loxelle": 2500,
+				"javelle": 5000
+			}
+		},
+		{
+			"ai": {
+				"loxelle": 18,
+				"javelle": 12,
+				"haelith": 9
+			},
+			"breathMs": 2560,
+			"nearMs": 3360,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 3000
+			},
+			"rest": {
+				"loxelle": 2000,
+				"javelle": 5000
+			}
+		},
+		{
+			"ai": {
+				"loxelle": 20,
+				"javelle": 12,
+				"haelith": 9
+			},
+			"breathMs": 2560,
+			"nearMs": 3360,
+			"first": {
+				"loxelle": 3000,
+				"javelle": 3000
+			},
+			"rest": {
+				"loxelle": 1500,
+				"javelle": 5000
+			}
+		}
+	],
+	"custom_row": {
+		"ai": {
+			"loxelle": 0,
+			"javelle": 0,
+			"haelith": 0
+		},
+		"breathMs": 3200,
+		"nearMs": 4200,
+		"first": {
+			"loxelle": 3000,
+			"javelle": 3000
+		},
+		"rest": {
+			"loxelle": 7000,
+			"javelle": 7000
+		}
+	},
+	"custom_night": 5,
+	"score_max": 400,
+	"javelle_budget_s": 2.4,
+	"cues": {
+		"breath_gap_near_ms": 1100,
+		"breath_gap_ms": 1700,
+		"haelith_gap_ms": 2400,
+		"haelith_visible_p": 10,
+		"breath_near": 0.9,
+		"breath_far": 0.5
+	},
+	"look": {
+		"yaw": 1.25,
+		"pitch_up": 0.7,
+		"pitch_down_factor": 0.6,
+		"sense": 0.0022,
+		"key_yaw_rate": 1.4,
+		"key_pitch_rate": 1,
+		"fov": 75
+	},
+	"autoplay": {
+		"react_ms": [250, 700],
+		"bed_at_p": 45
+	}
+}

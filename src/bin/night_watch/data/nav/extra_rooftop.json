@@ -1,0 +1,44 @@
+{
+  "schema": "nw.nav/1",
+  "id": "extra-rooftop",
+  "note": "Open Air watch 1, the rooftop (openair_world.gd _build_rooftop, openair_paths.gd). L3..L0 and R3..R0 are the catwalks to the stair door and the hatch; B, BL, BR join them round the back. Camera nodes are added in code from map.json. Task spots are never nearer the door than L2.",
+  "rooms": {
+    "catwalk_w": {"min": [-10.0, -13.0], "max": [-6.9, -3.5]},
+    "door_w": {"min": [-10.0, -3.5], "max": [-6.9, 1.5]},
+    "catwalk_e": {"min": [6.9, -13.0], "max": [10.0, -3.5]},
+    "door_e": {"min": [6.9, -3.5], "max": [10.0, 1.5]},
+    "back_catwalk": {"min": [-6.8, -9.4], "max": [6.8, -6.9]}
+  },
+  "nodes": [
+    {"id": "L3", "kind": "waypoint", "room": "catwalk_w", "p": [-8.7, 0, -11.0]},
+    {"id": "L2", "kind": "waypoint", "room": "catwalk_w", "p": [-8.7, 0, -5.5]},
+    {"id": "L1", "kind": "waypoint", "room": "door_w", "p": [-8.7, 0, -1.6]},
+    {"id": "L0", "kind": "waypoint", "room": "door_w", "p": [-7.5, 0, 0.0]},
+    {"id": "R3", "kind": "waypoint", "room": "catwalk_e", "p": [8.7, 0, -11.0]},
+    {"id": "R2", "kind": "waypoint", "room": "catwalk_e", "p": [8.7, 0, -5.5]},
+    {"id": "R1", "kind": "waypoint", "room": "door_e", "p": [8.7, 0, -1.6]},
+    {"id": "R0", "kind": "waypoint", "room": "door_e", "p": [7.5, 0, 0.0]},
+    {"id": "BL", "kind": "waypoint", "room": "catwalk_w", "p": [-8.7, 0, -8.2]},
+    {"id": "B", "kind": "waypoint", "room": "back_catwalk", "p": [0.0, 0, -8.2]},
+    {"id": "BR", "kind": "waypoint", "room": "catwalk_e", "p": [8.7, 0, -8.2]},
+
+    {"id": "T:catwalk_w:check_locker", "kind": "task", "room": "catwalk_w", "task": "check_locker", "p": [-8.5, 0, -7.4], "look": [-9.4, 1.2, -7.4]},
+    {"id": "T:catwalk_w:sort_boxes", "kind": "task", "room": "catwalk_w", "task": "sort_boxes", "p": [-8.3, 0, -10.0], "look": [-9.2, 0.5, -10.0]},
+    {"id": "T:catwalk_w:tap_terminal", "kind": "task", "room": "catwalk_w", "task": "tap_terminal", "p": [-8.7, 0, -11.3], "look": [-8.7, 0.9, -12.1]},
+    {"id": "T:catwalk_w:pace", "kind": "task", "room": "catwalk_w", "task": "pace", "p": [-8.7, 0, -6.3], "pace_to": [-8.7, 0, -9.0], "look": [-8.7, 1.5, -7.7]},
+
+    {"id": "T:catwalk_e:check_locker", "kind": "task", "room": "catwalk_e", "task": "check_locker", "p": [8.5, 0, -7.4], "look": [9.4, 1.2, -7.4]},
+    {"id": "T:catwalk_e:sort_boxes", "kind": "task", "room": "catwalk_e", "task": "sort_boxes", "p": [8.3, 0, -10.0], "look": [9.2, 0.5, -10.0]},
+    {"id": "T:catwalk_e:tap_terminal", "kind": "task", "room": "catwalk_e", "task": "tap_terminal", "p": [8.7, 0, -11.3], "look": [8.7, 0.9, -12.1]},
+    {"id": "T:catwalk_e:pace", "kind": "task", "room": "catwalk_e", "task": "pace", "p": [8.7, 0, -6.3], "pace_to": [8.7, 0, -9.0], "look": [8.7, 1.5, -7.7]}
+  ],
+  "edges": [
+    ["L3", "L2"], ["L2", "L1"], ["L1", "L0"],
+    ["R3", "R2"], ["R2", "R1"], ["R1", "R0"],
+    ["BL", "B"], ["B", "BR"], ["BL", "L2"], ["BR", "R2"],
+    ["T:catwalk_w:check_locker", "BL"], ["T:catwalk_w:sort_boxes", "L3"], ["T:catwalk_w:sort_boxes", "BL"],
+    ["T:catwalk_w:tap_terminal", "L3"], ["T:catwalk_w:pace", "L2"],
+    ["T:catwalk_e:check_locker", "BR"], ["T:catwalk_e:sort_boxes", "R3"], ["T:catwalk_e:sort_boxes", "BR"],
+    ["T:catwalk_e:tap_terminal", "R3"], ["T:catwalk_e:pace", "R2"]
+  ]
+}

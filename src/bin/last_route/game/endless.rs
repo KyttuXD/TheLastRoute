@@ -813,9 +813,11 @@ impl Game {
             Some(r) => (r.fac, r.fix),
             None => {
                 inf.builds += 1;
+                let _window_build_perf = crate::app::perf::section("window build");
                 infinite::window(&inf.seed, inf.center, inf.level, catalog, &content.loot, &mut inf.cache)
             }
         };
+        let _window_adopt_perf = crate::app::perf::section("window adopt");
         self.adopt_window(fac, fix, content);
     }
 
@@ -978,6 +980,7 @@ impl Game {
         self.discover_map();
         self.clear_reached_waypoint();
         self.refresh_waypoint();
+        let _window_residency_perf = crate::app::perf::section("window residency");
         self.keep_stack(content, catalog);
         self.prewarm_chunks(content, catalog);
         self.pipes_tick();
@@ -1098,6 +1101,7 @@ impl Game {
                 continue;
             }
             inf.builds += 1;
+            let _resident_build_perf = crate::app::perf::section("resident build");
             let (fac, fix) = infinite::window(&inf.seed, center, t, catalog, &content.loot, &mut inf.cache);
             inf.stack.put(Resident { level: t, center, fac, fix });
         }
@@ -1378,6 +1382,7 @@ impl Game {
         self.fac.restore_door_swing(&swing, (-rx * CHUNK, -ry * CHUNK));
         if stair_height_at(&self.fac, self.p.pos).is_some() {
             // on a flight the neighbour is built at the new centre this frame (one hitch; the chunk cache makes it cheap)
+            let _window_residency_perf = crate::app::perf::section("window residency");
             self.keep_stack(content, catalog);
         }
         // a resident list is fitted into the window by the facility built for the new centre: the old one is stale (its

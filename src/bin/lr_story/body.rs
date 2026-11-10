@@ -40,9 +40,9 @@ const EXHAUSTED_RECOVERY: f32 = 25.0;
 
 /// Camera and look (config/mod.rs FIELD_OF_VIEW_DEG 78, MOUSE_SENSITIVITY 0.0075; the pitch limit is the one the
 /// original reads from data/player/look.json, approximated here).
+#[allow(dead_code)]
 pub const FOV_DEG: f32 = 78.0;
-pub const MOUSE_SENSITIVITY: f32 = 0.0075;
-const PITCH_LIMIT: f32 = 1.45;
+const PITCH_LIMIT: f32 = crate::look::PITCH_LIMIT;
 
 /// What the player asks for this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -79,8 +79,14 @@ pub struct Body {
     pub stamina: f32,
     pub exhausted: bool,
     pub bob_phase: f32,
+    /// How much of the bob shows, 0..1: eases up while the body walks on the ground and back down when it stops, so the
+    /// view settles instead of snapping flat.
+    bob_weight: f32,
     /// Metres walked on the ground, for the footstep-like counters the game may read.
     pub walked: f32,
+    /// Scales walking and sprinting speed (a story's player profile sets it). 1.0 is the normal speed; crouching is not
+    /// scaled.
+    pub speed: f32,
 }
 
 impl Body {
@@ -100,7 +106,9 @@ impl Body {
             stamina: MAX_STAMINA,
             exhausted: false,
             bob_phase: 0.0,
+            bob_weight: 0.0,
             walked: 0.0,
+            speed: 1.0,
         }
     }
 
@@ -109,10 +117,16 @@ impl Body {
         (-self.yaw.sin(), -self.yaw.cos())
     }
 
-    /// Mouse look: a positive x turns right; the pitch is clamped so the view never flips.
+    /// Mouse look: a positive x turns right (yaw goes down, as last_route's Player::look does: the forward is
+    /// (-sin yaw, -cos yaw), so a smaller yaw swings it toward +x); a positive y looks down. The pitch is clamped.
     pub fn look(&mut self, d: Vec2) {
-        self.yaw += d.x;
+        self.yaw -= d.x;
         self.pitch = (self.pitch - d.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Whether the body is moving up (or at the top of a jump). Meaningful while it is off the ground.
+    pub fn rising(&self) -> bool {
+        self.vy >= 0.0
     }
 
     /// The eye height above the ground at the current crouch, without the bob.
@@ -129,9 +143,9 @@ impl Body {
         } else {
             BOB_WALK
         };
-        let walking = self.moving && self.grounded;
-        let bob = if walking { (self.bob_phase * 2.0).sin() * amp } else { 0.0 };
-        let sway = if walking { self.bob_phase.cos() * amp * BOB_SWAY_RATIO } else { 0.0 };
+        let amp = amp * self.bob_weight;
+        let bob = (self.bob_phase * 2.0).sin() * amp;
+        let sway = self.bob_phase.cos() * amp * BOB_SWAY_RATIO;
         let right = vec2(self.yaw.cos(), -self.yaw.sin());
         vec3(
             self.pos.0 + right.x * sway,
@@ -168,9 +182,9 @@ impl Body {
         let speed = if self.crouching {
             CROUCH_SPEED
         } else if sprinting {
-            SPRINT_SPEED
+            SPRINT_SPEED * self.speed
         } else {
-            WALK_SPEED
+            WALK_SPEED * self.speed
         };
 
         if sprinting {
@@ -186,12 +200,13 @@ impl Body {
         }
 
         // Walking: the forward and strafe axes in the ground plane, then per-axis slide against the walls.
+        let mut covered = 0.0;
         if moving {
             let (fx, fz) = self.forward2();
             let (rx, rz) = (self.yaw.cos(), -self.yaw.sin());
             let dx = (fx * axes.y + rx * axes.x) * speed * dt;
             let dz = (fz * axes.y + rz * axes.x) * speed * dt;
-            self.move_body(dx, dz, blocked);
+            covered = self.move_body(dx, dz, blocked);
         }
 
         // Jump on a fresh press while grounded; gravity and landing otherwise.
@@ -211,36 +226,66 @@ impl Body {
             }
         }
 
-        // Head bob: the phase advances with the ground covered, and eases back to the nearest rest when it stops.
-        if moving && self.grounded {
-            self.bob_phase += BOB_PHASE_PER_METRE * speed * dt;
+        // Head bob: the phase advances with the ground actually covered (a body pushed against a wall does not bob), and
+        // eases back to the nearest rest when it stops. The bob's weight eases the same way instead of snapping to zero.
+        let bobbing = covered > 1e-6 && self.grounded;
+        let ease = 1.0 - (-BOB_EASE_RATE * dt).exp();
+        if bobbing {
+            self.bob_phase += BOB_PHASE_PER_METRE * covered;
         } else {
             let rest = (self.bob_phase / std::f32::consts::PI).round() * std::f32::consts::PI;
-            self.bob_phase += (rest - self.bob_phase) * (1.0 - (-BOB_EASE_RATE * dt).exp());
+            self.bob_phase += (rest - self.bob_phase) * ease;
         }
+        let target = if bobbing { 1.0 } else { 0.0 };
+        self.bob_weight += (target - self.bob_weight) * ease;
     }
 
-    fn move_body(&mut self, dx: f32, dz: f32, blocked: &dyn Fn(i32, i32) -> bool) {
+    /// Moves the body and returns the ground it covered in metres. A step is taken when it is clear, or when the body
+    /// already overlaps a solid tile (one turned solid around it) and the step overlaps less, so it can always walk out.
+    fn move_body(&mut self, dx: f32, dz: f32, blocked: &dyn Fn(i32, i32) -> bool) -> f32 {
         let total = (dx * dx + dz * dz).sqrt();
         let steps = ((total / 0.08).ceil() as i32).max(1);
         let start = self.pos;
         for _ in 0..steps {
             let nx = self.pos.0 + dx / steps as f32;
-            if !hits_wall(nx, self.pos.1, blocked) {
+            if can_step(self.pos, (nx, self.pos.1), blocked) {
                 self.pos.0 = nx;
             }
             let nz = self.pos.1 + dz / steps as f32;
-            if !hits_wall(self.pos.0, nz, blocked) {
+            if can_step(self.pos, (self.pos.0, nz), blocked) {
                 self.pos.1 = nz;
             }
         }
-        self.walked += ((self.pos.0 - start.0).powi(2) + (self.pos.1 - start.1).powi(2)).sqrt();
+        let moved = ((self.pos.0 - start.0).powi(2) + (self.pos.1 - start.1).powi(2)).sqrt();
+        self.walked += moved;
+        moved
     }
+}
 
-    /// The map tile the body's feet are on.
-    pub fn tile(&self) -> (i32, i32) {
-        ((self.pos.0 / TILE_M).floor() as i32, (self.pos.1 / TILE_M).floor() as i32)
+/// Whether the body may go from `from` to `to`: the target is clear, or the body is already inside a solid tile and the
+/// target overlaps strictly less of it (so the way out is always open, and the way deeper never is).
+fn can_step(from: (f32, f32), to: (f32, f32), blocked: &dyn Fn(i32, i32) -> bool) -> bool {
+    if !hits_wall(to.0, to.1, blocked) {
+        return true;
     }
+    hits_wall(from.0, from.1, blocked) && overlap_area(to.0, to.1, blocked) < overlap_area(from.0, from.1, blocked)
+}
+
+/// The area (m^2) of the body's square that lies inside blocked tiles.
+fn overlap_area(x: f32, z: f32, blocked: &dyn Fn(i32, i32) -> bool) -> f32 {
+    let (x0, x1) = (((x - RADIUS) / TILE_M).floor() as i32, ((x + RADIUS) / TILE_M).floor() as i32);
+    let (z0, z1) = (((z - RADIUS) / TILE_M).floor() as i32, ((z + RADIUS) / TILE_M).floor() as i32);
+    let mut area = 0.0;
+    for tz in z0..=z1 {
+        for tx in x0..=x1 {
+            if blocked(tx, tz) {
+                let w = ((x + RADIUS).min((tx + 1) as f32 * TILE_M) - (x - RADIUS).max(tx as f32 * TILE_M)).max(0.0);
+                let h = ((z + RADIUS).min((tz + 1) as f32 * TILE_M) - (z - RADIUS).max(tz as f32 * TILE_M)).max(0.0);
+                area += w * h;
+            }
+        }
+    }
+    area
 }
 
 /// Whether a body of `RADIUS` centred at (x, z) overlaps a blocked tile.
@@ -302,7 +347,76 @@ mod tests {
         let mut b = Body::new((1.0, 1.0), 0.0);
         b.look(vec2(0.3, 100.0));
         assert!((b.pitch + PITCH_LIMIT).abs() < 1e-5);
-        assert!((b.yaw - 0.3).abs() < 1e-5);
+        assert!((b.yaw + 0.3).abs() < 1e-5);
+        // A positive x turns right: from facing north (-z), the forward swings toward +x (east).
+        let (fx, _) = b.forward2();
+        assert!(fx > 0.0, "turned right, forward x = {fx}");
+    }
+
+    #[test]
+    fn speed_scales_walking_and_sprinting_but_not_crouching() {
+        assert_eq!(Body::new((1.0, 1.0), 0.0).speed, 1.0, "the default speed is normal");
+
+        let mut walk = Body::new((1.0, 1.0), 0.0);
+        walk.speed = 2.0;
+        walk.update(0.5, &Input { fwd: 1.0, ..Default::default() }, &open);
+        assert!((walk.pos.1 - (1.0 - 2.0 * WALK_SPEED * 0.5)).abs() < 1e-3, "walk z = {}", walk.pos.1);
+
+        let mut sprint = Body::new((1.0, 1.0), 0.0);
+        sprint.speed = 2.0;
+        sprint.update(0.5, &Input { fwd: 1.0, sprint: true, ..Default::default() }, &open);
+        assert!((sprint.pos.1 - (1.0 - 2.0 * SPRINT_SPEED * 0.5)).abs() < 1e-3, "sprint z = {}", sprint.pos.1);
+
+        let mut crouch = Body::new((1.0, 1.0), 0.0);
+        crouch.speed = 2.0;
+        crouch.update(0.5, &Input { fwd: 1.0, crouch: true, ..Default::default() }, &open);
+        assert!((crouch.pos.1 - (1.0 - CROUCH_SPEED * 0.5)).abs() < 1e-3, "crouch z = {}", crouch.pos.1);
+    }
+
+    #[test]
+    fn a_body_inside_a_tile_that_became_solid_can_walk_out_but_not_deeper() {
+        let wall = |tx: i32, _tz: i32| tx == 1; // x in [2, 4)
+        // Centre at x = 2.1: the right edge (2.34) is inside the wall, the left edge (1.86) is clear.
+        let mut west = Body::new((2.1, 5.0), std::f32::consts::FRAC_PI_2); // faces -x
+        assert!(hits_wall(west.pos.0, west.pos.1, &wall));
+        west.update(0.25, &Input { fwd: 1.0, ..Default::default() }, &wall);
+        assert!(west.pos.0 < 1.5 && !hits_wall(west.pos.0, west.pos.1, &wall), "x = {}", west.pos.0);
+
+        let mut east = Body::new((2.1, 5.0), -std::f32::consts::FRAC_PI_2); // faces +x, deeper
+        east.update(0.25, &Input { fwd: 1.0, ..Default::default() }, &wall);
+        assert!(east.pos.0 <= 2.1 + 1e-4, "went deeper: x = {}", east.pos.0);
+    }
+
+    #[test]
+    fn the_bob_advances_on_the_ground_covered_not_the_ground_asked_for() {
+        let mut free = Body::new((1.0, 20.0), 0.0);
+        free.update(0.25, &Input { fwd: 1.0, ..Default::default() }, &open); // 1 m
+        assert!((free.bob_phase - BOB_PHASE_PER_METRE).abs() < 1e-3, "phase {}", free.bob_phase);
+
+        // Pressed against a wall (tile row -1 is solid; the body faces north at z = RADIUS): no ground, no bob.
+        let wall = |_tx: i32, tz: i32| tz < 0;
+        let mut stuck = Body::new((1.0, RADIUS), 0.0);
+        stuck.bob_phase = 1.0;
+        for _ in 0..10 {
+            stuck.update(0.05, &Input { fwd: 1.0, ..Default::default() }, &wall);
+        }
+        assert!(stuck.bob_phase <= 1.0 + 1e-4, "phase advanced to {}", stuck.bob_phase);
+        assert!(stuck.bob_weight < 0.05, "weight {}", stuck.bob_weight);
+    }
+
+    #[test]
+    fn the_bob_eases_out_after_the_body_stops() {
+        let mut b = Body::new((1.0, 40.0), 0.0);
+        for _ in 0..20 {
+            b.update(0.05, &Input { fwd: 1.0, ..Default::default() }, &open);
+        }
+        assert!(b.bob_weight > 0.9, "weight {}", b.bob_weight);
+        b.update(0.016, &Input::default(), &open);
+        assert!(b.bob_weight > 0.5 && b.bob_weight < 1.0, "weight right after stopping {}", b.bob_weight);
+        for _ in 0..120 {
+            b.update(0.05, &Input::default(), &open);
+        }
+        assert!(b.bob_weight < 1e-3);
     }
 
     #[test]

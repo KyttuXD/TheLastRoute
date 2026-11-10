@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="KYTTU - LRS, browser build (story packs, single player).">
+<title>KYTTU - LRS</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas#glcanvas { display: block; width: 100vw; height: 100vh; outline: none; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas" tabindex="1"></canvas>
+<!-- macroquad/miniquad JavaScript runtime, then the quad-snd audio plugin, the key and hardware helpers, then the
+     object helpers and the storage bridge, then the story. Nothing else: the page is the game. -->
+<script>var register_plugin;</script>
+<script src="mq_js_bundle.js"></script>
+<script src="audio.js"></script>
+<script src="keys.js"></script>
+<script src="hw.js"></script>
+<script>
+/* sapp_jsutils.js from the sapp-jsutils crate, version 0.1.7 (MIT OR Apache-2.0, Copyright not-fl3), copied unchanged.
+   The bundle has its own copy inside a closure; this one is registered after it, so the storage bridge below and the
+   wasm both use the same object table (js_object, js_objects). */
+"use strict";
+
+var ctx = null;
+
+var js_objects = {};
+js_objects[-1] = null;
+js_objects[-2] = undefined;
+var unique_js_id = 0;
+
+function register_plugin(importObject) {
+    importObject.env.js_create_string = function (buf, max_len) {
+        var string = UTF8ToString(buf, max_len);
+        return js_object(string);
+    }
+
+    // Copy given bytes into newly allocated Uint8Array
+    importObject.env.js_create_buffer = function (buf, max_len) {
+        var src = new Uint8Array(wasm_memory.buffer, buf, max_len);
+        var new_buffer = new Uint8Array(new ArrayBuffer(src.byteLength));
+        new_buffer.set(new Uint8Array(src));
+        return js_object(new_buffer);
+    }
+
+    importObject.env.js_create_object = function () {
+        var object = {};
+        return js_object(object);
+    }
+
+    importObject.env.js_set_field_f32 = function (obj_id, buf, max_len, data) {
+        var field = UTF8ToString(buf, max_len);
+
+        js_objects[obj_id][field] = data;
+    }
+
+    importObject.env.js_set_field_u32 = function (obj_id, buf, max_len, data) {
+        var field = UTF8ToString(buf, max_len);
+
+        js_objects[obj_id][field] = data;
+    }
+
+    importObject.env.js_set_field_string = function (obj_id, buf, max_len, data_buf, data_len) {
+        var field = UTF8ToString(buf, max_len);
+        var data = UTF8ToString(data_buf, data_len);
+
+        js_objects[obj_id][field] = data;
+    }
+
+    importObject.env.js_unwrap_to_str = function (obj_id, buf, max_len) {
+        var str = js_objects[obj_id];
+        var utf8array = toUTF8Array(str);
+        var length = utf8array.length;
+        var dest = new Uint8Array(wasm_memory.buffer, buf, max_len); // with max_len in case of buffer overflow we will panic (I BELIEVE) in js, no UB in rust
+        for (var i = 0; i < length; i++) {
+            dest[i] = utf8array[i];
+        }
+    }
+
+    importObject.env.js_unwrap_to_buf = function (obj_id, buf, max_len) {
+        var src = js_objects[obj_id];
+        var length = src.length;
+        var dest = new Uint8Array(wasm_memory.buffer, buf, max_len); 
+        for (var i = 0; i < length; i++) {
+            dest[i] = src[i];
+        }
+    }
+
+    // measure length of the string. This function allocates because there is no way
+    // go get string byte length in JS 
+    importObject.env.js_string_length = function (obj_id) {
+        var str = js_objects[obj_id];
+        return toUTF8Array(str).length;
+    }
+
+    // similar to .length call on Uint8Array in javascript.
+    importObject.env.js_buf_length = function (obj_id) {
+        var buf = js_objects[obj_id];
+        return buf.length;
+    }
+
+    importObject.env.js_free_object = function (obj_id) {
+        delete js_objects[obj_id];
+    }
+
+    importObject.env.js_have_field = function (obj_id, buf, length) {
+        var field_name = UTF8ToString(buf, length);
+
+        return js_objects[obj_id][field_name] !== undefined;
+    }
+
+    importObject.env.js_field_f32 = function (obj_id, buf, length) {
+        var field_name = UTF8ToString(buf, length);
+
+        return js_objects[obj_id][field_name];
+    }
+
+    importObject.env.js_field_u32 = function (obj_id, buf, length) {
+        var field_name = UTF8ToString(buf, length);
+
+        return js_objects[obj_id][field_name];
+    }
+
+    importObject.env.js_field = function (obj_id, buf, length) {
+        // UTF8ToString is from gl.js wich should be in the scope now
+        var field_name = UTF8ToString(buf, length);
+
+        // apparently .field and ["field"] is the same thing in js
+        var field = js_objects[obj_id][field_name];
+
+        return js_object(field);
+    }
+
+    importObject.env.js_field_num = function (js_object, buf, length) {
+        var field_name = UTF8ToString(buf, length);
+
+        return js_objects[js_object][field_name];
+    }
+}
+miniquad_add_plugin({ register_plugin, version: 1, name: "sapp_jsutils" });
+
+// Its like https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder, 
+// but works on more browsers
+function toUTF8Array(str) {
+    var utf8 = [];
+    for (var i = 0; i < str.length; i++) {
+        var charcode = str.charCodeAt(i);
+        if (charcode < 0x80) utf8.push(charcode);
+        else if (charcode < 0x800) {
+            utf8.push(0xc0 | (charcode >> 6),
+                0x80 | (charcode & 0x3f));
+        }
+        else if (charcode < 0xd800 || charcode >= 0xe000) {
+            utf8.push(0xe0 | (charcode >> 12),
+                0x80 | ((charcode >> 6) & 0x3f),
+                0x80 | (charcode & 0x3f));
+        }
+        // surrogate pair
+        else {
+            i++;
+            // UTF-16 encodes 0x10000-0x10FFFF by
+            // subtracting 0x10000 and splitting the
+            // 20 bits of 0x0-0xFFFFF into two halves
+            charcode = 0x10000 + (((charcode & 0x3ff) << 10)
+                | (str.charCodeAt(i) & 0x3ff))
+            utf8.push(0xf0 | (charcode >> 18),
+                0x80 | ((charcode >> 12) & 0x3f),
+                0x80 | ((charcode >> 6) & 0x3f),
+                0x80 | (charcode & 0x3f));
+        }
+    }
+    return utf8;
+}
+
+// Store js object reference to prevent JS garbage collector on destroying it
+// And let Rust keep ownership of this reference
+// There is no guarantees on JS side of this reference uniqueness, its good idea to use this only on rust functions arguments
+function js_object(obj) {
+    if (obj == undefined) {
+        return -2;
+    }
+    if (obj === null) {
+        return -1;
+    }
+    var id = unique_js_id;
+
+    js_objects[id] = obj;
+    unique_js_id += 1;
+    return id;
+}
+
+/// Consume the JsObject returned from rust
+/// Rust gives us ownership on the object. This method consume ownership from rust to normal JS garbage collector.
+function consume_js_object(id) {
+    var object = js_objects[id];
+    // in JS delete operator does not delete (JS!), the intention here is to remove the value from hashmap, like "js_objects.remove(id)"
+    delete js_objects[id];
+    return object;
+}
+
+/// Get the real object from JsObject returned from rust 
+/// Acts like borrowing in rust, but without any checks
+/// Be carefull, for most use cases "consume_js_object" is usually better option
+function get_js_object(id) {
+    return js_objects[id];
+}
+
+
+</script>
+<script>
+// quad-storage (crate 0.1.3) browser side. The crate's js/quad-storage.js is not in the crate package, so this is the same
+// bridge written for this page: the wasm imports quad_storage_* call the page's localStorage. Each call is wrapped: when
+// the browser refuses the storage, a read returns nothing and a write is dropped. The Rust side reads a save back to see
+// whether it was kept (packaging/story-web: src/bin/lr_story/save.rs).
+(function () {
+  "use strict";
+  function store() { return window.localStorage; }
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      var env = importObject.env;
+      env.quad_storage_length = function () {
+        try { return store().length; } catch (e) { return 0; }
+      };
+      env.quad_storage_has_key = function (i) {
+        try { return store().key(i) !== null ? 1 : 0; } catch (e) { return 0; }
+      };
+      env.quad_storage_key = function (i) {
+        try { return js_object(store().key(i)); } catch (e) { return -1; }
+      };
+      env.quad_storage_has_value = function (key) {
+        try { return store().getItem(js_objects[key]) !== null ? 1 : 0; } catch (e) { return 0; }
+      };
+      env.quad_storage_get = function (key) {
+        try { return js_object(store().getItem(js_objects[key])); } catch (e) { return -1; }
+      };
+      env.quad_storage_set = function (key, value) {
+        try { store().setItem(js_objects[key], js_objects[value]); } catch (e) { /* refused: the read-back shows it */ }
+      };
+      env.quad_storage_remove = function (key) {
+        try { store().removeItem(js_objects[key]); } catch (e) { /* refused */ }
+      };
+      env.quad_storage_clear = function () {
+        try { store().clear(); } catch (e) { /* refused */ }
+      };
+    },
+    version: 65536, // quad-storage-sys 0.1.0: quad_storage_crate_version() = (0 << 24) + (1 << 16) + 0
+    name: "quad_storage"
+  });
+})();
+</script>
+<script>
+// The story server's HTTP for the menu and the room client (src/bin/lr_story/net.rs), registered as the lr_net plugin.
+// Each call is a synchronous XMLHttpRequest, so the wasm has the answer in the same call. The API origin is
+// window.LR_API_BASE when the page sets it, else the page's own origin: a path such as /api/health names it. The wasm
+// frees each result when it has read it. The same plugin shape as last_route's web build (packaging/web/index.html).
+(function () {
+  const results = new Map();
+  let nextResult = 1;
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+
+  function view(ptr, len) {
+    return new Uint8Array(wasm_memory.buffer, ptr, len);
+  }
+  function text(ptr, len) {
+    return decoder.decode(view(ptr, len));
+  }
+  function copyOut(bytes, dst, cap) {
+    if (bytes.length <= cap) view(dst, bytes.length).set(bytes);
+    return bytes.length;
+  }
+  function apiBase() {
+    try {
+      return String(window.LR_API_BASE || window.location.origin).replace(/\/+$/, "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function httpSend(methodPtr, methodLen, urlPtr, urlLen, headersPtr, headersLen, bodyPtr, bodyLen, hasBody) {
+    const id = nextResult++;
+    const result = { status: 0, body: new Uint8Array(0) };
+    results.set(id, result);
+    try {
+      let url = text(urlPtr, urlLen);
+      if (url.charAt(0) === "/") url = apiBase() + url;
+      const xhr = new XMLHttpRequest();
+      xhr.open(text(methodPtr, methodLen), url, false);
+      // raw bytes both ways: the answer is read one byte per character, so a binary body survives
+      xhr.overrideMimeType("text/plain; charset=x-user-defined");
+      for (const line of text(headersPtr, headersLen).split("\n")) {
+        const colon = line.indexOf(":");
+        if (colon <= 0) continue;
+        try {
+          xhr.setRequestHeader(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+        } catch (e) {}
+      }
+      xhr.send(hasBody ? view(bodyPtr, bodyLen).slice() : null);
+      result.status = xhr.status;
+      const raw = xhr.responseText;
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 0xff;
+      result.body = bytes;
+    } catch (e) {
+      // no answer: the status stays 0, which the wasm reports as "could not reach the story server"
+      result.status = 0;
+    }
+    return id;
+  }
+
+  miniquad_add_plugin({
+    register_plugin: function (importObject) {
+      const env = importObject.env;
+      env.lr_http_send = httpSend;
+      env.lr_http_status = function (id) {
+        const r = results.get(id);
+        return r ? r.status : 0;
+      };
+      env.lr_http_body = function (id, dst, cap) {
+        const r = results.get(id);
+        return r ? copyOut(r.body, dst, cap) : -1;
+      };
+      env.lr_http_free = function (id) {
+        results.delete(id);
+      };
+    },
+    version: 1,
+    name: "lr_net"
+  });
+})();
+</script>
+<script>load("lr_story.wasm");</script>
+</body>
+</html>

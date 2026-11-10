@@ -1,0 +1,89 @@
+{
+	"schema": "nw.mode/1",
+	"id": "story",
+	"order": 4,
+	"menu": {
+		"id": "story",
+		"num": 5,
+		"label": "5. THE FACILITY",
+		"title": "THE FACILITY",
+		"tag": "ROOMS · TASKS · NOISE",
+		"playable": true,
+		"resumable": true,
+		"office": "story",
+		"cast": [
+			"porcelle",
+			"quenelle",
+			"opalie"
+		],
+		"art": [
+			"porcelle",
+			"quenelle"
+		],
+		"custom": [
+			{
+				"id": "porcelle",
+				"label": "Porcelle"
+			},
+			{
+				"id": "quenelle",
+				"label": "Quenelle"
+			},
+			{
+				"id": "opalie",
+				"label": "Opalie"
+			}
+		],
+		"presets": [
+			{
+				"id": "quiet-gallery",
+				"name": "Quiet Gallery",
+				"ai": {
+					"porcelle": 0,
+					"quenelle": 0,
+					"opalie": 15
+				}
+			},
+			{
+				"id": "behind-the-steel",
+				"name": "Behind The Steel",
+				"ai": {
+					"porcelle": 15,
+					"quenelle": 0,
+					"opalie": 0
+				}
+			},
+			{
+				"id": "lift-schedule",
+				"name": "Lift Schedule",
+				"ai": {
+					"porcelle": 5,
+					"quenelle": 15,
+					"opalie": 5
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20",
+				"ai": {
+					"porcelle": 20,
+					"quenelle": 20,
+					"opalie": 20
+				}
+			}
+		],
+		"blurb": "Six rooms, each with its own station. Finish the night's task list in order while the noise you make draws the others.",
+		"hint": "",
+		"levels": [
+			"NIGHT 1",
+			"NIGHT 2",
+			"NIGHT 3",
+			"NIGHT 4",
+			"NIGHT 5",
+			"NIGHT 6"
+		],
+		"scored": 6,
+		"open": false,
+		"customLevel": null
+	}
+}

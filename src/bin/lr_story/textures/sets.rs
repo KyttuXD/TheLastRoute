@@ -758,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn every_copied_maze_variant_resolves_to_painted_floors() {
+    fn every_maze_variant_resolves_to_painted_floors() {
         assert_eq!(MAZE_VARIANTS.len(), 4);
         for v in MAZE_VARIANTS {
             let d = variant_district(v.id).expect("variant has a district");

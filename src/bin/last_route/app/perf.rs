@@ -85,6 +85,13 @@ impl Default for Rules {
                 "window adopt",
                 "window residency",
                 "resident build",
+                "chunk build",
+                "chunk layout",
+                "chunk loot",
+                "chunk links",
+                "chunk grid",
+                "chunk fixtures",
+                "window merge",
                 "window grid",
                 "render 3d",
             ]

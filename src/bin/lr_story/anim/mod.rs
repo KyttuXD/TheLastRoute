@@ -26,7 +26,7 @@ pub fn assets_dir() -> PathBuf {
 
 /// The bytes of one file under the assets folder, by its path there (e.g. "player/anim/player_mannequin.json").
 pub fn asset(rel: &str) -> Option<Vec<u8>> {
-    std::fs::read(assets_dir().join(rel)).ok()
+    crate::assets_vfs::read(&assets_dir().join(rel)).ok()
 }
 
 #[cfg(test)]

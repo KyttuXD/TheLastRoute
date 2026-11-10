@@ -1,0 +1,43 @@
+{
+	"schema": "nw.mode/1",
+	"id": "mixed",
+	"order": 8,
+	"menu": {
+		"id": "mixed",
+		"num": 9,
+		"label": "9. MIXED SHIFT",
+		"title": "MIXED SHIFT",
+		"tag": "DRAWN THREATS · A DIRECTOR · TELLS",
+		"playable": true,
+		"resumable": true,
+		"office": "mixed",
+		"cast": [
+			"haelith",
+			"ilyra",
+			"aki",
+			"opalie",
+			"dovelle",
+			"ravelle",
+			"verrine",
+			"glyra"
+		],
+		"art": [
+			"haelith",
+			"ilyra"
+		],
+		"custom": null,
+		"presets": [],
+		"blurb": "Three to seven threats are drawn fresh each night, each with its own warning and its own answer, paced by a director. Five shifts: three paces, CHAOS with random events and ENDLESS with no dawn.",
+		"hint": "Each night draws 3 to 7 threats from a pool of eight (QUIET, STEADY and RESTLESS set the pace, CHAOS draws the biggest roster and adds random events, ENDLESS has no dawn): a Counter (builds while you stay on one camera), two Watched (move only when no camera is on them), a Monitor-gated (steps closer as you change the monitor), two Path walkers (walk a route to a door), a Vent crawler (crawls the vent run to one of three office vents) and a Winder (a music box on one camera that must be wound). Every one gives a tell first, and has an answer.",
+		"levels": [
+			"QUIET",
+			"STEADY",
+			"RESTLESS",
+			"CHAOS",
+			"ENDLESS"
+		],
+		"scored": 4,
+		"open": true,
+		"customLevel": null
+	}
+}

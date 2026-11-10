@@ -1,0 +1,17 @@
+{
+  "schema": "nw.nav/1",
+  "id": "extra-busstop",
+  "note": "Open Air watch 2, the bus stop (openair_world.gd _build_busstop). W0..W4 is the road Wynelle walks, far down it to the shelter (lerp of (-24,-4.6) to (-3.2,-1.3)). Her place on it follows the chill. Camera nodes are added in code from map.json.",
+  "rooms": {
+    "road_far": {"min": [-30.0, -8.0], "max": [-14.0, 0.0]},
+    "road_stop": {"min": [-14.0, -8.0], "max": [2.0, 0.0]}
+  },
+  "nodes": [
+    {"id": "W0", "kind": "waypoint", "room": "road_far", "p": [-24.0, 0, -4.6]},
+    {"id": "W1", "kind": "waypoint", "room": "road_far", "p": [-18.8, 0, -3.775]},
+    {"id": "W2", "kind": "waypoint", "room": "road_stop", "p": [-13.6, 0, -2.95]},
+    {"id": "W3", "kind": "waypoint", "room": "road_stop", "p": [-8.4, 0, -2.125]},
+    {"id": "W4", "kind": "waypoint", "room": "road_stop", "p": [-3.2, 0, -1.3]}
+  ],
+  "edges": [["W0", "W1"], ["W1", "W2"], ["W2", "W3"], ["W3", "W4"]]
+}

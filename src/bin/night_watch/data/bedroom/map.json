@@ -1,0 +1,439 @@
+{
+	"schema": "nw.bedroom.map/1",
+	"id": "bedroom",
+	"rooms": {
+		"bedroom": {
+			"min": [-2.7, -2.6],
+			"max": [2.7, 2.6],
+			"theme": "office"
+		},
+		"wardrobe": {
+			"min": [-3.8, -1.7],
+			"max": [-2.7, -0.1],
+			"theme": "office"
+		},
+		"hall": {
+			"min": [2.7, -2],
+			"max": [10.7, 0.2],
+			"theme": "office"
+		},
+		"kids_room": {
+			"min": [4, 0.2],
+			"max": [8, 4.2],
+			"theme": "kids"
+		},
+		"bathroom": {
+			"min": [3.5, -6],
+			"max": [7.5, -2],
+			"theme": "bath"
+		},
+		"landing": {
+			"min": [8, -5],
+			"max": [10.6, -2],
+			"theme": "landing"
+		},
+		"stairs": {
+			"min": [8, -9],
+			"max": [10.6, -5],
+			"theme": "stairs"
+		},
+		"living_room": {
+			"min": [10.7, -4.5],
+			"max": [17.7, 2.5],
+			"theme": "living"
+		},
+		"galley": {
+			"min": [10.7, -9.5],
+			"max": [17.7, -4.5],
+			"theme": "galley"
+		}
+	},
+	"edges": [
+		[
+			"bedroom",
+			"wardrobe"
+		],
+		[
+			"bedroom",
+			"hall"
+		],
+		[
+			"hall",
+			"kids_room"
+		],
+		[
+			"hall",
+			"bathroom"
+		],
+		[
+			"hall",
+			"landing"
+		],
+		[
+			"landing",
+			"stairs"
+		],
+		[
+			"hall",
+			"living_room"
+		],
+		[
+			"living_room",
+			"galley"
+		]
+	],
+	"entrances": [
+		"hall",
+		"wardrobe"
+	],
+	"hall_nodes": {
+		"near": 3.4,
+		"mid": 6.9,
+		"far": 10
+	},
+	"bedroom": {
+		"half": 2.5,
+		"height": 3.6,
+		"eye": [0, 0.95, 1.9],
+		"doorway": [2.6, 0, -0.9],
+		"creep_from": [-1.7, 0, -2],
+		"creep_to": [0.15, 0, 0.75],
+		"closet_z": -0.9,
+		"closet_ajar": -0.22,
+		"closet_wide": -1.3,
+		"hall_gap": 1.1,
+		"closet_gap": 1.2
+	},
+	"wing": {
+		"door_gap": 1.6,
+		"door_top": 3.2
+	},
+	"lights": {
+		"ambient": [0.3, 0.3, 0.5],
+		"ambient_energy": 0.55,
+		"reveal_energy": 2.4,
+		"background": [0.015, 0.015, 0.03],
+		"moon": {
+			"pos": [-0.2, 2, -1.7],
+			"color": [0.45, 0.55, 1],
+			"energy": 0.28,
+			"range": 6
+		},
+		"hall_glow": {
+			"pos": [8.5, 2.4, -0.9],
+			"color": [0.55, 0.5, 0.9],
+			"energy": 0.1,
+			"range": 5
+		},
+		"living_glow": {
+			"pos": [14.2, 2.2, -1],
+			"color": [0.5, 0.55, 0.95],
+			"energy": 0.12,
+			"range": 6
+		},
+		"hall_spot": {
+			"offset": [0.25, 0.1, 0],
+			"target": [7.5, 1, -0.9],
+			"color": [1, 0.95, 0.82],
+			"energy": 6,
+			"range": 12,
+			"half_angle_deg": 18
+		},
+		"bed_spot": {
+			"offset": [-0.25, 0.1, 0],
+			"target": [-0.3, 0.2, -0.6],
+			"color": [1, 0.95, 0.82],
+			"energy": 5,
+			"range": 8,
+			"half_angle_deg": 38
+		}
+	},
+	"scare": {
+		"loxelle": {
+			"pos": [-3, 0, -0.9],
+			"light": "bed"
+		},
+		"javelle": {
+			"pos": [1.8, 0, -0.9],
+			"light": "hall"
+		},
+		"haelith": {
+			"pos": [0, 0, 0.6],
+			"light": "bed"
+		}
+	},
+	"props": [
+		{
+			"id": "nightstand",
+			"model": "bedroomNightstand",
+			"room": "bedroom",
+			"pos": [1.45, 0, 2.15],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "night_lamp",
+			"model": "bedsideLamp",
+			"room": "bedroom",
+			"pos": [1.45, 0.69, 2.15],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "desk_chair",
+			"model": "woodenChair",
+			"room": "bedroom",
+			"pos": [1.6, 0, -1.8],
+			"yaw": 200,
+			"scale": 1
+		},
+		{
+			"id": "dresser",
+			"model": "bedroomDresser",
+			"room": "bedroom",
+			"pos": [-2.05, 0, 1],
+			"yaw": 90,
+			"scale": 1
+		},
+		{
+			"id": "bookcase",
+			"model": "normalBookcase",
+			"room": "bedroom",
+			"pos": [0.9, 0, -2.25],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "toy_chest",
+			"model": "toyChest",
+			"room": "bedroom",
+			"pos": [-1.9, 0, 2.2],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "ceiling_light",
+			"model": "ceilingLight",
+			"room": "bedroom",
+			"pos": [0, 3.29, -0.4],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "wall_clock",
+			"model": "bedroomWallClock",
+			"room": "bedroom",
+			"pos": [-2.44, 0, -1.6],
+			"yaw": 90,
+			"scale": 1
+		},
+		{
+			"id": "hamper",
+			"model": "laundryHamper",
+			"room": "bedroom",
+			"pos": [2.1, 0, 0.9],
+			"yaw": 250,
+			"scale": 1
+		},
+		{
+			"id": "hall_bench",
+			"model": "normalEntryBench",
+			"room": "hall",
+			"pos": [3.9, 0, -1.7],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "hall_lamp",
+			"model": "floorLamp",
+			"room": "hall",
+			"pos": [8.1, 0, -1.7],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "kids_bed",
+			"model": "singleBed",
+			"room": "kids_room",
+			"pos": [5, 0, 3],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "kids_chest",
+			"model": "toyChest",
+			"room": "kids_room",
+			"pos": [7.2, 0, 0.8],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "kids_lamp",
+			"model": "bedsideLamp",
+			"room": "kids_room",
+			"pos": [6, 0, 3.8],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "tub",
+			"model": "houseBathtub",
+			"room": "bathroom",
+			"pos": [4.7, 0, -5.4],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "sink",
+			"model": "bathroomSink",
+			"room": "bathroom",
+			"pos": [6.8, 0, -5.5],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "mirror",
+			"model": "bathroomMirror",
+			"room": "bathroom",
+			"pos": [6.8, 0, -5.72],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "toilet",
+			"model": "houseToilet",
+			"room": "bathroom",
+			"pos": [6.9, 0, -2.7],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "bath_mat",
+			"model": "houseBathMat",
+			"room": "bathroom",
+			"pos": [4.7, 0, -4.6],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "landing_plant",
+			"model": "pottedPlant",
+			"room": "landing",
+			"pos": [8.5, 0, -4.5],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "sofa",
+			"model": "loungeCouch",
+			"room": "living_room",
+			"pos": [14.2, 0, 1.8],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "tv_console",
+			"model": "normalTvConsole",
+			"room": "living_room",
+			"pos": [17.25, 0, -1],
+			"yaw": 270,
+			"scale": 1
+		},
+		{
+			"id": "coffee_table",
+			"model": "normalCoffeeTable",
+			"room": "living_room",
+			"pos": [14.2, 0, 0.5],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "living_shelf",
+			"model": "normalBookcase",
+			"room": "living_room",
+			"pos": [11.15, 0, -2.9],
+			"yaw": 90,
+			"scale": 1
+		},
+		{
+			"id": "living_lamp",
+			"model": "floorLamp",
+			"room": "living_room",
+			"pos": [16.9, 0, 1.9],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "living_plant",
+			"model": "pottedPlant",
+			"room": "living_room",
+			"pos": [11.5, 0, 1.9],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "counter_a",
+			"model": "normalKitchenCounter",
+			"room": "galley",
+			"pos": [11.9, 0, -8.95],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "sink_unit",
+			"model": "normalKitchenSink",
+			"room": "galley",
+			"pos": [13.65, 0, -8.95],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "stove",
+			"model": "normalKitchenStove",
+			"room": "galley",
+			"pos": [15.2, 0, -8.95],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "counter_b",
+			"model": "normalKitchenCounter",
+			"room": "galley",
+			"pos": [16.5, 0, -8.95],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "fridge",
+			"model": "normalKitchenFridge",
+			"room": "galley",
+			"pos": [16.9, 0, -5.3],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "kitchen_table",
+			"model": "woodenTable",
+			"room": "galley",
+			"pos": [13.2, 0, -6.2],
+			"yaw": 0,
+			"scale": 1
+		},
+		{
+			"id": "chair_a",
+			"model": "woodenChair",
+			"room": "galley",
+			"pos": [12.7, 0, -5.45],
+			"yaw": 180,
+			"scale": 1
+		},
+		{
+			"id": "chair_b",
+			"model": "woodenChair",
+			"room": "galley",
+			"pos": [13.7, 0, -5.45],
+			"yaw": 180,
+			"scale": 1
+		}
+	]
+}

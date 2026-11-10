@@ -123,7 +123,8 @@ impl AnimPlayer {
         let Some(clip) = rig.clips.get(&p.clip) else {
             return false;
         };
-        let len = clip.length;
+        // A negative length in a rig file would make clamp(0, len) panic; it is read as zero.
+        let len = clip.length.max(0.0);
         let mut next = p.pos + delta * speed;
         let prev = p.pos;
         let mut ended = false;

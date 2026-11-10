@@ -111,6 +111,11 @@ pub fn chapters(src: &str) -> Result<Vec<Chapter>, String> {
         return Err("the Story section has no chapters".to_string());
     }
     let numbers: Vec<usize> = out.iter().map(|c| c.number).collect();
+    for (i, n) in numbers.iter().enumerate() {
+        if numbers[..i].contains(n) {
+            return Err(format!("two chapters are numbered {n} (a chapter without a trailing number takes its position)"));
+        }
+    }
     for chapter in &out {
         for choice in &chapter.choices {
             if let Some(goto) = choice.goto.filter(|g| !numbers.contains(g)) {
@@ -130,7 +135,10 @@ fn parse_choice(number: usize, node: &Node) -> Result<Choice, String> {
     let mut needs = Vec::new();
     let mut sets = Vec::new();
     let mut goto = None;
-    for (key, value) in pairs {
+    for (at, (key, value)) in pairs.iter().enumerate() {
+        if pairs[..at].iter().any(|(k, _)| k == key) {
+            return Err(format!("chapter {number}: Choices key '{key}' is repeated in one entry"));
+        }
         match (key.as_str(), value) {
             ("Text", Node::Str(t)) => text = Some(t.clone()),
             ("Needs", _) => needs = flag_list(number, "Needs", value)?,
@@ -220,8 +228,19 @@ pub fn slug(name: &str) -> String {
         s = s.replace("__", "_");
     }
     let s = s.trim_matches('_').to_string();
-    let s = if s.starts_with(|c: char| c.is_ascii_lowercase()) { s } else { format!("lore_{s}") };
-    s.chars().take(32).collect::<String>().trim_end_matches('_').to_string()
+    let s = if s.is_empty() {
+        "lore_story".to_string()
+    } else if s.starts_with(|c: char| c.is_ascii_lowercase()) {
+        s
+    } else {
+        format!("lore_{s}")
+    };
+    let s: String = s.chars().take(32).collect::<String>().trim_end_matches('_').to_string();
+    if s.len() < 3 {
+        format!("{s}_story")
+    } else {
+        s
+    }
 }
 
 /// Imports the files into the pack folder `out_dir` (created when missing) as `scenes/<file stem>.json`, and writes
@@ -233,8 +252,15 @@ pub fn import(files: &[PathBuf], pack_id: &str, out_dir: &Path) -> Result<Vec<St
     if let Err(e) = fs::create_dir_all(&scenes_dir) {
         return Err(vec![format!("{}: {e}", scenes_dir.display())]);
     }
+    let mut seen_bases: Vec<String> = Vec::new();
     for file in files {
         let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let key = stem.to_ascii_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+        if seen_bases.contains(&key) {
+            errs.push(format!("{}: another input file has the same name '{stem}' (its scenes would overwrite or collide)", file.display()));
+            continue;
+        }
+        seen_bases.push(key);
         let src = match fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
@@ -425,6 +451,64 @@ mod tests {
         assert!(chapters(&no_text).unwrap_err().contains("needs Text"));
     }
 
+    /// A semi-choice file: chapter 1 has one choice list with two branches (chapters 2 and 3); each branch's own choice
+    /// leads on to chapter 4, so the branches rejoin there.
+    #[test]
+    fn a_lore_file_with_one_choice_imports_and_the_branches_rejoin_at_the_next_chapter() {
+        const SEMI: &str = "S:\n  Story:\n    Chapter 1:\n      Summary:\n        - ???: Fork.\n      Choices:\n        - Text: Left\n          Goto: Chapter 2\n        - Text: Right\n          Goto: Chapter 3\n    Chapter 2:\n      Summary:\n        - ???: Left branch.\n      Choices:\n        - Text: On\n          Goto: Chapter 4\n    Chapter 3:\n      Summary:\n        - ???: Right branch.\n      Choices:\n        - Text: On\n    Chapter 4:\n      Summary:\n        - ???: Together again.\n";
+        let dir = scratch("semi");
+        let file = dir.join("semi.yml");
+        fs::write(&file, SEMI).unwrap();
+        let out = dir.join("pack");
+        let ids = import(&[file], "lore_semi", &out).unwrap();
+        assert_eq!(ids.len(), 4);
+        let doc: Value = serde_json::from_str(&fs::read_to_string(out.join("scenes/semi.json")).unwrap()).unwrap();
+        let s = |n: u8| format!("lore_semi_semi_ch{n}");
+        assert_eq!(doc["scenes"][s(1)]["choices"][0]["next"], json!(s(2)));
+        assert_eq!(doc["scenes"][s(1)]["choices"][1]["next"], json!(s(3)));
+        assert_eq!(doc["scenes"][s(2)]["choices"][0]["next"], json!(s(4)), "branch one rejoins");
+        assert_eq!(doc["scenes"][s(3)]["choices"][0]["next"], json!(s(4)), "branch two rejoins");
+        assert!(doc["scenes"][s(4)].get("choices").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chapters_without_a_number_take_their_position_and_a_clash_is_an_error() {
+        let ok = "S:\n  Story:\n    Prologue:\n      Summary:\n        - ???: A.\n    Epilogue:\n      Summary:\n        - ???: B.\n";
+        let c = chapters(ok).unwrap();
+        assert_eq!((c[0].number, c[1].number), (1, 2));
+        let clash = "S:\n  Story:\n    Prologue:\n      Summary:\n        - ???: A.\n    Chapter 1:\n      Summary:\n        - ???: B.\n";
+        assert!(chapters(clash).unwrap_err().contains("numbered 1"));
+    }
+
+    #[test]
+    fn two_input_files_with_the_same_stem_are_an_error() {
+        let dir = scratch("stems");
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        let (a, b) = (dir.join("a").join("book.yml"), dir.join("b").join("book.yml"));
+        fs::write(&a, SAMPLE).unwrap();
+        fs::write(&b, SAMPLE).unwrap();
+        let errs = import(&[a, b], "lore_dup", &dir.join("pack")).unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("same name")), "{errs:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_repeated_choice_key_is_an_error() {
+        let dup = CHOICES.replace("Goto: Chapter 3", "Goto: Chapter 3\n          Goto: Chapter 2");
+        assert!(chapters(&dup).unwrap_err().contains("repeated"));
+    }
+
+    #[test]
+    fn slug_always_gives_a_valid_pack_id() {
+        for name in ["", "!!!", "a", "ab", "9", "é", "___", "x".repeat(80).as_str(), "12345678901234567890123456789012345", "Story One"] {
+            let id = slug(name);
+            assert!(is_pack_id(&id), "slug({name:?}) = {id:?}");
+        }
+        assert_eq!(slug("ab"), "ab_story");
+    }
+
     /// The six real last-route files (KyttusLab-LORE, beside this crate's folder). Skipped when that repo is missing.
     #[test]
     fn the_six_real_last_route_files_import_with_no_choices() {
@@ -449,6 +533,33 @@ mod tests {
             for scene in doc["scenes"].as_object().unwrap().values() {
                 assert!(scene.get("choices").is_none(), "no choices in the imported scenes");
             }
+        }
+        let _ = fs::remove_dir_all(&out);
+    }
+
+    /// The six real last-route files: each has choices-free chapters, and the scene ids they import to are unique across
+    /// the whole set (no two books or chapters share one). Skipped when the LORE repo is missing.
+    #[test]
+    fn the_six_last_route_files_have_no_duplicate_scene_ids() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("KyttusLab-LORE").join("stories").join("the-last-route");
+        let Ok(read) = fs::read_dir(&dir) else { return };
+        let mut files: Vec<PathBuf> = read
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map_or(false, |x| x == "yml"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 6, "the six last-route files");
+        for file in &files {
+            let src = fs::read_to_string(file).unwrap();
+            let parsed = chapters(&src).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            assert!(parsed.iter().all(|c| c.choices.is_empty()), "{}: no Choices today", file.display());
+        }
+        let out = scratch("unique_ids");
+        let ids = import(&files, "lore_unique", &out).unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(!ids.is_empty(), "the six files give scenes");
+        let mut seen = std::collections::BTreeSet::new();
+        for id in &ids {
+            assert!(seen.insert(id.clone()), "duplicate scene id '{id}'");
         }
         let _ = fs::remove_dir_all(&out);
     }
@@ -514,6 +625,72 @@ mod tests {
         g.advance();
         g.advance();
         assert_eq!(g.offered_choices(), vec!["Take the lantern"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+
+    /// `docs/LR_STORY.md` names every op the loader accepts and no longer documents the removed `xp` op.
+    #[test]
+    fn the_docs_list_every_op_the_loader_accepts_and_not_xp() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs").join("LR_STORY.md");
+        let docs = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let loader = include_str!("load.rs");
+        let start = loader.find("fn parse_op(").expect("parse_op exists");
+        let body = &loader[start..start + loader[start..].find("\n}\n").unwrap()];
+        let mut ops = Vec::new();
+        for line in body.lines() {
+            let t = line.trim_start();
+            if let Some(rest) = t.strip_prefix('"') {
+                if let Some((name, tail)) = rest.split_once('"') {
+                    if tail.trim_start().starts_with("=>") && name != "xp" {
+                        ops.push(name.to_string());
+                    }
+                }
+            }
+        }
+        assert!(ops.len() >= 7, "found {ops:?}");
+        for op in &ops {
+            assert!(docs.contains(&format!("\"op\": \"{op}\"")), "docs/LR_STORY.md does not show {{\"op\": \"{op}\"}}");
+        }
+        assert!(!docs.contains("\"op\": \"xp\""), "the removed xp op is still documented");
+    }
+    /// Chapter 1 offers two choices that both go to chapter 3; played through the real `Game`, each reaches chapter 3.
+    #[test]
+    fn two_branches_rejoin_at_the_next_chapter() {
+        use crate::load::{self, Config};
+        use crate::play::Game;
+        use macroquad::prelude::{Color, Image};
+
+        const JOIN: &str = "The Join Storyline:\n  Story:\n    Chapter 1:\n      Summary:\n        - ???: Two ways.\n      Choices:\n        - Text: \"Left\"\n          Goto: Chapter 3\n        - Text: \"Right\"\n          Goto: Chapter 3\n    Chapter 2:\n      Summary:\n        - ???: Unused.\n    Chapter 3:\n      Summary:\n        - ???: Together again.\n";
+
+        let root = scratch("rejoin");
+        let core = root.join("rejoin_pack");
+        fs::create_dir_all(core.join("maps")).unwrap();
+        fs::write(core.join("pack.json"), r#"{"schema": "lr.pack/1", "id": "rejoin_pack", "name": "R", "start": {"map": "start", "spawn": "here"}}"#).unwrap();
+        fs::write(
+            core.join("maps").join("start.json"),
+            r#"{"schema": "lr.story.map/1", "id": "start", "name": "Start", "art": "start.png", "legend": {"00ff00": {"kind": "spawn", "name": "here"}, "ffffff": {"kind": "floor"}, "000000": {"kind": "wall"}}}"#,
+        )
+        .unwrap();
+        let mut art = Image::gen_image_color(3, 1, Color::new(1.0, 1.0, 1.0, 1.0));
+        art.set_pixel(0, 0, Color::new(0.0, 1.0, 0.0, 1.0));
+        art.set_pixel(2, 0, Color::new(0.0, 0.0, 0.0, 1.0));
+        art.export_png(&core.join("maps").join("start.png").to_string_lossy());
+        let file = root.join("join.yml");
+        fs::write(&file, JOIN).unwrap();
+        import(&[file], "rejoin_pack", &core).unwrap();
+
+        let cfg = Config { core: core.clone(), mod_dirs: Vec::new(), mod_roots: Vec::new() };
+        let pack = load::load(&cfg).unwrap_or_else(|errs| panic!("the pack has problems: {errs:?}"));
+        for pick in 0..2 {
+            let mut g = Game::new(pack.clone()).unwrap();
+            g.start_scene("rejoin_pack_join_ch1");
+            g.advance();
+            g.advance();
+            assert_eq!(g.offered_choices(), vec!["Left", "Right"]);
+            g.choose(pick);
+            assert_eq!(g.talk.as_ref().map(|t| t.scene.as_str()), Some("rejoin_pack_join_ch3"), "choice {pick} reaches chapter 3");
+        }
         let _ = fs::remove_dir_all(&root);
     }
 }

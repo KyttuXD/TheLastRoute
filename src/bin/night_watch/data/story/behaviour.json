@@ -1,0 +1,131 @@
+{
+ "schema": "nw.behaviour/1",
+ "stare": {
+  "pose": "stare_camera",
+  "speed": 1,
+  "pulse_hz": 0.7,
+  "pulse_strength": 0.35,
+  "subtitle": "Something in the feed is looking back at you."
+ },
+ "tasks": {
+  "wipe_counter": {
+   "pose": "reach_out",
+   "speed": 1.6,
+   "label": "wipes the counter"
+  },
+  "check_locker": {
+   "pose": "locker_lean",
+   "speed": 1,
+   "label": "checks a locker"
+  },
+  "sort_boxes": {
+   "pose": "kneel",
+   "speed": 1,
+   "label": "sorts boxes"
+  },
+  "tap_terminal": {
+   "pose": "reach_out",
+   "speed": 2.4,
+   "label": "taps a terminal"
+  },
+  "sit": {
+   "pose": "sit",
+   "speed": 1,
+   "label": "sits down"
+  },
+  "pace": {
+   "pose": null,
+   "speed": 1,
+   "pace": true,
+   "label": "paces"
+  }
+ },
+ "default": {
+  "first_delay_s": [
+   2,
+   6
+  ],
+  "weights": {
+   "stare": 2,
+   "task": 3,
+   "wait": 3
+  },
+  "stare_s": [
+   3,
+   6
+  ],
+  "task_s": [
+   5,
+   10
+  ],
+  "wait_s": [
+   3,
+   8
+  ],
+  "roam_hops": 0,
+  "tasks": {
+   "wipe_counter": 1,
+   "check_locker": 1,
+   "sort_boxes": 1,
+   "tap_terminal": 1,
+   "sit": 1,
+   "pace": 1
+  }
+ },
+ "hunters": {
+  "opalie": {
+   "weights": {
+    "stare": 3,
+    "task": 2,
+    "wait": 3
+   },
+   "tasks": {
+    "wipe_counter": 2,
+    "check_locker": 2,
+    "tap_terminal": 1,
+    "sort_boxes": 1,
+    "pace": 2,
+    "sit": 0
+   }
+  },
+  "porcelle": {
+   "weights": {
+    "stare": 2,
+    "task": 4,
+    "wait": 2
+   },
+   "roam_hops": 1,
+   "task_s": [
+    6,
+    12
+   ],
+   "tasks": {
+    "sort_boxes": 3,
+    "wipe_counter": 2,
+    "check_locker": 2,
+    "tap_terminal": 1,
+    "sit": 3,
+    "pace": 2
+   }
+  },
+  "quenelle": {
+   "weights": {
+    "stare": 4,
+    "task": 2,
+    "wait": 2
+   },
+   "stare_s": [
+    3,
+    6
+   ],
+   "tasks": {
+    "pace": 1,
+    "wipe_counter": 0,
+    "check_locker": 0,
+    "sort_boxes": 0,
+    "tap_terminal": 0,
+    "sit": 0
+   }
+  }
+ }
+}

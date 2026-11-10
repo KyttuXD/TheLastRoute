@@ -1,0 +1,51 @@
+{
+	"schema": "nw.mixed.map/1",
+	"height": 3.6,
+	"thick": 0.2,
+	"sim_to_map": {"stage":"platform","dining":"concourse","backstage":"ticket_hall","westhall":"west_arcade","closet":"lost_property","kitchen":"cafe","easthall":"east_arcade","corner":"newsstand","vent":"duct"},
+	"areas": {
+		"stage": {"rect":[-9.5,9.5,-46,-30],"tint":[1,1.1,1.4],"map":"platform","cam":1,"spots":[[-6.08,-42.8],[6.08,-33.2],[6.08,-42.8]],"cam_pos":[7.98,3,-31.28],"cam_look":[-0.95,0.8,-38.8]},
+		"backstage": {"rect":[-26,-9.5,-46,-30],"tint":[0.9,0.9,1.3],"map":"ticket_hall","cam":3,"spots":[[-23.03,-42.8],[-12.47,-33.2],[-12.47,-42.8]],"cam_pos":[-10.82,3,-31.28],"cam_look":[-18.575,0.8,-38.8]},
+		"dining": {"rect":[-9.5,9.5,-30,-14],"tint":[1.3,1.25,1.1],"map":"concourse","cam":2,"spots":[[-6.08,-26.8],[6.08,-17.2],[6.08,-26.8]],"cam_pos":[7.98,3,-15.28],"cam_look":[-0.95,0.8,-22.8]},
+		"westhall": {"rect":[-20,-9.5,-30,6],"tint":[1.1,1.2,1.2],"map":"west_arcade","cam":4,"spots":[[-18.15,-26],[-18.15,-4],[-18.15,-15]],"cam_pos":[-10.34,3,3.12],"cam_look":[-15.275,0.8,-13.8]},
+		"easthall": {"rect":[9.5,20,-30,6],"tint":[1.1,1.2,1.2],"map":"east_arcade","cam":7,"spots":[[18.15,-26],[18.15,-4],[18.15,-15]],"cam_pos":[19.16,3,3.12],"cam_look":[14.225,0.8,-13.8]},
+		"kitchen": {"rect":[-8,8,-13,-5],"tint":[1.2,1.3,1.2],"map":"cafe","cam":6,"spots":[[-5,-9],[5,-9]],"cam_pos":[6.72,3,-5.64],"cam_look":[-0.8,0.8,-9.4]},
+		"closet": {"rect":[-20,-9.5,6,16],"tint":[1.2,1.1,0.9],"map":"lost_property","cam":5,"spots":[[-18.11,8],[-11.39,14],[-11.39,8]],"cam_pos":[-10.34,3,15.2],"cam_look":[-15.275,0.8,10.5]},
+		"corner": {"rect":[9.5,20,6,16],"tint":[1.2,1.1,0.9],"map":"newsstand","cam":8,"spots":[[11.39,8],[18.11,14],[18.11,8]],"cam_pos":[19.16,3,15.2],"cam_look":[14.225,0.8,10.5]}
+	},
+	"walls": [
+		{"along_x":true,"fixed":-46,"a":-26,"b":9.5,"gaps":[],"name":"WallHub"},
+		{"along_x":true,"fixed":-30,"a":-26,"b":-9.5,"gaps":[[-17,-13]],"name":"WallHub"},
+		{"along_x":true,"fixed":-30,"a":-9.5,"b":9.5,"gaps":[[-4,4]],"name":"WallHub"},
+		{"along_x":true,"fixed":-30,"a":9.5,"b":20,"gaps":[],"name":"WallHub"},
+		{"along_x":false,"fixed":-26,"a":-46,"b":-30,"gaps":[],"name":"WallHub"},
+		{"along_x":false,"fixed":-9.5,"a":-46,"b":-30,"gaps":[[-40,-36]],"name":"WallHub"},
+		{"along_x":false,"fixed":-9.5,"a":-30,"b":-14,"gaps":[[-24,-20]],"name":"WallHub"},
+		{"along_x":false,"fixed":9.5,"a":-30,"b":-14,"gaps":[[-24,-20]],"name":"WallHub"},
+		{"along_x":false,"fixed":9.5,"a":-46,"b":-30,"gaps":[],"name":"WallHub"},
+		{"along_x":true,"fixed":-14,"a":-9.5,"b":9.5,"gaps":[[-2,2]],"name":"WallHub"},
+		{"along_x":true,"fixed":-13,"a":-8,"b":8,"gaps":[[-2,2]],"name":"WallCafe"},
+		{"along_x":true,"fixed":-5,"a":-8,"b":8,"gaps":[],"name":"WallCafe"},
+		{"along_x":false,"fixed":-8,"a":-13,"b":-5,"gaps":[],"name":"WallCafe"},
+		{"along_x":false,"fixed":8,"a":-13,"b":-5,"gaps":[],"name":"WallCafe"},
+		{"along_x":false,"fixed":-20,"a":-30,"b":16,"gaps":[],"name":"WallHub"},
+		{"along_x":false,"fixed":20,"a":-30,"b":16,"gaps":[],"name":"WallHub"},
+		{"along_x":false,"fixed":-9.5,"a":-14,"b":16,"gaps":[[-1.7,1.7]],"name":"WallHub"},
+		{"along_x":false,"fixed":9.5,"a":-14,"b":16,"gaps":[[-1.7,1.7]],"name":"WallHub"},
+		{"along_x":true,"fixed":6,"a":-20,"b":-9.5,"gaps":[[-17,-13]],"name":"WallHub"},
+		{"along_x":true,"fixed":6,"a":9.5,"b":20,"gaps":[[13,17]],"name":"WallHub"},
+		{"along_x":true,"fixed":16,"a":-20,"b":-9.5,"gaps":[],"name":"WallHub"},
+		{"along_x":true,"fixed":16,"a":9.5,"b":20,"gaps":[],"name":"WallHub"}
+	],
+	"signs": [
+		{"map":"platform","p":[0,2.8,-45.8],"along_x":true},
+		{"map":"concourse","p":[0,2.8,-29.8],"along_x":true},
+		{"map":"west_arcade","p":[-19.8,2.8,-10],"along_x":false},
+		{"map":"east_arcade","p":[19.8,2.8,-10],"along_x":false},
+		{"map":"cafe","p":[0,2.6,-12.8],"along_x":true},
+		{"map":"ticket_hall","p":[-17.5,2.8,-45.8],"along_x":true}
+	],
+	"layout": {"rooms":{"platform":[0,-38],"ticket_hall":[-18,-38],"concourse":[0,-22],"west_arcade":[-15,-10],"east_arcade":[15,-10],"cafe":[0,-9],"lost_property":[-15,11],"newsstand":[15,11],"duct":[0,11]},"edges":[["platform","concourse"],["platform","ticket_hall"],["ticket_hall","west_arcade"],["concourse","west_arcade"],["concourse","east_arcade"],["concourse","cafe"],["west_arcade","lost_property"],["east_arcade","newsstand"],["lost_property","duct"],["newsstand","duct"]],"entrances":["west_arcade","east_arcade","duct"],"cams":["platform","concourse","ticket_hall","west_arcade","lost_property","cafe","east_arcade","newsstand","duct"],"vents":["duct"],"office":[0,0]},
+	"vent_run": {"origin":[-8,0,-62],"cam_from":[3.6,1.7,0],"cam_look":[-2,0.6,0],"spot_x":-2.5},
+	"vent_stand": {"L":[-2.3,0,-1.7],"R":[2.3,0,-1.7],"T":[0,0,-1.3]}
+}

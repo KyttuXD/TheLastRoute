@@ -28,9 +28,12 @@ pub mod beach;
 pub mod canvas;
 pub mod ceilings;
 pub mod ducts;
+pub mod flat;
 pub mod floors;
+pub mod medieval;
 pub mod rng;
 pub mod sets;
+pub mod sheet;
 pub mod walls;
 
 #[allow(unused_imports)] // re-exported API
@@ -42,8 +45,64 @@ use beach::*;
 use ceilings::*;
 use floors::*;
 use walls::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 type Painter = fn(i32) -> Img;
+
+/// How a surface is painted. `Painted` is the original look (floors.rs, walls.rs, ceilings.rs). `Flat` swaps the lab
+/// kinds for their flat versions (flat.rs): the same patterns in 3-6 flat colours, no bevel, no grain. Kinds without a
+/// flat version paint the same either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    Painted,
+    Flat,
+}
+
+/// Set by `--flat-textures`: `paint()` paints the lab kinds `Flat` instead of `Painted`. Off by default.
+static FLAT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_flat_textures(on: bool) {
+    FLAT.store(on, Ordering::Relaxed);
+}
+
+pub fn flat_textures() -> bool {
+    FLAT.load(Ordering::Relaxed)
+}
+
+/// The lab kinds that have flat versions, as (group, kind): the contact sheet's columns.
+pub const LAB_KINDS: &[(&str, &str)] = &[
+    ("floor", "epoxy0"),
+    ("floor", "epoxy1"),
+    ("floor", "grate"),
+    ("floor", "hazard"),
+    ("floor", "metal1"),
+    ("wall", "lab0"),
+    ("wall", "lab1"),
+    ("wall", "timber0"),
+    ("wall", "ashlar0"),
+    ("floor", "cobble0"),
+    ("floor", "dirt0"),
+    ("ceiling", "beams0"),
+    ("ceiling", "ceil0"),
+];
+
+/// The flat painter of a kind, when it has one.
+fn flat_painter(group: &str, key: &str) -> Option<fn(i32) -> Img> {
+    match (group, key) {
+        ("floor", "metal0" | "metal1" | "metal2" | "metal3") => Some(flat::paint_metal),
+        ("floor", "epoxy0" | "epoxy1") => Some(flat::paint_epoxy),
+        ("floor", "grate") => Some(flat::paint_grate),
+        ("floor", "hazard") => Some(flat::paint_hazard),
+        ("wall", "lab0" | "lab1") => Some(flat::paint_wall_lab),
+        ("ceiling", "ceil0" | "ceil1") => Some(flat::paint_ceiling),
+        ("wall", "timber0" | "timber1") => Some(medieval::flat_timber_wall),
+        ("wall", "ashlar0" | "ashlar1") => Some(medieval::flat_stone_wall),
+        ("floor", "cobble0" | "cobble1") => Some(medieval::flat_cobble_floor),
+        ("floor", "dirt0") => Some(medieval::flat_dirt_floor),
+        ("ceiling", "beams0") => Some(medieval::flat_beam_ceiling),
+        _ => None,
+    }
+}
 
 /// RefTextures.FLOOR_PAINTERS in its declaration order (= the layer order of the original's floor texture array,
 /// which is FLOOR_PAINTERS then CEILING_PAINTERS): (kind key, painter, variant passed to the painter).
@@ -100,6 +159,9 @@ pub const FLOOR_PAINTERS: &[(&str, Painter, i32)] = &[
     ("wetsand0", paint_sand, 2),
     ("driftwood0", paint_driftwood, 0),
     ("driftwood1", paint_driftwood, 1),
+    ("cobble0", medieval::paint_cobble_floor, 0),
+    ("cobble1", medieval::paint_cobble_floor, 1),
+    ("dirt0", medieval::paint_dirt_floor, 0),
 ];
 
 pub const WALL_PAINTERS: &[(&str, Painter, i32)] = &[
@@ -141,6 +203,11 @@ pub const WALL_PAINTERS: &[(&str, Painter, i32)] = &[
     ("whitewash1", paint_wall_whitewash, 1),
     ("tealpanel0", paint_wall_tealpanel, 0),
     ("tealpanel1", paint_wall_tealpanel, 1),
+    ("timber0", medieval::paint_timber_wall, 0),
+    ("timber1", medieval::paint_timber_wall, 1),
+    // "ashlar", not "stone": the "stone0" wall above is the older one. `medieval::paint_named("stone0")` is this one.
+    ("ashlar0", medieval::paint_stone_wall, 0),
+    ("ashlar1", medieval::paint_stone_wall, 1),
 ];
 
 pub const CEILING_PAINTERS: &[(&str, Painter, i32)] = &[
@@ -150,6 +217,7 @@ pub const CEILING_PAINTERS: &[(&str, Painter, i32)] = &[
     ("rockceil", paint_rock_ceiling, 0),
     ("vault", paint_vault, 0),
     ("skylight0", paint_skylight, 0),
+    ("beams0", medieval::paint_beam_ceiling, 0),
 ];
 
 /// RefTextures.DUCT_PAINTERS (the painters take no variant).
@@ -218,19 +286,43 @@ fn find(group: &str, kind: &str, variant: i32) -> Option<&'static (&'static str,
 /// `kind` is either a full kind key of the group's table ("metal3", "paper0", "carpet_red", "runner_l", "wetsand0";
 /// `variant` is then ignored) or a family prefix that `variant` completes ("metal" + 3, "paper" + 0, "rockwall" + 5).
 /// `None` for an unknown group or kind. (The original fell back to the table's first kind for an unknown kind; use
-/// `paint_or_first` for that.)
+/// `paint_or_first` for that.) The style is `Flat` when `--flat-textures` is set, else `Painted`.
 pub fn paint(group: &str, kind: &str, variant: i32) -> Option<(u16, u16, Vec<u8>)> {
+    let style = if flat_textures() { Style::Flat } else { Style::Painted };
+    paint_styled(group, kind, variant, style)
+}
+
+/// `paint` with the style given. The same bytes for the same key and style, every time.
+pub fn paint_styled(group: &str, kind: &str, variant: i32, style: Style) -> Option<(u16, u16, Vec<u8>)> {
     let entry = find(group, kind, variant)?;
-    let img = (entry.1)(entry.2);
-    Some((img.w as u16, img.h as u16, img.px))
+    Some(render(group, entry, style))
+}
+
+/// Paints one table entry in a style: the flat painter when the style is `Flat` and the kind has one, else the original.
+fn render(group: &str, entry: &(&'static str, Painter, i32), style: Style) -> (u16, u16, Vec<u8>) {
+    let flat = match style {
+        Style::Flat => flat_painter(group, entry.0),
+        Style::Painted => None,
+    };
+    let img = match flat {
+        Some(paint_flat) => paint_flat(entry.2),
+        None => (entry.1)(entry.2),
+    };
+    (img.w as u16, img.h as u16, img.px)
 }
 
 /// `RefTextures.texture()` semantics: an unknown kind paints the group's first kind (metal0 / panel0 / ceil0 / sheet).
+/// The fallback goes through the same style as `paint`, so `--flat-textures` holds for it too.
 pub fn paint_or_first(group: &str, kind: &str) -> Option<(u16, u16, Vec<u8>)> {
-    paint(group, kind, 0).or_else(|| {
+    let style = if flat_textures() { Style::Flat } else { Style::Painted };
+    paint_or_first_styled(group, kind, style)
+}
+
+/// `paint_or_first` with the style given.
+pub fn paint_or_first_styled(group: &str, kind: &str, style: Style) -> Option<(u16, u16, Vec<u8>)> {
+    paint_styled(group, kind, 0, style).or_else(|| {
         let first = table(group)?.first()?;
-        let img = (first.1)(first.2);
-        Some((img.w as u16, img.h as u16, img.px))
+        Some(render(group, first, style))
     })
 }
 
@@ -362,6 +454,19 @@ mod tests {
         assert_eq!((w, h), (32u16, 32u16));
     }
 
+    /// The PNG fallback `assets/environment/wall_lab.png` is one storey of wall like the painter's: 32 x 128.
+    #[test]
+    fn the_wall_lab_png_fallback_is_32x128_like_the_painter() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/lr_story/assets/environment/wall_lab.png");
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let w = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+        let (pw, ph, _) = paint("wall", "lab0", 0).unwrap();
+        assert_eq!((w, h), (pw as u32, ph as u32));
+        assert_eq!((w, h), (32, 128));
+    }
+
     /// "lab" and "office" are different districts on purpose: the lab set for "lab", the maze (office) set for
     /// "office". last_route's world/mod.rs maps office to lab; this port does not.
     #[test]
@@ -373,6 +478,52 @@ mod tests {
         assert_eq!(office.district, "maze");
         assert_eq!(office.wall.kind, "panel0");
         assert_ne!(lab.district, office.district);
+    }
+
+    /// The painted style is the original painter's output, byte for byte (the flat painters do not touch it).
+    #[test]
+    fn painted_style_still_gives_the_original_bytes() {
+        let (w, h, px) = paint_styled("floor", "epoxy0", 0, Style::Painted).unwrap();
+        let direct = floors::paint_epoxy(0);
+        assert_eq!((w as i32, h as i32), (direct.w, direct.h));
+        assert!(px == direct.px, "painted epoxy0 changed");
+        let (_, _, wall) = paint_styled("wall", "lab1", 0, Style::Painted).unwrap();
+        assert!(wall == walls::paint_wall_lab(1).px, "painted lab1 changed");
+        let (_, _, ceil) = paint_styled("ceiling", "ceil0", 0, Style::Painted).unwrap();
+        assert!(ceil == ceilings::paint_ceiling(0).px, "painted ceil0 changed");
+    }
+
+    /// The fallback for an unknown kind honours the style: flat gives the first kind's flat texture.
+    #[test]
+    fn the_fallback_painter_honours_the_flat_style() {
+        let first = table("floor").unwrap().first().unwrap().0;
+        let flat = paint_or_first_styled("floor", "no_such_kind", Style::Flat).unwrap();
+        assert!(flat == paint_styled("floor", first, 0, Style::Flat).unwrap(), "fallback is the first kind, flat");
+        let painted = paint_or_first_styled("floor", "no_such_kind", Style::Painted).unwrap();
+        assert!(painted == paint_styled("floor", first, 0, Style::Painted).unwrap());
+        assert!(flat.2 != painted.2, "the styles differ for {first}");
+        assert!(paint_or_first_styled("nope", "x", Style::Flat).is_none());
+    }
+
+    /// Every lab kind has a flat version that differs from the painted one, and the flat bytes are the same twice.
+    #[test]
+    fn flat_lab_kinds_differ_from_painted_and_repeat_exactly() {
+        for (group, kind) in LAB_KINDS {
+            let painted = paint_styled(group, kind, 0, Style::Painted).unwrap();
+            let flat = paint_styled(group, kind, 0, Style::Flat).unwrap();
+            let again = paint_styled(group, kind, 0, Style::Flat).unwrap();
+            assert_eq!((painted.0, painted.1), (flat.0, flat.1), "{group}:{kind} size");
+            assert!(flat == again, "{group}:{kind} flat bytes differ on the second call");
+            assert!(flat.2 != painted.2, "{group}:{kind} flat is the painted texture");
+        }
+    }
+
+    /// Kinds without a flat version paint the same in both styles.
+    #[test]
+    fn kinds_without_a_flat_version_are_unchanged() {
+        for (group, kind) in [("floor", "carpet_red"), ("wall", "paper0"), ("ceiling", "vault")] {
+            assert!(paint_styled(group, kind, 0, Style::Flat) == paint_styled(group, kind, 0, Style::Painted));
+        }
     }
 
     /// Byte-compare against a Godot dump when LR_TEX_DUMP points at one (`<group>_<kind>.rgba`, see NOTES.md).

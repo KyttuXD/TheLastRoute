@@ -1,0 +1,58 @@
+{
+	"schema": "nw.calls/1",
+	"id": "story",
+	"order": 4,
+	"levels": [
+		{
+			"level": "1",
+			"at": 5,
+			"lines": [
+				"Zellia. Tonight is orientation. I'll give you tasks and you'll carry them out in order.",
+				"Your list is on the left. A and D take you through the side doors, and W through the lift door. Each room's task is done at its own station, so look around.",
+				"Nothing is active tonight. Take your time and learn the layout."
+			]
+		},
+		{
+			"level": "2",
+			"at": 5,
+			"lines": [
+				"The gallery has a resident, and the lamps there need you twice tonight. Opalie responds to noise, and everything you do at a station is a little loud, so work quietly there.",
+				"C switches you to crawling, which is slower but quiet. The red line on your noise meter is what she can hear. Under it she still creeps in, slowly, so don't dawdle.",
+				"If she gets to your door, leave. Getting through a door takes a moment, so go at one step, not at the last second."
+			]
+		},
+		{
+			"level": "3",
+			"at": 5,
+			"lines": [
+				"The workshop and the auditorium are watched by Porcelle. She comes closer when it's dark.",
+				"The beacon on F holds her still, and held long enough it pushes her back. It does run down, so don't leave it on. When Opalie hears something, Porcelle is warned.",
+				"Leaving a room doesn't make them forget you. They wait near the door for you to come back. The list ends in the gallery again, so keep it quiet."
+			]
+		},
+		{
+			"level": "4",
+			"at": 5,
+			"lines": [
+				"The lift runs between floors on a schedule, and Quenelle rides it. A bell sounds shortly before it opens at Control. The gallery lamps want checking again before you sign off.",
+				"If you're in Control when it opens, hide with H until it leaves. Don't be in the lift itself when it opens; get out when the bell goes. The lamp under your list lights with it."
+			]
+		},
+		{
+			"level": "5",
+			"at": 5,
+			"lines": [
+				"Everything is active tonight, and the list covers the whole building.",
+				"Keep your routes short and keep the noise down."
+			]
+		},
+		{
+			"level": "6",
+			"at": 5,
+			"lines": [
+				"This is the last list, and the longest. Every room is on it, and everyone is keener than before, and keener the longer you take.",
+				"Do it in order and don't hurry. Hurrying is loud."
+			]
+		}
+	]
+}

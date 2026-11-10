@@ -146,7 +146,7 @@ pub fn uv_space(j: &serde_json::Value, tex_w: f32, tex_h: f32) -> (f32, f32) {
         j["textures"][0][key]
             .as_f64()
             .filter(|v| *v > 0.0)
-            .or_else(|| j["resolution"][res_key].as_f64())
+            .or_else(|| j["resolution"][res_key].as_f64().filter(|v| *v > 0.0))
             .unwrap_or(px as f64) as f32
     };
     (pick("uv_width", "width", tex_w), pick("uv_height", "height", tex_h))
@@ -283,7 +283,7 @@ fn read_shape(j: &serde_json::Value, res_w: f32, res_h: f32) -> Option<Shape> {
                     };
                     let mut uvs = [vec2(u1, v1), vec2(u2, v1), vec2(u2, v2), vec2(u1, v2)];
                     let turns =
-                        (fj["rotation"].as_f64().unwrap_or(0.0) / 90.0).round() as usize % 4;
+                        (fj["rotation"].as_f64().unwrap_or(0.0) / 90.0).round().rem_euclid(4.0) as usize % 4;
                     uvs.rotate_right(turns);
                     faces.push(Face {
                         corners: c.iter().map(|p| place(*p)).collect(),
@@ -628,6 +628,25 @@ mod tests {
             let faces: usize = shape.parts.iter().map(|p| p.faces.len()).sum();
             assert!(!shape.parts.is_empty(), "{rel}: no cube or mesh element");
             assert!(faces > 0, "{rel}: no faces");
+        }
+    }
+
+    /// Build order 7: one lab prop (assets/props/blocky) and one maze prop (assets/props/maze) parse into the bones and
+    /// elements their files hold. Both are flat props (no outliner groups), so they have no bones. The labStool is four
+    /// cubes and one mesh; the officeDesk is twelve cubes.
+    #[test]
+    fn a_lab_prop_and_a_maze_prop_parse_to_their_bone_and_cube_counts() {
+        for (rel, bones, cubes, others) in [("blocky/labStool_0.bbmodel", 0usize, 4usize, 1usize), ("maze/office_desk.bbmodel", 0, 12, 0)] {
+            let text = std::fs::read_to_string(props_dir().join(rel)).unwrap();
+            let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let kind = |t: &str| j["elements"].as_array().unwrap().iter().filter(|e| e["type"].as_str() == Some(t)).count();
+            assert_eq!((kind("cube"), kind("mesh")), (cubes, others), "{rel}: the file's own element counts changed");
+            let shape = shipped_shape(rel);
+            assert_eq!(shape.groups.len(), bones, "{rel}: bones");
+            assert_eq!(shape.parts.len(), cubes + others, "{rel}: one part per element");
+            let cube_parts = shape.parts.iter().filter(|p| !p.faces.is_empty()).count();
+            assert!(cube_parts >= cubes, "{rel}: {cube_parts} drawable parts for {cubes} cubes");
+            assert!(shape.min.is_finite() && shape.max.is_finite() && shape.min.cmplt(shape.max).all(), "{rel}: bounds");
         }
     }
 

@@ -15,5 +15,5 @@
   "debug_min_frames": 30,
   "debug_avg_ratio": 2.0,
   "debug_min_ms": 25.0,
-  "parts": ["world meshes", "scene items", "doors", "hunters", "remote players", "viewmodel", "npc update", "streaming", "hunter update", "hunter paths", "hunter brains", "window build", "window adopt", "window residency", "resident build", "window grid", "render 3d"]
+  "parts": ["world meshes", "scene items", "doors", "hunters", "remote players", "viewmodel", "npc update", "streaming", "hunter update", "hunter paths", "hunter brains", "window build", "window adopt", "window residency", "resident build", "chunk build", "chunk layout", "chunk loot", "chunk links", "chunk grid", "chunk fixtures", "window merge", "window grid", "render 3d"]
 }

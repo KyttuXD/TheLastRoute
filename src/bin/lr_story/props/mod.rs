@@ -1,4 +1,4 @@
-//! Prop models for LR Story, read from Blockbench (.bbmodel) files in a folder the caller names. Copied from the Last
+//! Prop models for KYTTU - LRS, read from Blockbench (.bbmodel) files in a folder the caller names. Copied from the Last
 //! Route render code (render/bbmodel.rs, prop_model.rs, prop_scale.rs, door.rs, builder.rs). The world, app and shader
 //! references were replaced; each file's header and comments say what changed. Nothing here reads embedded data.
 //!
@@ -28,8 +28,8 @@ pub const GHOST_MODE: f32 = 4.0;
 /// a macroquad graphics context.
 pub fn load_prop(props_dir: &Path, rel: &str, cache: &mut AtlasCache, soft: bool) -> Option<PropModel> {
     let path = props_dir.join(rel);
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = crate::assets_vfs::read_to_string(&path).ok()?;
     let dir = path.parent()?.to_path_buf();
-    let find = |name: &str| std::fs::read(dir.join(name)).ok();
+    let find = |name: &str| crate::assets_vfs::read(&dir.join(name)).ok();
     PropModel::parse(&text, &find, &dir.to_string_lossy(), cache, soft)
 }

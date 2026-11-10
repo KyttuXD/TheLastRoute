@@ -1,0 +1,95 @@
+{
+	"schema": "nw.mode/1",
+	"id": "extra",
+	"order": 7,
+	"menu": {
+		"id": "extra",
+		"num": 8,
+		"label": "8. OPEN AIR",
+		"title": "OPEN AIR",
+		"tag": "THREE WATCHES · OUTDOORS",
+		"playable": true,
+		"resumable": true,
+		"office": "extra",
+		"cast": [
+			"ysolde",
+			"verrine",
+			"wynelle",
+			"quenelle"
+		],
+		"art": [
+			"verrine",
+			"ysolde"
+		],
+		"custom": [
+			{
+				"id": "ysolde",
+				"label": "Ysolde"
+			},
+			{
+				"id": "verrine",
+				"label": "Verrine"
+			},
+			{
+				"id": "wynelle",
+				"label": "Wynelle"
+			},
+			{
+				"id": "quenelle",
+				"label": "Quenelle"
+			}
+		],
+		"presets": [
+			{
+				"id": "high-ground",
+				"name": "High Ground",
+				"ai": {
+					"ysolde": 0,
+					"verrine": 15,
+					"wynelle": 0,
+					"quenelle": 0
+				}
+			},
+			{
+				"id": "cold-road",
+				"name": "Cold Road",
+				"ai": {
+					"ysolde": 0,
+					"verrine": 0,
+					"wynelle": 15,
+					"quenelle": 0
+				}
+			},
+			{
+				"id": "dusk-to-dawn",
+				"name": "Dusk To Dawn",
+				"ai": {
+					"ysolde": 8,
+					"verrine": 8,
+					"wynelle": 0,
+					"quenelle": 12
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20/20",
+				"ai": {
+					"ysolde": 20,
+					"verrine": 20,
+					"wynelle": 20,
+					"quenelle": 20
+				}
+			}
+		],
+		"blurb": "Three watches under the open sky: a windy rooftop, a cold bus stop and a campfire at the edge of the dark.",
+		"hint": "",
+		"levels": [
+			"ROOFTOP",
+			"BUS STOP",
+			"CAMPFIRE"
+		],
+		"scored": 3,
+		"open": false,
+		"customLevel": 0
+	}
+}

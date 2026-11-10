@@ -1,0 +1,849 @@
+{
+ "schema": "nw.nav/1",
+ "id": "story",
+ "rooms": {
+  "breaker": {
+   "min": [
+    -15,
+    -2.7
+   ],
+   "max": [
+    -9,
+    2.7
+   ]
+  },
+  "gallery": {
+   "min": [
+    -9,
+    -2.7
+   ],
+   "max": [
+    -3,
+    2.7
+   ]
+  },
+  "control": {
+   "min": [
+    -3,
+    -2.5
+   ],
+   "max": [
+    3,
+    2.7
+   ]
+  },
+  "workshop": {
+   "min": [
+    3,
+    -2.7
+   ],
+   "max": [
+    9,
+    2.7
+   ]
+  },
+  "auditorium": {
+   "min": [
+    9,
+    -2.7
+   ],
+   "max": [
+    15,
+    2.7
+   ]
+  },
+  "lift": {
+   "min": [
+    -1.7,
+    -5.9
+   ],
+   "max": [
+    1.7,
+    -2.5
+   ]
+  }
+ },
+ "nodes": [
+  {
+   "id": "C:breaker",
+   "kind": "waypoint",
+   "room": "breaker",
+   "p": [
+    -12,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "CAM:breaker",
+   "kind": "camera",
+   "room": "breaker",
+   "p": [
+    -13.2,
+    3.1,
+    2.3
+   ],
+   "cam": 1
+  },
+  {
+   "id": "C:gallery",
+   "kind": "waypoint",
+   "room": "gallery",
+   "p": [
+    -6,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "CAM:gallery",
+   "kind": "camera",
+   "room": "gallery",
+   "p": [
+    -7.2,
+    3.1,
+    2.3
+   ],
+   "cam": 2
+  },
+  {
+   "id": "C:control",
+   "kind": "waypoint",
+   "room": "control",
+   "p": [
+    0,
+    0,
+    0.3
+   ]
+  },
+  {
+   "id": "CAM:control",
+   "kind": "camera",
+   "room": "control",
+   "p": [
+    -1.2,
+    3.1,
+    2.3
+   ],
+   "cam": 3
+  },
+  {
+   "id": "C:workshop",
+   "kind": "waypoint",
+   "room": "workshop",
+   "p": [
+    6,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "CAM:workshop",
+   "kind": "camera",
+   "room": "workshop",
+   "p": [
+    4.8,
+    3.1,
+    2.3
+   ],
+   "cam": 4
+  },
+  {
+   "id": "C:auditorium",
+   "kind": "waypoint",
+   "room": "auditorium",
+   "p": [
+    12,
+    0,
+    0.7
+   ]
+  },
+  {
+   "id": "CAM:auditorium",
+   "kind": "camera",
+   "room": "auditorium",
+   "p": [
+    10.8,
+    3.1,
+    2.3
+   ],
+   "cam": 5
+  },
+  {
+   "id": "W:breaker:R",
+   "kind": "waypoint",
+   "room": "breaker",
+   "p": [
+    -9.8,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "W:gallery:L",
+   "kind": "waypoint",
+   "room": "gallery",
+   "p": [
+    -8.2,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "DW:breaker|gallery",
+   "kind": "doorway",
+   "room": "",
+   "p": [
+    -9,
+    0,
+    0
+   ],
+   "between": [
+    "breaker",
+    "gallery"
+   ]
+  },
+  {
+   "id": "W:gallery:R",
+   "kind": "waypoint",
+   "room": "gallery",
+   "p": [
+    -3.8,
+    0,
+    0.3
+   ]
+  },
+  {
+   "id": "W:control:L",
+   "kind": "waypoint",
+   "room": "control",
+   "p": [
+    -2.2,
+    0,
+    0.3
+   ]
+  },
+  {
+   "id": "DW:gallery|control",
+   "kind": "doorway",
+   "room": "",
+   "p": [
+    -3,
+    0,
+    0.3
+   ],
+   "between": [
+    "gallery",
+    "control"
+   ]
+  },
+  {
+   "id": "W:control:R",
+   "kind": "waypoint",
+   "room": "control",
+   "p": [
+    2.2,
+    0,
+    0.45
+   ]
+  },
+  {
+   "id": "W:workshop:L",
+   "kind": "waypoint",
+   "room": "workshop",
+   "p": [
+    3.8,
+    0,
+    0.45
+   ]
+  },
+  {
+   "id": "DW:control|workshop",
+   "kind": "doorway",
+   "room": "",
+   "p": [
+    3,
+    0,
+    0.45
+   ],
+   "between": [
+    "control",
+    "workshop"
+   ]
+  },
+  {
+   "id": "W:workshop:R",
+   "kind": "waypoint",
+   "room": "workshop",
+   "p": [
+    8.2,
+    0,
+    0
+   ]
+  },
+  {
+   "id": "W:auditorium:L",
+   "kind": "waypoint",
+   "room": "auditorium",
+   "p": [
+    9.8,
+    0,
+    0.55
+   ]
+  },
+  {
+   "id": "DW:workshop|auditorium",
+   "kind": "doorway",
+   "room": "",
+   "p": [
+    9,
+    0,
+    0
+   ],
+   "between": [
+    "workshop",
+    "auditorium"
+   ]
+  },
+  {
+   "id": "W:control:N",
+   "kind": "waypoint",
+   "room": "control",
+   "p": [
+    0,
+    0,
+    -1.5
+   ]
+  },
+  {
+   "id": "DW:control|lift",
+   "kind": "doorway",
+   "room": "",
+   "p": [
+    0,
+    0,
+    -2.6
+   ],
+   "between": [
+    "control",
+    "lift"
+   ]
+  },
+  {
+   "id": "W:lift:S",
+   "kind": "waypoint",
+   "room": "lift",
+   "p": [
+    0,
+    0,
+    -3.3
+   ]
+  },
+  {
+   "id": "C:lift",
+   "kind": "waypoint",
+   "room": "lift",
+   "p": [
+    0,
+    0,
+    -4.1
+   ]
+  },
+  {
+   "id": "CAM:lift",
+   "kind": "camera",
+   "room": "lift",
+   "p": [
+    1.2,
+    3.1,
+    -2.85
+   ],
+   "cam": 6
+  },
+  {
+   "id": "W:auditorium:R",
+   "kind": "waypoint",
+   "room": "auditorium",
+   "p": [
+    13.2,
+    0,
+    0.7
+   ]
+  },
+  {
+   "id": "S:auditorium:step",
+   "kind": "waypoint",
+   "room": "auditorium",
+   "p": [
+    13.2,
+    0.42,
+    -0.75
+   ]
+  },
+  {
+   "id": "T:breaker:tap_terminal",
+   "kind": "task",
+   "room": "breaker",
+   "p": [
+    -13.2,
+    0,
+    -1.55
+   ],
+   "look": [
+    -13.2,
+    1.4,
+    -2.3
+   ],
+   "task": "tap_terminal"
+  },
+  {
+   "id": "T:breaker:check_locker",
+   "kind": "task",
+   "room": "breaker",
+   "p": [
+    -10.5,
+    0,
+    1.4
+   ],
+   "look": [
+    -9.7,
+    1,
+    1.4
+   ],
+   "task": "check_locker"
+  },
+  {
+   "id": "T:breaker:sort_boxes",
+   "kind": "task",
+   "room": "breaker",
+   "p": [
+    -13,
+    0,
+    0.95
+   ],
+   "look": [
+    -14.2,
+    0.4,
+    1.6
+   ],
+   "task": "sort_boxes"
+  },
+  {
+   "id": "T:gallery:wipe_counter",
+   "kind": "task",
+   "room": "gallery",
+   "p": [
+    -7,
+    0,
+    -1.55
+   ],
+   "look": [
+    -7,
+    1.4,
+    -2.3
+   ],
+   "task": "wipe_counter"
+  },
+  {
+   "id": "T:gallery:tap_terminal",
+   "kind": "task",
+   "room": "gallery",
+   "p": [
+    -5,
+    0,
+    -1.55
+   ],
+   "look": [
+    -5,
+    1.4,
+    -2.3
+   ],
+   "task": "tap_terminal"
+  },
+  {
+   "id": "T:gallery:check_locker",
+   "kind": "task",
+   "room": "gallery",
+   "p": [
+    -4.5,
+    0,
+    1.4
+   ],
+   "look": [
+    -3.7,
+    1,
+    1.4
+   ],
+   "task": "check_locker"
+  },
+  {
+   "id": "T:gallery:sort_boxes",
+   "kind": "task",
+   "room": "gallery",
+   "p": [
+    -7.4,
+    0,
+    0.95
+   ],
+   "look": [
+    -8.2,
+    0.4,
+    1.6
+   ],
+   "task": "sort_boxes"
+  },
+  {
+   "id": "T:gallery:pace",
+   "kind": "task",
+   "room": "gallery",
+   "p": [
+    -7.4,
+    0,
+    -0.95
+   ],
+   "look": [
+    -6,
+    1.2,
+    -2.3
+   ],
+   "task": "pace",
+   "pace_to": [
+    -4.6,
+    0,
+    -0.95
+   ]
+  },
+  {
+   "id": "T:workshop:wipe_counter",
+   "kind": "task",
+   "room": "workshop",
+   "p": [
+    6.4,
+    0,
+    -0.95
+   ],
+   "look": [
+    6.4,
+    0.95,
+    -1.8
+   ],
+   "task": "wipe_counter"
+  },
+  {
+   "id": "T:workshop:sort_boxes",
+   "kind": "task",
+   "room": "workshop",
+   "p": [
+    4.6,
+    0,
+    0.95
+   ],
+   "look": [
+    3.8,
+    0.4,
+    1.6
+   ],
+   "task": "sort_boxes"
+  },
+  {
+   "id": "T:workshop:check_locker",
+   "kind": "task",
+   "room": "workshop",
+   "p": [
+    7.5,
+    0,
+    -0.9
+   ],
+   "look": [
+    8.3,
+    1,
+    -1.9
+   ],
+   "task": "check_locker"
+  },
+  {
+   "id": "T:workshop:tap_terminal",
+   "kind": "task",
+   "room": "workshop",
+   "p": [
+    7.5,
+    0,
+    1.3
+   ],
+   "look": [
+    8.4,
+    1.2,
+    1.4
+   ],
+   "task": "tap_terminal"
+  },
+  {
+   "id": "T:workshop:pace",
+   "kind": "task",
+   "room": "workshop",
+   "p": [
+    4.5,
+    0,
+    -0.5
+   ],
+   "look": [
+    6,
+    1.2,
+    -1.8
+   ],
+   "task": "pace",
+   "pace_to": [
+    7.2,
+    0,
+    -0.5
+   ]
+  },
+  {
+   "id": "T:auditorium:sit:a",
+   "kind": "task",
+   "room": "auditorium",
+   "p": [
+    11.4,
+    0,
+    1.2
+   ],
+   "look": [
+    11.4,
+    1,
+    -1.4
+   ],
+   "task": "sit"
+  },
+  {
+   "id": "T:auditorium:sit:b",
+   "kind": "task",
+   "room": "auditorium",
+   "p": [
+    12.6,
+    0,
+    1.2
+   ],
+   "look": [
+    12.6,
+    1,
+    -1.4
+   ],
+   "task": "sit"
+  },
+  {
+   "id": "T:auditorium:tap_terminal",
+   "kind": "task",
+   "room": "auditorium",
+   "p": [
+    12.9,
+    0,
+    0.5
+   ],
+   "look": [
+    12,
+    1,
+    0.3
+   ],
+   "task": "tap_terminal"
+  },
+  {
+   "id": "T:auditorium:check_locker",
+   "kind": "task",
+   "room": "auditorium",
+   "p": [
+    13.55,
+    0.42,
+    -1.3
+   ],
+   "look": [
+    14.3,
+    1,
+    -1.9
+   ],
+   "task": "check_locker"
+  },
+  {
+   "id": "T:lift:pace",
+   "kind": "task",
+   "room": "lift",
+   "p": [
+    -0.8,
+    0,
+    -4.7
+   ],
+   "look": [
+    0,
+    1.2,
+    -2.6
+   ],
+   "task": "pace",
+   "pace_to": [
+    0.8,
+    0,
+    -4.7
+   ]
+  }
+ ],
+ "edges": [
+  [
+   "C:breaker",
+   "W:breaker:R"
+  ],
+  [
+   "W:breaker:R",
+   "DW:breaker|gallery"
+  ],
+  [
+   "DW:breaker|gallery",
+   "W:gallery:L"
+  ],
+  [
+   "W:gallery:L",
+   "C:gallery"
+  ],
+  [
+   "C:gallery",
+   "W:gallery:R"
+  ],
+  [
+   "W:gallery:R",
+   "DW:gallery|control"
+  ],
+  [
+   "DW:gallery|control",
+   "W:control:L"
+  ],
+  [
+   "W:control:L",
+   "C:control"
+  ],
+  [
+   "C:control",
+   "W:control:R"
+  ],
+  [
+   "W:control:R",
+   "DW:control|workshop"
+  ],
+  [
+   "DW:control|workshop",
+   "W:workshop:L"
+  ],
+  [
+   "W:workshop:L",
+   "C:workshop"
+  ],
+  [
+   "C:workshop",
+   "W:workshop:R"
+  ],
+  [
+   "W:workshop:R",
+   "DW:workshop|auditorium"
+  ],
+  [
+   "DW:workshop|auditorium",
+   "W:auditorium:L"
+  ],
+  [
+   "W:auditorium:L",
+   "C:auditorium"
+  ],
+  [
+   "C:control",
+   "W:control:N"
+  ],
+  [
+   "W:control:N",
+   "DW:control|lift"
+  ],
+  [
+   "DW:control|lift",
+   "W:lift:S"
+  ],
+  [
+   "W:lift:S",
+   "C:lift"
+  ],
+  [
+   "C:auditorium",
+   "W:auditorium:R"
+  ],
+  [
+   "W:auditorium:R",
+   "S:auditorium:step"
+  ],
+  [
+   "T:breaker:tap_terminal",
+   "C:breaker"
+  ],
+  [
+   "T:breaker:check_locker",
+   "C:breaker"
+  ],
+  [
+   "T:breaker:sort_boxes",
+   "C:breaker"
+  ],
+  [
+   "T:gallery:wipe_counter",
+   "C:gallery"
+  ],
+  [
+   "T:gallery:tap_terminal",
+   "C:gallery"
+  ],
+  [
+   "T:gallery:check_locker",
+   "C:gallery"
+  ],
+  [
+   "T:gallery:sort_boxes",
+   "C:gallery"
+  ],
+  [
+   "T:gallery:pace",
+   "C:gallery"
+  ],
+  [
+   "T:workshop:wipe_counter",
+   "C:workshop"
+  ],
+  [
+   "T:workshop:sort_boxes",
+   "C:workshop"
+  ],
+  [
+   "T:workshop:check_locker",
+   "C:workshop"
+  ],
+  [
+   "T:workshop:tap_terminal",
+   "C:workshop"
+  ],
+  [
+   "T:workshop:pace",
+   "C:workshop"
+  ],
+  [
+   "T:auditorium:sit:a",
+   "C:auditorium"
+  ],
+  [
+   "T:auditorium:sit:b",
+   "C:auditorium"
+  ],
+  [
+   "T:auditorium:tap_terminal",
+   "W:auditorium:R"
+  ],
+  [
+   "T:auditorium:check_locker",
+   "S:auditorium:step"
+  ],
+  [
+   "T:lift:pace",
+   "C:lift"
+  ]
+ ]
+}

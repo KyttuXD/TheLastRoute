@@ -1,0 +1,116 @@
+{
+	"schema": "nw.mode/1",
+	"id": "lure",
+	"order": 2,
+	"menu": {
+		"id": "lure",
+		"num": 3,
+		"label": "3. DEAD AIR",
+		"title": "DEAD AIR",
+		"tag": "VENTS · REBOOTS · CLIMATE",
+		"playable": true,
+		"resumable": true,
+		"office": "lure",
+		"cast": [
+			"wynelle",
+			"xivvy",
+			"mavrine",
+			"briselle",
+			"solyth",
+			"ferryn"
+		],
+		"art": [
+			"ferryn",
+			"wynelle"
+		],
+		"custom": [
+			{
+				"id": "wynelle",
+				"label": "Wynelle"
+			},
+			{
+				"id": "xivvy",
+				"label": "Xivvy"
+			},
+			{
+				"id": "mavrine",
+				"label": "Mavrine"
+			},
+			{
+				"id": "briselle",
+				"label": "Briselle"
+			},
+			{
+				"id": "solyth",
+				"label": "Solyth"
+			},
+			{
+				"id": "ferryn",
+				"label": "Ferryn"
+			}
+		],
+		"presets": [
+			{
+				"id": "maintenance-only",
+				"name": "Maintenance Only",
+				"ai": {
+					"wynelle": 0,
+					"xivvy": 0,
+					"mavrine": 12,
+					"briselle": 12,
+					"solyth": 0,
+					"ferryn": 12
+				}
+			},
+			{
+				"id": "the-real-one",
+				"name": "The Real One",
+				"ai": {
+					"wynelle": 0,
+					"xivvy": 15,
+					"mavrine": 3,
+					"briselle": 3,
+					"solyth": 0,
+					"ferryn": 3
+				}
+			},
+			{
+				"id": "climate-control",
+				"name": "Climate Control",
+				"ai": {
+					"wynelle": 10,
+					"xivvy": 0,
+					"mavrine": 12,
+					"briselle": 0,
+					"solyth": 10,
+					"ferryn": 0
+				}
+			},
+			{
+				"id": "all-twenty",
+				"name": "20/20/20/20",
+				"ai": {
+					"wynelle": 20,
+					"xivvy": 20,
+					"mavrine": 20,
+					"briselle": 20,
+					"solyth": 20,
+					"ferryn": 20
+				}
+			}
+		],
+		"blurb": "One hunter crawling the vents (from night 2), phantoms that break your systems, and a building whose temperature swings between cold and heat. One more of them each night, never more than five at once. Lure, seal, reboot, and keep it livable.",
+		"hint": "",
+		"levels": [
+			"NIGHT 1",
+			"NIGHT 2",
+			"NIGHT 3",
+			"NIGHT 4",
+			"NIGHT 5",
+			"NIGHT 6"
+		],
+		"scored": 6,
+		"open": false,
+		"customLevel": null
+	}
+}

@@ -613,10 +613,13 @@ impl Default for Options {
 }
 
 impl Facility {
-    pub fn generate(seed_text: &str, opt: &Options, cat: &Catalog) -> Facility {
-        let cols = opt.cols.clamp(35, 121);
-        let rows = opt.rows.clamp(35, 121);
-        let mut f = Facility {
+    /// An unpopulated floor with the same initialized grids as `generate`. Streamed chunks
+    /// replace this shell with their authored layout, so they must not first generate a
+    /// disposable finite floor and all of its rooms, props, relays and navigation data.
+    pub fn blank(seed_text: &str, cols: i32, rows: i32) -> Facility {
+        let cols = cols.clamp(35, 121);
+        let rows = rows.clamp(35, 121);
+        Facility {
             seed_text: seed_text.to_string(),
             cols,
             rows,
@@ -652,7 +655,11 @@ impl Facility {
             water: vec![],
             rails: Rails::default(),
             terrain: None,
-        };
+        }
+    }
+
+    pub fn generate(seed_text: &str, opt: &Options, cat: &Catalog) -> Facility {
+        let mut f = Facility::blank(seed_text, opt.cols, opt.rows);
         let room_count = opt.room_count.max(5);
         f.carve_facility_rooms(room_count, cat);
         f.start = f.rooms[0].center;
@@ -966,6 +973,7 @@ impl Facility {
         region_names: Vec<String>,
         seed_text: &str,
     ) -> Facility {
+        let _window_merge_perf = crate::app::perf::section("window merge");
         // Window generation merges the same nine cached chunks repeatedly as
         // the runner crosses chunk boundaries. Reserve the final collection
         // sizes up front so repeated resident/active builds do not grow and
@@ -1084,6 +1092,7 @@ impl Facility {
                 p.room = p.room.min(last);
             }
         }
+        drop(_window_merge_perf);
         let _window_grid_perf = crate::app::perf::section("window grid");
         f.rebuild_grids();
         f

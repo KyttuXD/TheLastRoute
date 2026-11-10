@@ -149,7 +149,10 @@ original's audio goldens.
 | Crouch speed | 2.25 m/s (36 ÷ 16) | GameConfig.PLAYER_CROUCH_SPEED |
 | Acceleration | instant (velocity set each frame) | player_controller_3d.gd:1974 |
 | Gravity | 12 m/s² | GameConfig.PLAYER_GRAVITY |
-| Jump (hop) velocity | 3.15 m/s | GameConfig.PLAYER_JUMP_VELOCITY |
+| Jump (hop) velocity | 3.15 m/s (Godot); the Rust hop is 4.9 m/s from the apex below | GameConfig.PLAYER_JUMP_VELOCITY; data/player/jump.json |
+| Jump apex | 1.0 m above the walking surface (real hop); 0.41 m reproduces the Godot 3.15 m/s hop | data/player/jump.json `apex_m`, take-off v = sqrt(2 g H) |
+| Jump airtime | 0.82 s take-off to landing (2 v / g at the 1.0 m apex) | data/player/jump.json `airtime_s` |
+| Jump head room | the head (1.9 m) stops a hop under the cell's drawn ceiling (render/seams.rs `ceiling_y`); the feet are capped there | game/player.rs `head_cap` |
 | Crouch | hold C; blocks the hop | player_controller_3d.gd |
 | Eye height | 1.707 m (1.6 × 1.067), crouched × 0.69 | CAMERA_HEIGHT, CROUCH_EYE_RATIO |
 | Camera bob | walk 0.0256, sprint 0.0405, crouch 0.0128 m | CAMERA_BOB_*_AMPLITUDE |

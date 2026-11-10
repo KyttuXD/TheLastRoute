@@ -1,0 +1,63 @@
+{
+	"schema": "nw.lure.tuning/1",
+	"id": "lure",
+	"cast": ["wynelle", "xivvy", "mavrine", "briselle", "solyth", "ferryn"],
+	"names": {"xivvy": "Xivvy", "ferryn": "Ferryn", "briselle": "Briselle", "mavrine": "The air", "solyth": "Solyth", "wynelle": "Wynelle"},
+	"rooms": [
+		{"id": "lobby", "label": "RECEPTION", "short": "RECEPT", "pan": 0.0},
+		{"id": "arcade", "label": "STUDIO A", "short": "STUDIO A", "pan": -0.6},
+		{"id": "party", "label": "STUDIO B", "short": "STUDIO B", "pan": 0.6},
+		{"id": "ballpit", "label": "LIVE ROOM", "short": "LIVE RM", "pan": 0.0},
+		{"id": "prize", "label": "TAPE LIBRARY", "short": "TAPES", "pan": 0.7},
+		{"id": "storage", "label": "TRANSMITTER ROOM", "short": "XMITTER", "pan": 0.0},
+		{"id": "ventl", "label": "LEFT CRAWLSPACE", "short": "L CRAWL", "pan": -0.9},
+		{"id": "ventr", "label": "RIGHT CRAWLSPACE", "short": "R CRAWL", "pan": 0.9},
+		{"id": "officeL", "label": "LEFT VENT OPENING", "short": "", "pan": -1.0},
+		{"id": "officeR", "label": "RIGHT VENT OPENING", "short": "", "pan": 1.0}
+	],
+	"graph": {
+		"lobby": ["arcade", "party"],
+		"arcade": ["lobby", "ballpit"],
+		"party": ["lobby", "prize", "ballpit"],
+		"ballpit": ["arcade", "party", "storage"],
+		"prize": ["party", "storage"],
+		"storage": ["prize", "ballpit", "ventl", "ventr"],
+		"ventl": ["storage", "officeL"],
+		"ventr": ["storage", "officeR"],
+		"officeL": ["ventl"],
+		"officeR": ["ventr"]
+	},
+	"system_of": {"ferryn": "cams", "briselle": "audio", "mavrine": "vent"},
+	"systems": [
+		{"id": "audio", "label": "AUDIO", "key": "Q", "climate": false},
+		{"id": "cams", "label": "CAMERAS", "key": "W", "climate": false},
+		{"id": "vent", "label": "VENTS", "key": "E", "climate": false},
+		{"id": "heater", "label": "HEATER", "key": "R", "climate": true},
+		{"id": "fan", "label": "FAN", "key": "T", "climate": true}
+	],
+	"variety": {
+		"xivvyTempo": 0.25, "phantomTempo": 0.2, "phantomRestSpread": 0.3, "sameSideAgain": 0.25,
+		"wakeStep": 8000.0, "startTempSpread": 3.0, "driftSpread": 0.1
+	},
+	"levels": [0, 3, 5, 7, 9, 11],
+	"max_active": 5,
+	"climate_levels": {"solyth": [0, 0, 0, 0, 0, 12], "wynelle": [0, 0, 0, 5, 8, 13]},
+	"climate": {
+		"start": 70.0, "cold": 60.0, "hot": 100.0, "driftPerSec": 0.2, "driftPerHour": 0.12,
+		"heaterPerSec": 0.9, "fanPerSec": 0.9, "applianceStress": 0.9,
+		"coldPerDeg": 0.1, "heatPerDeg": 0.2, "recoverPerSec": 2.0
+	},
+	"phantom_levels": {"ferryn": [2, 3, 5, 7, 9, 0], "briselle": [0, 0, 3, 5, 8, 10], "mavrine": [0, 0, 0, 0, 3, 9]},
+	"phantom_extra": {
+		"ferryn": [[], [], [["audio", 0.3]], [["audio", 0.3], ["vent", 0.1]], [["audio", 0.4], ["vent", 0.1]], [["audio", 0.45], ["vent", 0.35]]],
+		"briselle": [[], [], [], [["cams", 0.35]], [["cams", 0.35]], [["cams", 0.45], ["vent", 0.3]]],
+		"mavrine": [[], [], [], [], [["audio", 0.4]], [["audio", 0.45], ["cams", 0.4]]]
+	},
+	"t": {
+		"phantomPace": 0.3, "phantomFirstMs": 4000.0, "phantomCoolMs": 10000.0,
+		"lureStrainEvery": 2, "lurePace": 1.8, "officeWaitMs": 5200.0, "retreatMs": 2000.0, "lureMs": 12000.0, "lureCoolMs": 7000.0,
+		"rebootMs": 6000.0, "phantomShowMs": 4000.0,
+		"stressPerSealSec": 1.2, "stressBrokenSec": 3.0, "stressDecaySec": 2.0
+	},
+	"custom_air": {"sealSec": 1.2, "brokenSec": 2.8, "brokenPerLevel": 0.02, "applianceStress": 0.8, "decaySec": 2.1}
+}

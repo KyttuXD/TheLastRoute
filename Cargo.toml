@@ -46,6 +46,10 @@ webpki-roots = "1"
 # the Linux backend (portal or zenity, found at run time); the wayland window-handle feature is not needed.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
+# LR Story's browser saves (src/bin/lr_story/save.rs): the page's localStorage through quad-storage. Native saves use a file.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+quad-storage = "0.1.3"
+
 # The fake website the in-game updater's tests talk to (loopback only; never in a normal build).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 lr_update = { path = "crates/lr_update", features = ["testsite"] }
@@ -66,6 +70,11 @@ server = [
 [[bin]]
 name = "lr_server"
 path = "src/bin/lr_server/main.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "lr_story_server"
+path = "src/bin/lr_story_server/main.rs"
 required-features = ["server"]
 
 [build-dependencies]
