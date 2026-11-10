@@ -308,7 +308,11 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                     if !h.idle && !crate::hunters::secret_creatures::is_secret(h.id) && stepping.map(|s| d < s.1).unwrap_or(true) {
                         stepping = Some((i, d));
                     }
-                    if h.id == "nyxie" && !was {
+                    // Nyxie's wake is a close world cue, not a global alarm.
+                    // Without the range gate every public-route/client view
+                    // hears a new Nyxie even when she is on another loaded
+                    // floor, which makes the danger audio needlessly noisy.
+                    if h.id == "nyxie" && !was && d <= CHASE_CUE_RANGE {
                         e.play(&if h.nyxie_empty_wake {
                             rules::nyxie_empty_wake()
                         } else {

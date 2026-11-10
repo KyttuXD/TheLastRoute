@@ -283,9 +283,11 @@ impl Game {
         // the hard-ability party clocks (hunters/hard_abilities.rs): advanced once per host frame, every level
         self.resident_hunters.advance_hard_party(dt);
         // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
+        let _paths_perf = crate::app::perf::section("hunter paths");
         crate::hunters::path_scheduler::begin_frame(&self.fac);
         // one navigation graph over the active and resident levels, given to every brain of every list
         self.sync_stack_nav();
+        drop(_paths_perf);
         // the Inferno's secret creatures: the dwell clock on level -3 and their spawn (game/inferno_secrets.rs)
         self.update_inferno_secrets(dt);
         // the creature is pushed onto the hunter list from inside that call (the frame its dwell clock runs out): the aim
@@ -380,6 +382,7 @@ impl Game {
         for h in &mut self.hunters {
             super::resident_hunters::share_hard_party(h, &party, clock);
         }
+        let _brains_perf = crate::app::perf::section("hunter brains");
         for i in 0..self.hunters.len() {
             let (hunter_target, chose_bot, guest_peer) = if self.no_local_runner {
                 match self.target_for_guests(&self.hunters[i], list_level, &guests, &bot_targets) {
@@ -387,8 +390,7 @@ impl Game {
                     None => continue,
                 }
             } else {
-                let (t, bot) = self.target_for(&self.hunters[i], list_level, &target, &bot_targets);
-                (t, bot, None)
+                self.target_for_party(&self.hunters[i], list_level, &target, &guests, &bot_targets)
             };
             self.hunters[i].target_is_bot = chose_bot;
             self.hunter_aim[i] = guest_peer;
@@ -511,6 +513,7 @@ impl Game {
             }
             all_events.extend(ev.into_iter().map(|e| (i, e)));
         }
+        drop(_brains_perf);
         // bodies are pushed apart AFTER every brain has stepped (and on a finite facility too), so no two end the frame
         // overlapping; a walker on an edge owns its position and is left alone (hunters/director.rs)
         // the bots on the hunters' level are bodies a wandering hunter steers clear of (not the one it hunts: director.rs)

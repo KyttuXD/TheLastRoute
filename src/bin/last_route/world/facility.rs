@@ -966,24 +966,39 @@ impl Facility {
         region_names: Vec<String>,
         seed_text: &str,
     ) -> Facility {
+        // Window generation merges the same nine cached chunks repeatedly as
+        // the runner crosses chunk boundaries. Reserve the final collection
+        // sizes up front so repeated resident/active builds do not grow and
+        // copy these vectors several times.
+        let room_cap: usize = parts.iter().map(|(p, _, _, _)| p.rooms.len()).sum();
+        let prop_cap: usize = parts.iter().map(|(p, _, _, _)| p.props.len()).sum();
+        let relay_cap: usize = parts.iter().map(|(p, _, _, _)| p.relays.len()).sum();
+        let battery_cap: usize = parts.iter().map(|(p, _, _, _)| p.batteries.len()).sum();
+        let hiding_cap: usize = parts.iter().map(|(p, _, _, _)| p.hiding.len()).sum();
+        let pickup_cap: usize = parts.iter().map(|(p, _, _, _)| p.pickups.len()).sum();
+        let light_cap: usize = parts.iter().map(|(p, _, _, _)| p.room_lights.len()).sum();
+        let stair_cap: usize = parts.iter().map(|(p, _, _, _)| p.stairs.len()).sum();
+        let drop_cap: usize = parts.iter().map(|(p, _, _, _)| p.drop_list.len()).sum();
+        let air_cap: usize = parts.iter().map(|(p, _, _, _)| p.air_list.len()).sum();
+        let water_cap: usize = parts.iter().map(|(p, _, _, _)| p.water_list.len()).sum();
         let mut f = Facility {
             seed_text: seed_text.to_string(),
             cols,
             rows,
             wall: vec![vec![true; cols as usize]; rows as usize],
-            rooms: vec![],
-            props: vec![],
+            rooms: Vec::with_capacity(room_cap),
+            props: Vec::with_capacity(prop_cap),
             start: Cell::new(cols / 2, rows / 2),
             exit: Cell::new(-10000, -10000),
             safe_zone: None,
-            relays: vec![],
-            batteries: vec![],
-            hiding: vec![],
-            pickups: vec![],
-            room_lights: vec![],
+            relays: Vec::with_capacity(relay_cap),
+            batteries: Vec::with_capacity(battery_cap),
+            hiding: Vec::with_capacity(hiding_cap),
+            pickups: Vec::with_capacity(pickup_cap),
+            room_lights: Vec::with_capacity(light_cap),
             hunter_spawn: Cell::new(cols / 2, rows / 2),
             has_lift: false,
-            stairs: vec![],
+            stairs: Vec::with_capacity(stair_cap),
             cell_region: vec![0; (cols * rows) as usize],
             region_names,
             origin: (0, 0),
@@ -994,11 +1009,11 @@ impl Facility {
             prop_grid: vec![],
             door_state: HashMap::new(),
             level: parts.first().map_or(0, |p| p.0.level),
-            drop_list: vec![],
-            air_list: vec![],
+            drop_list: Vec::with_capacity(drop_cap),
+            air_list: Vec::with_capacity(air_cap),
             drop: vec![],
             air: vec![],
-            water_list: vec![],
+            water_list: Vec::with_capacity(water_cap),
             water: vec![],
             rails: Rails::default(),
             terrain: None,
@@ -1069,6 +1084,7 @@ impl Facility {
                 p.room = p.room.min(last);
             }
         }
+        let _window_grid_perf = crate::app::perf::section("window grid");
         f.rebuild_grids();
         f
     }

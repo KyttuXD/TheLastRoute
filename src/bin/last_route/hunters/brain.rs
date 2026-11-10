@@ -1156,6 +1156,17 @@ impl Brain {
             g.before_perception(self, dt, ctx, target, &mut events);
         }
         self.update_beam_attention(dt, ctx.fac, target);
+        // Beam attention is updated after gimmick perception. Nyxie must be
+        // removed in this same frame, before movement/capture can continue.
+        if self.flash_triggered {
+            if let Gimmick::Nyxie(n) = &mut g {
+                n.dispel_by_flash();
+                self.active = false;
+                self.state = State::Idle;
+                self.gimmick = g;
+                return (false, events);
+            }
+        }
         if !ignoring {
             self.perceive(dt, ctx.fac, target, prof, &g);
         }

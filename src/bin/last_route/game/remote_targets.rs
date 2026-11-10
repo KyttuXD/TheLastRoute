@@ -77,6 +77,15 @@ impl RemoteTarget {
             },
         }
     }
+
+    /// Converts the host relay's sampled guest pose into the same target used
+    /// by a dedicated room. Keeping this conversion here prevents the client
+    /// host and dedicated host from drifting on flashlight/noise semantics.
+    pub fn from_guest_pose(p: &crate::net::world_sync::GuestPose) -> RemoteTarget {
+        let mut t = RemoteTarget::new(p.peer, (p.x, p.y), p.h, p.level, p.yaw, p.moving, p.sprinting, p.crouching, p.hidden, p.huntable);
+        t.target.flashlight_on = p.flashlight;
+        t
+    }
 }
 
 /// A hunter reached a guest (the dedicated loop turns it into the room's capture: `NetSession::expect_capture_by`, the
@@ -187,9 +196,6 @@ impl Game {
     /// The guests the hunters can take this frame, in the window's cells: huntable, not held, inside the window, and on
     /// the active level or a resident neighbour. Empty on a game with a local runner.
     pub(super) fn guest_targets(&self) -> Vec<RemoteTarget> {
-        if !self.no_local_runner {
-            return Vec::new();
-        }
         let origin = self.window_origin();
         let active = self.runner_level();
         let resident = self.resident_hunters.levels();
@@ -228,6 +234,39 @@ impl Game {
                 (t, false, Some(nearest.peer))
             }
         })
+    }
+
+    /// Target selection for a client-hosted room. The local runner and fresh
+    /// guest samples are one party; a hunter prefers the nearest runner on its
+    /// level, then applies the normal NPC-bot rule to that runner candidate.
+    pub(super) fn target_for_party(
+        &self,
+        h: &Brain,
+        list_level: i32,
+        local: &Target,
+        guests: &[RemoteTarget],
+        bots: &[super::resident_hunters::BotTarget],
+    ) -> (Target, bool, Option<u32>) {
+        let mut candidates: Vec<(Option<u32>, Target)> = vec![(None, local.clone())];
+        candidates.extend(guests.iter().map(|g| (Some(g.peer), g.target.clone())));
+        let same_level = candidates.iter().any(|(_, t)| t.level == h.level);
+        let nearest = candidates
+            .iter()
+            .filter(|(_, t)| !same_level || t.level == h.level)
+            .min_by(|a, b| super::pdist(h.pos, a.1.pos).total_cmp(&super::pdist(h.pos, b.1.pos)).then(a.0.cmp(&b.0)))
+            .expect("the local runner is always a target");
+        let own: Vec<&super::resident_hunters::BotTarget> = bots.iter().filter(|b| b.level == list_level).collect();
+        let pos: Vec<(f32, f32)> = own.iter().map(|b| b.target.pos).collect();
+        let fac = self.level_parts(list_level).map_or(&self.fac, |p| p.0);
+        let chosen = choose_target(TargetRules::get(), self.difficulty, h.pos, nearest.1.pos, &pos, |a, b| fac.has_line_of_sight(a, b));
+        match chosen {
+            Some(k) => (own[k].target.clone(), true, None),
+            None => {
+                let mut t = nearest.1.clone();
+                t.cross = self.cross_for(h, &t);
+                (t, false, nearest.0)
+            }
+        }
     }
 
     /// The hunter `hunter_id` (at `frame_index` in the frame order) reached `peer`: the guest is held until its report or
@@ -466,6 +505,18 @@ mod tests {
         g.admin.no_target = true;
         step(&mut g, &content, &catalog, 20);
         assert_eq!(g.hunter_aim[0], Some(2), "a summoned hunter under NO TARGET hunts the guest like an ordinary one");
+    }
+
+    #[test]
+    fn a_client_host_hunter_can_switch_from_the_local_runner_to_a_guest() {
+        let (mut g, content, catalog) = room();
+        let local = g.fac.start.center();
+        g.p.pos = (local.0 + 10.0, local.1);
+        assert!(crate::app::stress::summon(&mut g, "elise", &content, 0, 0));
+        g.set_remote_targets(vec![guest(&g, 2, local)], None);
+        step(&mut g, &content, &catalog, 20);
+        assert_eq!(g.hunter_aim[0], Some(2), "the client host's hunter selects the nearer guest");
+        assert!(!g.hunters[0].target_is_bot);
     }
 
     #[test]

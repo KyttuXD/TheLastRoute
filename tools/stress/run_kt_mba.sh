@@ -10,7 +10,7 @@ set -e
 PROJECT="$HOME/lr-stress"
 OUT_DIR="$HOME/lr-stress-out"
 SECONDS_PER_RUN=60
-SCENARIOS="${SCENARIOS:-fly npcs hunters interact mixed}"
+SCENARIOS="${SCENARIOS:-fly npcs hunters crowd pathfind interact mixed}"
 VSYNC="${VSYNC:-off on}"
 
 if [ ! -f "$PROJECT/Cargo.toml" ]; then

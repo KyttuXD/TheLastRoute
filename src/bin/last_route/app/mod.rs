@@ -1152,6 +1152,14 @@ pub async fn run(
             }
             None => Vec::new(),
         };
+        // A client-hosted room also has fresh guest samples. Feed them into
+        // the host simulation so summoned and ordinary hunters can select a
+        // non-host runner, not only the local body.
+        if let (Some(n), Some(g)) = (net.as_ref().filter(|n| n.is_host()), playing.as_mut()) {
+            let guests = n.guest_poses();
+            let targets = guests.iter().map(crate::game::remote_targets::RemoteTarget::from_guest_pose).collect();
+            g.set_remote_targets(targets, None);
+        }
         // the room's difficulty: the host sets it and sends it; a guest takes the host's and never sends its own
         if let Some(n) = net.as_mut() {
             if n.is_host() {

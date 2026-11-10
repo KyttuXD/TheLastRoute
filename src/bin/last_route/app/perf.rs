@@ -76,6 +76,16 @@ impl Default for Rules {
                 "hunters",
                 "remote players",
                 "viewmodel",
+                "npc update",
+                "hunter update",
+                "streaming",
+                "hunter paths",
+                "hunter brains",
+                "window build",
+                "window adopt",
+                "window residency",
+                "resident build",
+                "window grid",
                 "render 3d",
             ]
             .iter()

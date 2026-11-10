@@ -10,7 +10,7 @@ The stress mode plays a fixed-length run with a fixed seed and writes the frame 
 
 - `--stress <seconds>` sets the run length. The Intel Mac check uses 60.
 - `--stress-log <path>` sets the CSV file. The header row names the columns; that row is the reference for them.
-- `--stress-scenario <name>` picks what the run does: fly (default), npcs, hunters, interact or mixed. See below.
+- `--stress-scenario <name>` picks what the run does: fly (default), npcs, hunters, crowd, pathfind, interact or mixed. See below.
 - `--stress-vsync on|off` sets vsync for the window and the live setting (default off, so the frame rate is not capped at the display refresh rate). The saved settings file is never written.
 - `--stress-limit <fps>` caps the run at that frame rate through the FPS LIMIT row's pacer (default: none; a stress run otherwise ignores the saved FPS LIMIT). Use it to check the cap above the display refresh.
 - On macOS, `--stress-vsync off` also drops the run loop's display-link wait, so it is not capped at the refresh rate (see docs/GRAPHICS_API.md). `LR_GFX=metal` or `LR_GFX=gl` (or `--gfx metal|gl`) picks the graphics API; AUTO is OpenGL everywhere until Metal is measured faster for windowed play (see docs/GRAPHICS_API.md for the numbers: a Metal window is held to the refresh rate, Metal fullscreen is faster than OpenGL).
@@ -21,6 +21,8 @@ The stress mode plays a fixed-length run with a fixed seed and writes the frame 
 - fly: noclip, 4x speed, no extras (the flight below).
 - npcs: noclip off, walks the same route at normal speed, 8 NPCs kept near the runner (spawned with the admin spawn when fewer, the farthest removed when more).
 - hunters: noclip off, walks the route, 6 active hunters kept up with the admin summon placement. A catch still ends the run.
+- crowd: noclip off, packs 32 hunters into one open cell beside the runner. God mode keeps the run alive (hunters still chase).
+- pathfind: noclip off, 12 hunters chase the runner with the flashlight on while the runner moves backwards. God mode keeps the run alive (hunters still chase).
 - interact: noclip off, walks the route and presses interact every 3 s when the crosshair is on something. The tool swing is not driven: the swing in `game/items.rs` only hits hunters, there is no barrier or prop swing to call.
 - mixed: fly for 20 s, then npcs, hunters and interact in turn, 10 s each. The player bots (NPCs) and hunters stay once spawned.
 

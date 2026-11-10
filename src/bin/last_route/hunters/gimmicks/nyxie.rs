@@ -530,6 +530,17 @@ impl Nyxie {
         self.leap.leaping
     }
 
+    /// Apply the completed flashlight dispel after beam attention has been
+    /// updated for this frame. This is intentionally separate from `before`:
+    /// beam attention is computed after gimmick perception.
+    pub fn dispel_by_flash(&mut self) {
+        self.wake = Wake::None;
+        self.leap = Leap::default();
+        self.darkness = 0.0;
+        self.empty = 0.0;
+        self.dead = 0.0;
+    }
+
     /// The mechanic pose she is in: the pounce in the air (the wake is a cue).
     pub fn mechanic(&self) -> Option<&'static str> {
         self.leap.leaping.then_some("pounce")
@@ -537,6 +548,16 @@ impl Nyxie {
 
     pub fn before(&mut self, b: &mut Brain, dt: f32, c: &Ctx, t: &Target) {
         self.just_woke = false;
+        // A completed flashlight beam dispels Nyxie even when she is in the
+        // EMPTY wake state.  Do this before any pounce/chase work: otherwise
+        // the body can be hidden by the renderer for one frame while the
+        // brain continues pursuing the old target.
+        if b.flash_triggered {
+            self.dispel_by_flash();
+            b.active = false;
+            b.state = State::Idle;
+            return;
+        }
         let rules = wake_rules();
         // the runner's lamp, beam and place; `t` is the chase target (a bot may stand in for the runner)
         let runner = self.runner.take();
@@ -589,6 +610,16 @@ impl Nyxie {
             Wake::Empty => {
                 b.active = true;
                 b.pos = r.pos;
+                // EMPTY normally means an inescapable catch, but a recovered
+                // lamp can still complete a beam on the frame she appears.
+                // Do not leave an invisible active brain chasing from the
+                // runner's cell.
+                if lit && Brain::beam_reaches(c.fac, r.pos, r.facing, b.pos, rules.despawn_range, rules.dispel_half_angle) {
+                    self.dispel_by_flash();
+                    b.active = false;
+                    b.state = State::Idle;
+                    return;
+                }
             }
             Wake::Timer | Wake::Dead => {
                 if !b.active {

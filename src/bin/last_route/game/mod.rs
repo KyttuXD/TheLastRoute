@@ -1121,7 +1121,9 @@ impl Game {
             crate::audio::creature::update(dt, &listener, &creatures);
         }
         // NPC teammates follow the runner through the escape struggle too (game/npc.rs)
+        let _npc_perf = crate::app::perf::section("npc update");
         self.update_npcs_in(dt, npc::Tuning::get(), content);
+        drop(_npc_perf);
         // a downed runner or bot is revived by a teammate's hold, or dies at the timeout (game/revive.rs)
         let ended_before = self.report.is_some();
         self.tick_revives(dt, c);
@@ -1229,12 +1231,16 @@ impl Game {
             }
         }
         // no window shift while a climb runs: the ladder is held in the window's own cell coordinates
+        let _stream_perf = crate::app::perf::section("streaming");
         if self.inf.is_some() && self.ladder.is_none() {
             self.stream_window(content, catalog);
         }
+        drop(_stream_perf);
         // level 0 has no Nyxie in its lineup: a dead flashlight there makes the one that comes for it (endless.rs)
         self.keep_level0_nyxie(content);
+        let _hunter_perf = crate::app::perf::section("hunter update");
         self.update_hunters(dt, &prof, sounds);
+        drop(_hunter_perf);
         // anti-AFK void pressure (game/anti_idle.rs): host or solo only
         self.step_anti_idle(dt, content);
         // the hunters on the shelves live on coarsely (data/hunters/offscreen.json)
