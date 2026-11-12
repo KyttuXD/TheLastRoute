@@ -345,24 +345,26 @@ pub async fn load_world() -> World {
 pub async fn load_world_booted(boot: &mut crate::ui::boot::BootLoader) -> World {
     let t = crate::shared::clock::Instant::now();
     let content = Content::load();
-    crate::lr_info!("startup timing: content {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: content {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     let catalog = Catalog::load();
-    crate::lr_info!("startup timing: catalog {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: catalog {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     if content.hunters.is_empty() || catalog.types.is_empty() {
         boot.fail(crate::ui::boot::FAIL_LOAD);
     }
     boot.step(crate::ui::boot::Step::Route).await;
-    crate::lr_info!("startup timing: route step {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: route step {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     let assets = Assets::load(&content);
-    crate::lr_info!("startup timing: assets {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: assets {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     boot.step(crate::ui::boot::Step::Art).await;
-    crate::lr_info!("startup timing: art step {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: art step {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     let sounds = Sounds::new().await;
-    crate::lr_info!("startup timing: sounds {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: sounds {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     let mat = shader::WorldMats::new();
-    crate::lr_info!("startup timing: world material {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: world material {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     boot.step(crate::ui::boot::Step::Signal).await;
-    crate::lr_info!("startup timing: signal step {} ms", t.elapsed().as_millis());
+    crate::lr_info!("startup timing: signal step {} ms{}", t.elapsed().as_millis(), perf::rss_note());
+    perf::trim_heap();
+    crate::lr_info!("startup timing: heap trimmed{}", perf::rss_note());
     World {
         content,
         catalog,
@@ -593,6 +595,7 @@ pub async fn run(
     }
     // the boot loader (ui/boot.rs) draws its card before the first load step and yields a frame after each
     // a stress run skips the boot card (ui/boot.rs) and loads with none
+    crate::lr_info!("startup timing: window open{}", perf::rss_note());
     let mut boot = crate::ui::boot::BootLoader::new();
     // the web build's UPDATING screen (ui/update_screen.rs): drawn last, holds the input while it is up
     let mut update_screen = crate::ui::update_screen::Overlay::new();

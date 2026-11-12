@@ -77,8 +77,8 @@ impl Default for Rules {
                 "remote players",
                 "viewmodel",
                 "npc update",
-                "hunter update",
                 "streaming",
+                "hunter update",
                 "hunter paths",
                 "hunter brains",
                 "window build",
@@ -686,6 +686,39 @@ pub fn draw_overlay(font: Option<&Font>, extra: &[(String, String)]) {
     }
 }
 
+/// Hands freed heap pages back to the system (glibc only; nothing elsewhere). A load decodes pictures, parses models
+/// and builds meshes in buffers it then frees; glibc keeps those pages for reuse, so the process stays at its load peak.
+/// Call it after a large load, never per frame.
+pub fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        // SAFETY: malloc_trim takes no pointers and is safe to call at any time from any thread.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+
+/// The process's resident memory in MB (Linux only: /proc/self/statm, 4 KiB pages). `None` elsewhere.
+pub fn rss_mb() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        Some((pages * 4 / 1024) as u32)
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+/// `", rss N MB"` for a log line, or nothing where [`rss_mb`] has no answer.
+pub fn rss_note() -> String {
+    rss_mb().map(|mb| format!(", rss {mb} MB")).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,7 +744,7 @@ mod tests {
         assert_eq!(Rules::default().spike_ms, 33.3);
         assert_eq!(Rules::default().spike_log_len, 20);
         assert_eq!(Rules::default().spike_lines_per_sec, 5);
-        assert_eq!(Rules::default().parts.len(), 7);
+        assert_eq!(Rules::default().parts.len(), 24);
     }
 
     #[test]
@@ -778,7 +811,10 @@ mod tests {
     fn csv_header_is_unchanged_by_default_and_follows_data_parts() {
         assert_eq!(
             PartsLog::header(&Rules::default().parts),
-            "second,frames,world_meshes_ms,scene_items_ms,doors_ms,hunters_ms,remote_players_ms,viewmodel_ms,render_3d_ms"
+            "second,frames,world_meshes_ms,scene_items_ms,doors_ms,hunters_ms,remote_players_ms,viewmodel_ms,npc_update_ms,\
+             streaming_ms,hunter_update_ms,hunter_paths_ms,hunter_brains_ms,window_build_ms,window_adopt_ms,window_residency_ms,\
+             resident_build_ms,chunk_build_ms,chunk_layout_ms,chunk_loot_ms,chunk_links_ms,chunk_grid_ms,chunk_fixtures_ms,\
+             window_merge_ms,window_grid_ms,render_3d_ms"
         );
         let custom = parsed(r#"{ "parts": ["hunters"] }"#);
         assert_eq!(PartsLog::header(&custom.parts), "second,frames,hunters_ms");
