@@ -8,6 +8,7 @@ Every build goes to a rolling pre-release in GitHub Releases, not to Actions art
 | `nightly-server` | `lr_server`, Linux x86_64, with its SHA-256 | `.github/workflows/build.yml` (Linux job) | Every push to `main` |
 | `nightly-nw` | Night Watch (`src/bin/night_watch`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-nw.yml` | By hand only |
 | `nightly-lrs` | LR Story (`src/bin/lr_story`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-lrs.yml` | By hand only |
+| `nightly-legacy` | UNTESTED builds for old machines: the Intel OS X 10.6.8 app (`last_route-macos-10.6-UNTESTED.zip`) and the big-endian PowerPC Linux programs (`last_route-linux-powerpc64-UNTESTED.tar.gz`, `...powerpc32...`) | `.github/workflows/macos-legacy.yml` (runtime job) and `.github/workflows/powerpc.yml` | By hand: `gh workflow run macos-legacy.yml` and `gh workflow run powerpc.yml` |
 
 ## Running a manual build
 

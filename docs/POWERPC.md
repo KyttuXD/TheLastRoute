@@ -15,9 +15,11 @@ will not load this build).
 
 ## Getting a program to try
 
-- **From GitHub:** Actions > `powerpc` > Run workflow (manual only, like `macos-legacy`). Each of its two jobs builds
-  the game, runs the headless suites under qemu and uploads `last_route-linux-powerpc64-UNTESTED` or
-  `last_route-linux-powerpc32-UNTESTED` (kept 3 days). It is built on Ubuntu 22.04, so it needs glibc 2.35 or newer.
+- **From GitHub:** the `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy)
+  holds `last_route-linux-powerpc64-UNTESTED.tar.gz` and `last_route-linux-powerpc32-UNTESTED.tar.gz`. To rebuild
+  them: Actions > `powerpc` > Run workflow (manual only, like `macos-legacy`). Each of its two jobs builds the game,
+  runs the headless suites under qemu and replaces its file on the release. It is built on Ubuntu 22.04, so it needs
+  glibc 2.35 or newer.
 - **On a PC:** `sh packaging/powerpc/build.sh [64|32] [suites|test]`. Needs `gcc-powerpc64-linux-gnu` or
   `gcc-powerpc-linux-gnu`, and `qemu-user` for `suites` (the headless suites, about 4 minutes) and `test` (the unit
   tests as well, about 35 minutes under emulation).

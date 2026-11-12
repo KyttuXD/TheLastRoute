@@ -3,6 +3,21 @@
 Target: Intel x86_64 OS X 10.6.8. This is not PowerPC and is not yet a working game port.
 The normal game artifact still requires macOS 10.12 or later.
 
+## Download (2026-11-12)
+
+The `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy) holds
+`last_route-macos-10.6-UNTESTED.zip`, the app the `runtime` job of the `macos-legacy` workflow builds. It has never
+been started on a Snow Leopard Mac. To rebuild it: `gh workflow run macos-legacy.yml` (from main).
+
+What there is no build for, and why:
+
+| Wanted | State |
+|---|---|
+| OS X 10.6.8, Intel 64-bit (2008 Mac Pro) | built, untested |
+| OS X 10.6, 32-bit Intel (Core Duo Macs) | not built: the compiler used is the 64-bit Darwin 10 one |
+| OS X 10.5 and 10.4, Intel | not built. It needs a Rust compiler for Darwin 9 or 8 (MacPorts' bootstraps are the place to look), the legacy-support library for that system, and a pass over the window code for calls that arrived in 10.6. None of it is started |
+| Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X. A PowerPC Mac can run the PowerPC Linux build under Linux ([POWERPC.md](POWERPC.md)) |
+
 ## Implemented renderer foundation
 
 `LR_MACOS_LEGACY=1` enables an Intel-only experimental build configuration in

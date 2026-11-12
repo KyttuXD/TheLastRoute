@@ -1,7 +1,8 @@
 # Experimental big-endian PowerPC Linux build (G3/G4/G5 Macs and POWER machines under Linux): docs/POWERPC.md.
 # Manual only (Actions > powerpc > Run workflow), so it adds no check to pushes and pull requests.
-# Nothing is published. The artifact holds an UNTESTED program for a real PowerPC machine to try: it has run its
-# headless suites in the qemu user emulator here, never on PowerPC hardware and never with a window.
+# Each job publishes its UNTESTED program to the rolling "nightly-legacy" pre-release (run from main only), next to
+# the 10.6 app of macos-legacy.yml, for a real PowerPC machine to try: it has run its headless suites in the qemu
+# user emulator here, never on PowerPC hardware and never with a window.
 name: powerpc
 on:
   workflow_dispatch:
@@ -12,11 +13,16 @@ permissions:
 env:
   RUST_TOOLCHAIN: "1.99.1"
   CARGO_BUILD_JOBS: "4"
+  NIGHTLY_TAG: nightly-legacy
+  NIGHTLY_TITLE: Nightly legacy (OS X 10.6 Intel, PowerPC Linux) - UNTESTED
+  NIGHTLY_NOTES: "Experimental builds for old machines, built by hand from the Actions tab (workflows macos-legacy and powerpc). UNTESTED: none of these files has run on the hardware it is for. last_route-macos-10.6-UNTESTED.zip is for Intel Macs on OS X 10.6.8 (64-bit). The powerpc files are for PowerPC machines running Linux (big-endian, glibc 2.35 or newer); there is no build for Mac OS X on PowerPC or for OS X 10.5 and lower (docs/MACOS_SNOW_LEOPARD.md, docs/POWERPC.md). The files are replaced in place on each run."
 
 jobs:
   build:
     name: build (${{ matrix.bits }}-bit)
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -45,9 +51,15 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.triple }}/ci/last_route dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
           ${{ matrix.strip }} dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
+          tar -C dist -czf dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED.tar.gz last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
       - uses: actions/upload-artifact@v6
         with:
           name: last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
           path: dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
           retention-days: 3
           if-no-files-found: error
+      - name: Publish to nightly-legacy
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh packaging/nightly.sh dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED.tar.gz
