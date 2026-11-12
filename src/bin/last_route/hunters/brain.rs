@@ -511,7 +511,8 @@ pub struct Brain {
     /// A runner that left this chaser's level: (seconds left, the point it arrived at, its level). Keeps the memory alive
     /// for `follow_cross_seconds` so the chaser walks the flight after it.
     follow_cross: Option<(f32, (f32, f32), i32)>,
-    /// Debug counters (admin hunter stats): edge walks ended by the stuck-timeout snap, and goals given up.
+    /// Debug counters (admin hunter stats): edge walks ended by setting the body on an end of the edge (only when a
+    /// refused walker could not walk back either, so it stays 0 on an edge that exists), and goals given up.
     pub snap_count: u32,
     pub giveup_count: u32,
     /// Slowdown (0..1) the director asks for this frame on a shared edge (follow the leader); `walk_edge` reads and resets it.
@@ -521,8 +522,12 @@ pub struct Brain {
     /// Set when a walk set the hunter down off the centre of its landing cell: the next update checks that spot against the
     /// landing level's own facility (`hunter_fits`; the walk only has the level it left) and falls back to the cell centre.
     land_check: bool,
-    /// Seconds spent on the current edge.
+    /// Seconds in a row the next step on the current edge has been refused (the footprint test); 0 while it advances.
+    /// A walker the director holds back is not refused, so waiting behind another walker never counts.
     edge_clock: f32,
+    /// The walk on the current edge was turned round after `edge_stuck_seconds` of refusal: the hunter is walking back
+    /// to the end it came from, and gives its goal up when it lands there.
+    edge_retreat: bool,
     /// The point of interest the current wander goal was picked from (hunters/activities.rs); None for a goal set
     /// by anything else (camp guard, gimmick, fallback).
     poi: Option<Poi>,
@@ -740,6 +745,7 @@ impl Brain {
             land_offset: (land_angle.cos() * land_mag, land_angle.sin() * land_mag),
             land_check: false,
             edge_clock: 0.0,
+            edge_retreat: false,
             poi: None,
             recent_pois: Vec::new(),
             activity: None,
@@ -774,8 +780,44 @@ impl Brain {
         self.cross_goal = None;
         self.follow_cross = None;
         self.edge_clock = 0.0;
+        self.edge_retreat = false;
         self.last_known_level = level;
         self.last_known_stamp = None;
+    }
+
+    /// Ends an edge walk in progress by standing the hunter on a real end of that edge: the end on `level` (the level
+    /// of the list it is kept under) when the edge has one, else the end nearer in height. For a hunter that leaves
+    /// the simulation in the middle of a flight (its level is shelved or stored): it is never kept in mid-air, and it
+    /// comes back standing on a floor. Nothing changes for a hunter that is not on an edge.
+    pub fn settle_edge(&mut self, level: i32) {
+        let Some(w) = self.walk.take() else { return };
+        let (start, end) = (w.start_point(), w.end_point());
+        let at_start = if w.from.level == level {
+            true
+        } else if w.to.level == level {
+            false
+        } else {
+            (self.y - start[2]).abs() <= (end[2] - self.y).abs()
+        };
+        let (node, y) = if at_start { (w.from, start[2]) } else { (w.to, end[2]) };
+        self.pos = node.cell.center();
+        self.y = y;
+        self.level = node.level;
+        self.hop = None;
+        self.hop_key = None;
+        self.edge_clock = 0.0;
+        self.edge_retreat = false;
+        self.moving_speed = 0.0;
+        self.clear_path();
+    }
+
+    /// The level this hunter is on its way to: the far end of the edge it walks, else the level of the crossing it
+    /// follows the runner over. None for a hunter that stays on its floor.
+    pub fn bound_for(&self) -> Option<i32> {
+        if let Some(w) = self.walk.as_ref() {
+            return Some(w.to.level);
+        }
+        self.follow_cross.map(|f| f.2)
     }
 
     /// The edge graph this brain plans through. A changed graph version drops the route timer at once; an edge walk
@@ -842,13 +884,24 @@ impl Brain {
 
     /// The runner left this hunter's level for `to` and stands at `runner`: a chaser or investigator (not a stay-at-home
     /// creature) goes after it by the flight, and keeps that goal for `follow_cross_seconds` so a quick give-up does not
-    /// drop it. Host only.
-    pub fn follow_cross(&mut self, runner: (f32, f32), to: i32) {
+    /// drop it. `entrance` is the near end of the flight or ladder the runner walked (None when it took none): an awake
+    /// hunter that was not after the runner comes too when it stands within `follow_cross_cells` of it, unless its
+    /// gimmick holds it in place or it is in the middle of a peek. A sleeping hunter never follows. Host only.
+    pub fn follow_cross(&mut self, runner: (f32, f32), to: i32, entrance: Option<(f32, f32)>) {
         if !self.active || self.display_only || self.shadow || to == self.level {
             return;
         }
-        if !matches!(self.state, State::Chase | State::Investigate) || super::secret_creatures::stays_home(&self.def.id) {
+        if super::secret_creatures::stays_home(&self.def.id) {
             return;
+        }
+        if !matches!(self.state, State::Chase | State::Investigate) {
+            let reach = self.nav.rules().follow_cross_cells;
+            let near = entrance.is_some_and(|e| dist(self.pos, e) <= reach);
+            if !near || self.state == State::Peek || self.gimmick.holds_position(self) {
+                return;
+            }
+            // whatever it was doing at a point of interest ends: it goes to look where the runner went
+            self.end_activity();
         }
         let p = self.nav.open_goal(to, cell_of(runner)).map_or(runner, |c| c.center());
         self.investigate_on(p, to);
@@ -1825,8 +1878,6 @@ impl Brain {
         }
     }
 
-    /// One frame on an edge: the walk alone moves the body (at the hunter's own speed, no climb animation), the level
-    /// follows the height, and a hunter held on the edge past its time is put on the nearer end and gives the goal up.
     /// A landing spot off the cell centre must be ground a hunter fits (a prop, a door or a divider can sit in an open
     /// cell); otherwise the hunter stands at the cell centre. Runs once, on the first update on the landing level.
     fn verify_landing(&mut self, fac: &Facility) {
@@ -1839,18 +1890,22 @@ impl Brain {
         }
     }
 
+    /// One frame on an edge: the walk alone moves the body (at the hunter's own speed, no climb animation) and the level
+    /// follows the height. The body is never set anywhere it did not walk to. A step the footprint test refuses is not
+    /// taken; after `edge_stuck_seconds` of refusal in a row the walk is turned round (`EdgeWalk::reversed`) and the
+    /// hunter walks back to the end it came from, where it gives its goal up. A walker the director slows or stops
+    /// behind another is not refused and is never timed out. Only a walker that is refused on the way back as well (the
+    /// facility under it no longer has the flight: its level was unloaded) is put on the nearer end, counted in
+    /// `snap_count`.
     fn walk_edge(&mut self, dt: f32, fac: &Facility, speed: f32, prof: &Profile) {
         let speed = speed * (1.0 - self.edge_hold.clamp(0.0, 1.0));
         self.edge_hold = 0.0;
         let Some(walk) = self.walk.as_ref() else { return };
-        let len = walk.len;
         let (from, to) = (walk.from, walk.to);
         let (start_y, end_y) = (walk.start_point()[2], walk.end_point()[2]);
-        let limit_speed = walk.speed(speed, self.nav.rules());
         // The footprint test is for a flight's treads. A ladder shaft and a drop's fall are vertical paths built by
         // the graph (there is no walk surface between the floors to test), so only a flight is checked.
         let flight = walk.kind == flight_edges::EdgeKind::Flight;
-        self.edge_clock += dt;
         let mut next = walk.clone();
         let pose = next.advance(speed, dt, self.nav.rules());
         let (done, x, z, y) = (pose.done, pose.x, pose.z, pose.y);
@@ -1878,6 +1933,11 @@ impl Brain {
             self.path_timer = 0.0;
             self.moving_speed = speed;
             self.stride += dist(prev, self.pos).max(speed * dt);
+            if self.edge_retreat {
+                // back where it started after a refused crossing: the goal behind that flight is given up
+                self.edge_retreat = false;
+                self.give_up_goal(fac, prof);
+            }
             return;
         }
         if !flight || super::navigation::on_flight(fac, x, z, y) {
@@ -1885,6 +1945,7 @@ impl Brain {
             self.y = y;
             self.level = crate::game::level_stack::level_at(self.y, self.level);
             self.walk = Some(next);
+            self.edge_clock = 0.0;
             let d = dist(prev, self.pos);
             if d > 1e-4 {
                 self.facing = ((self.pos.0 - prev.0) / d, (self.pos.1 - prev.1) / d);
@@ -1892,24 +1953,32 @@ impl Brain {
             // A ladder moves only in y, so the stride runs at the walk speed either way.
             self.stride += speed * dt;
             self.moving_speed = speed;
-        } else {
-            self.moving_speed = 0.0;
+            return;
         }
-        let limit = len / limit_speed.max(0.2) + self.nav.rules().edge_stuck_seconds;
-        if self.edge_clock > limit {
-            let (from_y, to_y) = (start_y, end_y);
-            let end = if (self.y - from_y).abs() <= (to_y - self.y).abs() { from } else { to };
-            self.pos = end.cell.center();
-            self.y = if end == from { from_y } else { to_y };
-            self.level = end.level;
-            self.walk = None;
-            self.hop = None;
-            self.hop_key = None;
-            self.edge_clock = 0.0;
-            self.moving_speed = 0.0;
-            self.snap_count += 1;
-            self.give_up_goal(fac, prof);
+        // the step ahead is refused: stand, and count how long that lasts
+        self.moving_speed = 0.0;
+        self.edge_clock += dt;
+        if self.edge_clock <= self.nav.rules().edge_stuck_seconds {
+            return;
         }
+        self.edge_clock = 0.0;
+        if !self.edge_retreat {
+            // truly blocked: turn round where it stands and walk the same edge back
+            self.edge_retreat = true;
+            self.walk = self.walk.take().map(|w| w.reversed());
+            return;
+        }
+        // refused on the way back as well: the edge is gone under the hunter, so it stands on the end it is nearer to
+        let end = if (self.y - start_y).abs() <= (end_y - self.y).abs() { from } else { to };
+        self.pos = end.cell.center();
+        self.y = if end == from { start_y } else { end_y };
+        self.level = end.level;
+        self.walk = None;
+        self.hop = None;
+        self.hop_key = None;
+        self.edge_retreat = false;
+        self.snap_count += 1;
+        self.give_up_goal(fac, prof);
     }
 
     fn handle_arrival(&mut self, fac: &Facility, prof: &Profile) {
@@ -2114,6 +2183,7 @@ impl Brain {
             };
             self.walk = Some(walk);
             self.edge_clock = 0.0;
+            self.edge_retreat = false;
             self.hop = None;
             self.unreachable = 0.0;
             self.blocked_time = 0.0;
@@ -4334,31 +4404,129 @@ mod edge_tests {
         assert!(!b.update(1.0 / 60.0, &c, &above, 1, 0, &prof).0, "right above: not caught");
     }
 
+    /// A facility with no flight in it: every step of a flight walk is refused on it (a body off the floor line fits
+    /// only on a flight), which is how the tests block a walker.
+    fn no_flight() -> Facility {
+        Facility::test_levels_drop().0
+    }
+
     #[test]
-    fn a_hunter_stuck_on_an_edge_gives_up_within_the_data_time() {
+    fn a_walker_refused_past_the_stuck_time_walks_back_without_a_jump() {
         let s = stage(TestShape::Straight);
-        let mut b = hunter(&s, s.low, LOW);
-        let t = runner(s.high, HIGH, true);
+        let stuck = flight_edges::rules().edge_stuck_seconds;
+        let mut b = hunter(&s, s.high, HIGH);
+        let t = runner(s.low, LOW, true);
+        let part_way = |h: &Brain| h.walk.as_ref().is_some_and(|w| w.fraction() > 0.3);
+        run_until(&mut b, &s, &t, 25.0, |_| {}, part_way).expect("the hunter is part-way down the flight");
+        assert_eq!(b.walk.as_ref().map(|w| w.to.level), Some(LOW));
+        let prof = Difficulty::Standard.profile();
+        let blocked = no_flight();
+        let (at, at_y) = (b.pos, b.y);
+        let (mut prev, mut prev_y) = (b.pos, b.y);
+        let (mut worst, mut worst_y) = (0.0f32, 0.0f32);
+        let mut step = |h: &Brain, prev: &mut (f32, f32), prev_y: &mut f32| {
+            worst = worst.max(dist(*prev, h.pos));
+            worst_y = worst_y.max((h.y - *prev_y).abs());
+            *prev = h.pos;
+            *prev_y = h.y;
+        };
+        // refused for less than the stuck time: it stands where it is and still means to go down
+        let mut held = 0.0;
+        while held < stuck - 0.5 {
+            b.update(1.0 / 60.0, &ctx(&blocked), &t, 1, 0, &prof);
+            step(&b, &mut prev, &mut prev_y);
+            held += 1.0 / 60.0;
+        }
+        assert_eq!((b.pos, b.y), (at, at_y), "a refused walker stands still");
+        assert_eq!(b.walk.as_ref().map(|w| w.to.level), Some(LOW), "and is not turned before the data time");
+        // past the stuck time it is turned round on the spot
+        while held < stuck + 0.5 {
+            b.update(1.0 / 60.0, &ctx(&blocked), &t, 1, 0, &prof);
+            step(&b, &mut prev, &mut prev_y);
+            held += 1.0 / 60.0;
+        }
+        assert_eq!((b.pos, b.y), (at, at_y), "turning round moves nothing");
+        assert_eq!(b.walk.as_ref().map(|w| w.to.level), Some(HIGH), "it now walks the same edge back");
+        assert_eq!(b.snap_count, 0);
+        // the way back is free: it walks up to where it came from
+        let dt = 1.0 / 60.0;
+        let mut time = 0.0;
+        while b.walk.is_some() && time < 30.0 {
+            let c = ctx(s.fac_of(b.level));
+            b.update(dt, &c, &t, 1, 0, &prof);
+            step(&b, &mut prev, &mut prev_y);
+            time += dt;
+        }
+        assert!(crossed(&b, HIGH), "it ends on the level it started from (level {} y {} walk {})", b.level, b.y, b.walk.is_some());
+        assert_eq!(b.snap_count, 0, "it walked back, it was not placed");
+        assert!(worst < 0.7 && worst_y < 0.7, "no frame jumps (worst {worst:.2} m, {worst_y:.2} m in y)");
+        assert_ne!(b.state, State::Chase, "the chase behind the refused flight is given up");
+    }
+
+    #[test]
+    fn a_walker_held_back_by_the_director_is_never_timed_out() {
+        let s = stage(TestShape::Straight);
+        let mut b = hunter(&s, s.high, HIGH);
+        let t = runner(s.low, LOW, true);
         run_until(&mut b, &s, &t, 25.0, |_| {}, |h| h.on_edge()).expect("the hunter steps onto the flight");
         let prof = Difficulty::Standard.profile();
-        let c = ctx(s.fac_of(b.level));
-        let held = b.walk.clone();
-        // the brain measures the limit with its live speed (stamina and dashes change it), so the slowest speed it had
-        // on the edge gives the latest moment it may let go
-        let mut slowest = b.current_speed(1, 0, &prof, 1.0);
-        let mut on_edge_for = 0.0;
-        while b.on_edge() && on_edge_for < 20.0 {
-            b.walk = held.clone(); // freeze the advance
+        let wait = flight_edges::rules().edge_stuck_seconds * 3.0;
+        let mut time = 0.0;
+        while time < wait {
+            b.edge_hold = 1.0; // the walker ahead is in the way
+            let c = ctx(s.fac_of(b.level));
             b.update(1.0 / 60.0, &c, &t, 1, 0, &prof);
-            slowest = slowest.min(b.current_speed(1, 0, &prof, 1.0));
-            on_edge_for += 1.0 / 60.0;
+            time += 1.0 / 60.0;
         }
-        let limit = s.len / slowest.max(0.2) + flight_edges::rules().edge_stuck_seconds;
-        assert!(!b.on_edge(), "put back on an end");
-        assert!(on_edge_for >= flight_edges::rules().edge_stuck_seconds, "not before the data time: {on_edge_for}");
-        assert!(on_edge_for <= limit + 0.2, "within the data time: {on_edge_for} vs {limit}");
+        assert_eq!(b.walk.as_ref().map(|w| w.to.level), Some(LOW), "still on the edge, still going down");
+        assert_eq!(b.snap_count, 0);
+        assert!(run_until(&mut b, &s, &t, 25.0, |_| {}, |h| crossed(h, LOW)).is_some(), "and it goes on once the way is free");
+    }
+
+    #[test]
+    fn a_walker_refused_both_ways_is_stood_on_the_nearer_end() {
+        // the one placement left: the flight is gone under the hunter (its level was unloaded), so it cannot walk back
+        let s = stage(TestShape::Straight);
+        let stuck = flight_edges::rules().edge_stuck_seconds;
+        let mut b = hunter(&s, s.high, HIGH);
+        let t = runner(s.low, LOW, true);
+        run_until(&mut b, &s, &t, 25.0, |_| {}, |h| h.walk.as_ref().is_some_and(|w| w.fraction() > 0.2)).expect("on the flight");
+        let prof = Difficulty::Standard.profile();
+        let blocked = no_flight();
+        let mut time = 0.0;
+        while b.on_edge() && time < 2.0 * stuck + 2.0 {
+            b.update(1.0 / 60.0, &ctx(&blocked), &t, 1, 0, &prof);
+            time += 1.0 / 60.0;
+        }
+        assert!(!b.on_edge(), "off the edge after two stuck times");
+        assert!(time > 2.0 * stuck - 0.1, "not before it tried to walk back: {time}");
+        assert_eq!(b.snap_count, 1);
         assert!(b.y == floor_y_of(LOW) || b.y == floor_y_of(HIGH));
-        assert_ne!(b.state, State::Chase, "the chase gives up to a search");
+        assert_eq!(b.y, floor_y_of(b.level));
+    }
+
+    #[test]
+    fn a_hunter_shelved_in_the_middle_of_an_edge_stands_on_an_end_of_it() {
+        for shape in [TestShape::Straight, TestShape::Ladder] {
+            for keep in [HIGH, LOW] {
+                let s = stage(shape);
+                let mut b = hunter(&s, s.high, HIGH);
+                let t = runner(s.low, LOW, true);
+                run_until(&mut b, &s, &t, 60.0, |_| {}, |h| h.walk.as_ref().is_some_and(|w| w.fraction() > 0.4)).expect("part-way");
+                let w = b.walk.clone().unwrap();
+                b.settle_edge(keep);
+                assert!(b.walk.is_none(), "{shape:?}: the walk is over");
+                assert_eq!((b.level, b.y), (keep, floor_y_of(keep)), "{shape:?}: it stands on the floor of the level it is kept under");
+                let end = if keep == HIGH { w.from.cell } else { w.to.cell };
+                assert_eq!(b.pos, end.center(), "{shape:?}: on that end of its edge");
+                assert_eq!(b.snap_count, 0);
+            }
+        }
+        // a hunter that is not on an edge is left alone
+        let s = stage(TestShape::Straight);
+        let mut b = hunter(&s, s.high, HIGH);
+        b.settle_edge(LOW);
+        assert_eq!((b.pos, b.level, b.y), (s.high, HIGH, floor_y_of(HIGH)));
     }
 
     #[test]
@@ -4390,6 +4558,46 @@ mod edge_tests {
     /// The first edge leaving `HIGH` on a stage (its polyline is the treads).
     fn high_edge(s: &Stage) -> flight_edges::Edge {
         s.nav.edges_near(HIGH, s.high.0, s.high.1, 200.0).next().expect("the stage has an edge off the upper level").clone()
+    }
+
+    #[test]
+    fn a_hunter_walks_every_stair_type_both_ways_without_a_teleport() {
+        let storey = floor_y_of(HIGH) - floor_y_of(LOW);
+        for shape in [TestShape::Straight, TestShape::Switchback, TestShape::Spiral, TestShape::Ladder] {
+            for down in [true, false] {
+                let s = stage(shape);
+                let (from, level, goal, to) = if down { (s.high, HIGH, s.low, LOW) } else { (s.low, LOW, s.high, HIGH) };
+                let mut b = hunter(&s, from, level);
+                let t = runner(goal, to, true);
+                let (mut prev, mut prev_y) = (b.pos, b.y);
+                let (mut worst, mut worst_y, mut walked) = (0.0f32, 0.0f32, false);
+                let (mut top, mut bottom) = (f32::MIN, f32::MAX);
+                let took = run_until(
+                    &mut b,
+                    &s,
+                    &t,
+                    60.0,
+                    |h| {
+                        worst = worst.max(dist(prev, h.pos));
+                        worst_y = worst_y.max((h.y - prev_y).abs());
+                        walked |= h.walk.is_some();
+                        top = top.max(h.y);
+                        bottom = bottom.min(h.y);
+                        prev = h.pos;
+                        prev_y = h.y;
+                    },
+                    |h| crossed(h, to),
+                );
+                let way = if down { "down" } else { "up" };
+                assert!(took.is_some(), "{shape:?} {way}: the hunter reaches the other floor (level {} y {})", b.level, b.y);
+                assert!(walked, "{shape:?} {way}: it walked the edge rather than appearing on the other floor");
+                assert_eq!(b.snap_count, 0, "{shape:?} {way}: no walk ended by a placement");
+                assert!(worst < 0.7, "{shape:?} {way}: no frame moves the body like a teleport (worst {worst:.2} m)");
+                assert!(worst_y < 0.7, "{shape:?} {way}: the height is continuous (worst {worst_y:.2} m in one frame)");
+                assert!(top - bottom > storey - 0.05, "{shape:?} {way}: the height went through the whole storey ({bottom} to {top})");
+                assert_eq!((b.level, b.y), (to, floor_y_of(to)), "{shape:?} {way}");
+            }
+        }
     }
 
     #[test]
@@ -4447,18 +4655,59 @@ mod edge_tests {
         let mut b = hunter(&s, s.high, HIGH);
         b.state = State::Chase;
         b.last_known = Some(s.high);
-        b.follow_cross(s.low, LOW);
+        b.follow_cross(s.low, LOW, None);
         assert_eq!(b.state, State::Investigate, "it goes to where the runner arrived");
         assert_eq!(b.goal_level(), LOW);
         assert!(b.follow_cross.is_some(), "and keeps that memory for the data time");
         let t = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
         assert!(run_until(&mut b, &s, &t, 45.0, |_| {}, |h| crossed(h, LOW)).is_some(), "it walks the flight after the runner");
-        // a wanderer is not called
+        // a wanderer is not called when the runner took no flight
         let mut w = hunter(&s, s.high, HIGH);
         w.state = State::Wander;
-        w.follow_cross(s.low, LOW);
+        w.follow_cross(s.low, LOW, None);
         assert_eq!(w.state, State::Wander);
         assert!(w.follow_cross.is_none());
+        assert_eq!(w.bound_for(), None);
+    }
+
+    #[test]
+    fn an_awake_hunter_near_the_flight_the_runner_took_follows_and_a_far_one_does_not() {
+        let s = stage(TestShape::Straight);
+        let reach = flight_edges::rules().follow_cross_cells;
+        let entrance = high_edge(&s).from.cell.center();
+        let t = Target { pos: (-500.0, -500.0), hidden: true, ..Default::default() };
+        for state in [State::Wander, State::Idle, State::Search] {
+            let mut near = hunter(&s, s.high, HIGH);
+            assert!(dist(near.pos, entrance) <= reach, "the stage's floor point is within the follow distance");
+            near.state = state;
+            near.follow_cross(s.low, LOW, Some(entrance));
+            assert_eq!(near.state, State::Investigate, "{state:?}: it goes to where the runner arrived");
+            assert_eq!((near.goal_level(), near.bound_for()), (LOW, Some(LOW)), "{state:?}: on the floor below");
+            assert!(run_until(&mut near, &s, &t, 60.0, |_| {}, |h| crossed(h, LOW)).is_some(), "{state:?}: it walks the flight after the runner");
+            assert_eq!(near.snap_count, 0);
+            // one step beyond the data distance stays as it was
+            let mut far = hunter(&s, (entrance.0 + reach + 1.0, entrance.1), HIGH);
+            far.state = state;
+            far.follow_cross(s.low, LOW, Some(entrance));
+            assert_eq!(far.state, state, "{state:?}: a hunter beyond the follow distance is not called");
+            assert_eq!(far.bound_for(), None);
+        }
+        // a chaser follows from anywhere, as before
+        let mut chaser = hunter(&s, (entrance.0 + reach + 1.0, entrance.1), HIGH);
+        chaser.state = State::Chase;
+        chaser.last_known = Some(s.high);
+        chaser.follow_cross(s.low, LOW, Some(entrance));
+        assert_eq!(chaser.bound_for(), Some(LOW));
+        // a sleeping hunter and one in the middle of a peek never follow
+        let mut asleep = hunter(&s, s.high, HIGH);
+        asleep.active = false;
+        asleep.state = State::Wander;
+        asleep.follow_cross(s.low, LOW, Some(entrance));
+        assert_eq!((asleep.state, asleep.bound_for()), (State::Wander, None));
+        let mut peeking = hunter(&s, s.high, HIGH);
+        peeking.state = State::Peek;
+        peeking.follow_cross(s.low, LOW, Some(entrance));
+        assert_eq!((peeking.state, peeking.bound_for()), (State::Peek, None));
     }
 
     #[test]

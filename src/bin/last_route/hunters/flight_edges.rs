@@ -70,7 +70,8 @@ pub struct FlightEdgeRules {
     /// a runner's body, so this is the runner's radius: a wider hunter body would be refused at the tight turn of a mid
     /// landing and stall there.
     pub edge_fit_radius: f32,
-    /// Seconds without progress on an edge before the walker replans.
+    /// Seconds without progress on an edge before the walker replans: a hunter whose next step on a flight is refused
+    /// for this long turns round and walks back along the edge.
     pub edge_stuck_seconds: f32,
     /// Simulated hunters per resident floor beside the active one.
     pub resident_hunter_cap: u32,
@@ -82,6 +83,12 @@ pub struct FlightEdgeRules {
     pub cross_repath_seconds: f32,
     /// Seconds a hunter keeps following a target that left its level before it gives up.
     pub follow_cross_seconds: f32,
+    /// How far (cells) from the near end of the flight the runner took a hunter that was not after the runner still
+    /// follows it to the other level.
+    pub follow_cross_cells: f32,
+    /// Seconds after the runner walked onto a level during which a hunter spawned or lined up there starts awake and
+    /// wandering instead of investigating where the runner stands.
+    pub arrival_grace_seconds: f32,
     /// Chance (0 to 1) that a wandering hunter or bot picks a goal on another level.
     pub wander_cross_chance: f32,
     /// Chance (0 to 1) that a searching hunter picks a goal on another level.
@@ -157,6 +164,8 @@ impl FlightEdgeRules {
             goal_snap_radius: num(&v, "goal_snap_radius", 0.0, 16.0)?,
             cross_repath_seconds: num(&v, "cross_repath_seconds", 0.05, 30.0)?,
             follow_cross_seconds: num(&v, "follow_cross_seconds", 0.1, 120.0)?,
+            follow_cross_cells: opt_num(&v, "follow_cross_cells", 40.0, 0.0, 512.0)?,
+            arrival_grace_seconds: opt_num(&v, "arrival_grace_seconds", 6.0, 0.0, 120.0)?,
             wander_cross_chance: num(&v, "wander_cross_chance", 0.0, 1.0)?,
             search_cross_chance: num(&v, "search_cross_chance", 0.0, 1.0)?,
             land_spread: num(&v, "land_spread", 0.0, 0.4)?,
@@ -948,12 +957,20 @@ impl EdgeWalk {
         }
     }
 
-    /// The speed (m/s) a walker of `hunter_speed` moves along this edge on its flat parts: the hunter's own speed on a
-    /// flight, the data ladder speed on a ladder. Used for the "held on the edge too long" limit.
-    pub fn speed(&self, hunter_speed: f32, rules: &FlightEdgeRules) -> f32 {
-        match self.kind {
-            EdgeKind::Ladder => rules.ladder_speed(),
-            _ => hunter_speed,
+    /// The same walk turned round at the point it has reached: the polyline reversed, the ends swapped and the distance
+    /// measured from the other end, so the pose (x, z and y) is the one it had and the walk goes back to where it began.
+    /// For a walker whose way ahead stays refused. A drop is one way and is never turned (nothing refuses a fall).
+    pub fn reversed(&self) -> EdgeWalk {
+        let mut path: Vec<[f32; 3]> = self.path.to_vec();
+        path.reverse();
+        EdgeWalk {
+            key: self.key,
+            kind: self.kind,
+            path: path.into(),
+            s: (self.len - self.s).clamp(0.0, self.len),
+            len: self.len,
+            from: self.to,
+            to: self.from,
         }
     }
 
@@ -1400,7 +1417,8 @@ mod tests {
         assert!(!r.drop_allowed && r.edge_cost_scale >= 1.0 && r.hear_adjacent_scale > 0.0 && r.hear_adjacent_scale <= 1.0);
         assert!(r.capture_height > 0.0 && r.edge_stuck_seconds > 0.0 && r.resident_hunter_cap > 0);
         assert_eq!((r.search_expansions, r.goal_snap_radius), (6000, 4.0));
-        assert!(approx(r.cross_repath_seconds, 0.9) && approx(r.follow_cross_seconds, 12.0));
+        assert!(approx(r.cross_repath_seconds, 0.9) && approx(r.follow_cross_seconds, 25.0));
+        assert!(approx(r.follow_cross_cells, 40.0) && approx(r.arrival_grace_seconds, 6.0));
         assert!(approx(r.wander_cross_chance, 0.15) && approx(r.search_cross_chance, 0.25));
         let bad = [
             ("\"capture_height\": 1.2", "\"capture_height\": 99.0"),
@@ -1420,6 +1438,8 @@ mod tests {
             ("\"max_point_gap\": 0.5", "\"max_point_gap\": 0.0"),
             ("\"separation_max_step\": 0.15", "\"separation_max_step\": 5.0"),
             ("\"capture_los_slack\": 0.15", "\"capture_los_slack\": -1.0"),
+            ("\"follow_cross_cells\": 40.0", "\"follow_cross_cells\": -1.0"),
+            ("\"arrival_grace_seconds\": 6.0", "\"arrival_grace_seconds\": 500.0"),
         ];
         for (from, to) in bad {
             assert!(text.contains(from), "test text `{from}` is in the file");
@@ -1427,8 +1447,10 @@ mod tests {
         }
         assert!(FlightEdgeRules::parse("not json").is_err());
         assert!(approx(r.max_point_gap, 0.5) && approx(r.separation_max_step, 0.15) && approx(r.capture_los_slack, 0.15));
-        // an older file without the three newer keys loads with today's values
+        // an older file without the newer keys loads with today's values
         let old = text
+            .replace("\n  \"follow_cross_cells\": 40.0,", "")
+            .replace("\n  \"arrival_grace_seconds\": 6.0,", "")
             .replace(",
   \"max_point_gap\": 0.5", "")
             .replace(",
@@ -1436,6 +1458,7 @@ mod tests {
             .replace(",
   \"capture_los_slack\": 0.15", "");
         assert!(!old.contains("max_point_gap\":") && !old.contains("capture_los_slack\":"));
+        assert!(!old.contains("follow_cross_cells\":") && !old.contains("arrival_grace_seconds\":"));
         assert_eq!(FlightEdgeRules::parse(&old).expect("an old file loads"), r);
     }
 
@@ -1619,6 +1642,37 @@ mod tests {
         assert!(Arc::ptr_eq(&before, &same.path));
         let back = nav.edges_from(e.to).find(|b| b.key == e.key).unwrap();
         assert!(!EdgeWalk::start(&e).shares_edge(&EdgeWalk::start(back)));
+    }
+
+    #[test]
+    fn a_reversed_walk_keeps_its_pose_and_ends_where_it_began() {
+        let r = rules();
+        for (shape, ladder) in [(FlightShape::Straight, false), (FlightShape::Switchback, false), (FlightShape::Spiral, false), (FlightShape::Straight, true)] {
+            let (nav, upper, _) = test_nav(shape, ladder);
+            let e = nav.edges_near(upper.level, 0.0, 0.0, f32::INFINITY).next().expect("the stage has an edge").clone();
+            let mut w = EdgeWalk::start(&e);
+            while w.fraction() < 0.4 {
+                w.advance(2.0, 0.05, r);
+            }
+            let (here, mut back) = (w.pose(), w.reversed());
+            let turned = back.pose();
+            assert!(gap3(&[here.x, here.z, here.y], &[turned.x, turned.z, turned.y]) < 1e-3, "{shape:?}: {here:?} vs {turned:?}");
+            assert_eq!((back.from, back.to, back.key), (w.to, w.from, w.key), "{shape:?}: the ends are swapped, the edge is the same");
+            assert!(!back.shares_edge(&w), "{shape:?}: it now walks the other way");
+            let mut prev = [turned.x, turned.z, turned.y];
+            let mut steps = 0;
+            loop {
+                let p = back.advance(2.0, 0.05, r);
+                assert!(gap3(&prev, &[p.x, p.z, p.y]) <= 2.0 * 0.05 + 0.1 + r.ladder_speed() * 0.05, "{shape:?}: step {steps} is continuous");
+                prev = [p.x, p.z, p.y];
+                steps += 1;
+                if p.done || steps > 4000 {
+                    break;
+                }
+            }
+            let start = w.start_point();
+            assert!(back.pose().done && gap3(&prev, &start) < 1e-3, "{shape:?}: back at the end it began on ({prev:?} vs {start:?})");
+        }
     }
 
     #[test]

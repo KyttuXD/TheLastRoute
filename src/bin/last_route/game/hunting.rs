@@ -282,6 +282,8 @@ impl Game {
         crate::hunters::gimmicks::nyxie::party_advance(dt);
         // the hard-ability party clocks (hunters/hard_abilities.rs): advanced once per host frame, every level
         self.resident_hunters.advance_hard_party(dt);
+        // the arrival grace after a walked level change (game/resident_hunters.rs relabel_hunters)
+        self.resident_hunters.tick_arrival_grace(dt);
         // this frame's route budget (hunters/path_scheduler.rs): last frame's queued searches are answered first
         let _paths_perf = crate::app::perf::section("hunter paths");
         crate::hunters::path_scheduler::begin_frame(&self.fac);
@@ -2215,6 +2217,141 @@ mod resident_floor_tests {
         assert_eq!(b.y, floor_y_of(-1));
         assert!(g.hunters.iter().any(|h| h.disguise.is_some()), "it ends in the list of level -1, the floor the runner is on");
         assert!(g.resident_hunters.list(0).iter().all(|s| s.brain.disguise.is_none()));
+    }
+
+    /// The brain with this stamina (the tests' marker) in the resident list of `level`.
+    fn marked(g: &Game, level: i32, stamina: f32) -> &Brain {
+        g.resident_hunters.list(level).iter().map(|s| &s.brain).find(|b| b.stamina == stamina).expect("the marked hunter is in that list")
+    }
+
+    /// Whether `h` is one of the route hunters a floor's population counts (not a special, a secret or a void hunter).
+    fn route_hunter(h: &Brain) -> bool {
+        !matches!(h.def.id.as_str(), "nyxie" | "solyth") && h.def.category != "secret" && !h.def.id.starts_with("void_")
+    }
+
+    #[test]
+    fn a_walked_relabel_calls_the_awake_hunters_near_the_flight_and_not_the_far_ones() {
+        let (mut g, content, catalog) = stacked();
+        g.sync_stack_nav();
+        let entrance = g.walked_flight_entrance(0, -1).expect("the runner stands on the flight down");
+        assert_eq!(g.walked_flight_entrance(0, 1), None, "and on no flight up");
+        let reach = flight_edges::rules().follow_cross_cells;
+        let near_at = g
+            .fac
+            .floor_cells()
+            .into_iter()
+            .map(|c| c.center())
+            .find(|p| pdist(*p, entrance) >= 6.0 && pdist(*p, entrance) <= reach * 0.5)
+            .expect("the floor has a cell near the flight");
+        let far_at = (entrance.0 + reach + 2.0, entrance.1);
+        g.hunters.push(hunter(&content, 0, near_at, 0, 0.11));
+        g.hunters.push(hunter(&content, 0, far_at, 0, 0.22));
+        let mut asleep = hunter(&content, 0, near_at, 0, 0.33);
+        asleep.active = false;
+        g.hunters.push(asleep);
+        let mut far_chaser = hunter(&content, 0, far_at, 0, 0.44);
+        far_chaser.state = State::Chase;
+        g.hunters.push(far_chaser);
+        assert!(g.relabel(-1, &content, &catalog), "the runner walks down to the resident floor");
+        let near = marked(&g, 0, 0.11);
+        assert_eq!(near.state, State::Investigate, "a wandering hunter near the flight goes after the runner");
+        assert_eq!((near.last_known_level, near.bound_for()), (-1, Some(-1)), "to the floor below, by the flight");
+        let far = marked(&g, 0, 0.22);
+        assert_eq!((far.state, far.bound_for()), (State::Wander, None), "one beyond the follow distance is left alone");
+        let asleep = marked(&g, 0, 0.33);
+        assert_eq!((asleep.active, asleep.state, asleep.bound_for()), (false, State::Wander, None), "a sleeping hunter is not woken");
+        assert_eq!(marked(&g, 0, 0.44).bound_for(), Some(-1), "a chaser follows from anywhere");
+    }
+
+    #[test]
+    fn followers_count_toward_the_population_of_the_floor_the_runner_walks_onto() {
+        // the control: nobody follows, so the floor below is topped up to its population as the runner arrives
+        let (mut g, content, catalog) = stacked();
+        g.relays_collected = 2;
+        assert!(g.relabel(-1, &content, &catalog), "the runner walks down");
+        let want = g.hunters.iter().filter(|h| route_hunter(h)).count();
+        assert!(want > 0, "two relays in, the floor has a population");
+        assert!(g.resident_hunters.in_arrival_grace(), "the arrival grace runs");
+        let calm = |g: &Game, when: &str| {
+            for h in &g.hunters {
+                assert!(h.active, "{} is awake {when}", h.def.id);
+                assert!(!matches!(h.state, State::Chase | State::Investigate), "{} was not sent to the runner {when} ({:?})", h.def.id, h.state);
+            }
+        };
+        calm(&g, "as it is spawned");
+        frames(&mut g, 1);
+        assert!(g.resident_hunters.in_arrival_grace(), "one frame on, still inside the grace");
+        calm(&g, "a frame later");
+
+        // as many chasers as the population follow the runner down: they are that floor's hunters, none is added
+        let def = content.hunters.iter().position(route_hunter_def).expect("a route hunter");
+        let (mut g, content, catalog) = {
+            let (mut g, c, k) = stacked();
+            g.relays_collected = 2;
+            (g, c, k)
+        };
+        for (i, p) in open_spots(&g, 0, want, g.p.pos, 6.0).into_iter().enumerate() {
+            let mut chaser = hunter(&content, def, p, 0, 0.5 + i as f32 * 0.01);
+            chaser.state = State::Chase;
+            g.hunters.push(chaser);
+        }
+        assert!(g.relabel(-1, &content, &catalog));
+        assert_eq!(g.followers_bound_for(-1), want as i32, "every chaser is on its way down");
+        assert_eq!(g.hunters.iter().filter(|h| route_hunter(h)).count(), 0, "no fresh hunter stands in for one on its way");
+
+        // one follower fewer leaves exactly one place to fill
+        let (mut g, content, catalog) = stacked();
+        g.relays_collected = 2;
+        for (i, p) in open_spots(&g, 0, want - 1, g.p.pos, 6.0).into_iter().enumerate() {
+            let mut chaser = hunter(&content, def, p, 0, 0.5 + i as f32 * 0.01);
+            chaser.state = State::Chase;
+            g.hunters.push(chaser);
+        }
+        assert!(g.relabel(-1, &content, &catalog));
+        assert_eq!(g.hunters.iter().filter(|h| route_hunter(h)).count(), 1, "the floor is topped up to its population, not past it");
+        assert_eq!(g.hunters.iter().filter(|h| route_hunter(h)).count() as i32 + g.followers_bound_for(-1), want as i32);
+    }
+
+    /// `route_hunter` for a definition.
+    fn route_hunter_def(d: &crate::content::hunters::HunterDef) -> bool {
+        !matches!(d.id.as_str(), "nyxie" | "solyth") && d.category != "secret" && !d.id.starts_with("void_")
+    }
+
+    #[test]
+    fn a_hunter_stored_in_the_middle_of_a_flight_is_kept_on_an_end_of_it() {
+        let mut g = descent();
+        let prof = g.prof();
+        let sounds = Sounds::default();
+        let mut mid = false;
+        for _ in 0..(60 * 120) {
+            g.update_hunters(FRAME, &prof, &sounds);
+            if probe(&g).is_some_and(|b| b.walk.as_ref().is_some_and(|w| w.fraction() > 0.3)) {
+                mid = true;
+                break;
+            }
+        }
+        assert!(mid, "the chaser is part-way down the flight");
+        // its list is handed to the shelf (the level left the stack, or a load replaced the window)
+        let level = g.resident_hunters.levels().into_iter().find(|l| g.resident_hunters.list(*l).iter().any(|s| s.brain.disguise.is_some()));
+        let (level, slots) = match level {
+            Some(l) => (l, g.resident_hunters.take(l)),
+            None => {
+                let l = g.runner_level();
+                let brains = std::mem::take(&mut g.hunters);
+                (l, brains.into_iter().map(slot).collect())
+            }
+        };
+        let o = g.inf.as_ref().unwrap().origin();
+        g.store_slots(level, slots);
+        let inf = g.inf.as_ref().unwrap();
+        let kept: Vec<&Brain> = inf.shelved_hunters().filter(|b| b.disguise.is_some()).collect();
+        assert_eq!(kept.len(), 1, "the chaser is on the shelf");
+        let b = kept[0];
+        assert!(b.walk.is_none(), "no walk is kept on the shelf");
+        assert_eq!((b.level, b.y), (level, floor_y_of(level)), "it stands on the floor of the level it is kept under");
+        let cell = (b.pos.0 - o.0 as f32, b.pos.1 - o.1 as f32);
+        assert!((cell.0.fract() - 0.5).abs() < 1e-3 && (cell.1.fract() - 0.5).abs() < 1e-3, "at the centre of the end cell of its edge: {cell:?}");
+        assert_eq!(b.snap_count, 0);
     }
 
     #[test]

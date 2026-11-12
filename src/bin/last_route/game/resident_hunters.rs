@@ -81,6 +81,10 @@ pub struct ResidentHunters {
     hard_party: BTreeMap<i32, (Arc<std::sync::Mutex<crate::hunters::hard_abilities::Budget>>, f32)>,
     /// The dt the party clocks were last advanced by: [`Self::hard_party`] hands out the clock from before that advance.
     hard_party_dt: f32,
+    /// Host only: seconds left of the arrival grace (`arrival_grace_seconds` in data/hunters/flights.json), started when
+    /// the runner walks onto a level by a flight or a ladder (`Game::relabel_hunters`). While it runs, a hunter spawned
+    /// or lined up on the runner's level starts awake and wandering instead of investigating where the runner stands.
+    arrival_grace: f32,
 }
 
 impl ResidentHunters {
@@ -105,6 +109,26 @@ impl ResidentHunters {
         // a level first seen mid-frame starts at 0 before this frame's advance
         let (arc, clock) = self.hard_party.entry(level).or_insert_with(|| (Default::default(), dt));
         (Arc::clone(arc), *clock - dt)
+    }
+
+    /// Starts the arrival grace: the runner just walked onto a level.
+    pub(super) fn start_arrival_grace(&mut self) {
+        self.arrival_grace = flight_edges::rules().arrival_grace_seconds;
+    }
+
+    /// Ends the arrival grace at once (the runner was put on a level by a load, a respawn or an admin jump).
+    pub(super) fn end_arrival_grace(&mut self) {
+        self.arrival_grace = 0.0;
+    }
+
+    /// Counts the arrival grace down, once per host frame.
+    pub(super) fn tick_arrival_grace(&mut self, dt: f32) {
+        self.arrival_grace = (self.arrival_grace - dt.max(0.0)).max(0.0);
+    }
+
+    /// Whether the runner walked onto its level less than the grace time ago.
+    pub(super) fn in_arrival_grace(&self) -> bool {
+        self.arrival_grace > 0.0
     }
 
     /// The levels that have a list, ascending.
@@ -318,6 +342,39 @@ impl Game {
         }
     }
 
+    /// The near end (on `from`) of the flight or ladder to `to` that the runner is walking: the entrance cell's centre of
+    /// the edge whose route passes through the runner's cell or one beside it. None when the runner is on no such edge
+    /// (it fell down a hole, or the label was changed some other way).
+    pub(super) fn walked_flight_entrance(&self, from: i32, to: i32) -> Option<(f32, f32)> {
+        let (x, z) = self.p.pos;
+        let here = (x.floor() as i32, z.floor() as i32);
+        self.stack_nav
+            .edges_near(from, x, z, f32::INFINITY)
+            .filter(|e| e.to.level == to)
+            .find(|e| {
+                e.path.iter().any(|p| ((p[0].floor() as i32) - here.0).abs() <= 1 && ((p[1].floor() as i32) - here.1).abs() <= 1)
+            })
+            .map(|e| e.from.cell.center())
+    }
+
+    /// How many hunters of the other resident lists are on their way to `level` (walking an edge that ends on it, or
+    /// following the runner across to it) and count toward its route population: the same hunters `ensure_hunters_at`
+    /// counts on the level itself.
+    pub(super) fn followers_bound_for(&self, level: i32) -> i32 {
+        self.resident_hunters
+            .iter_leveled()
+            .filter(|(l, b)| {
+                *l != level
+                    && b.active
+                    && !b.shadow
+                    && b.bound_for() == Some(level)
+                    && !matches!(b.def.id.as_str(), "nyxie" | "solyth")
+                    && b.def.category != "secret"
+                    && !b.def.id.starts_with("void_")
+            })
+            .count() as i32
+    }
+
     /// Puts a brain just built for the active level on that level (its `level`, `y` and the level of what it last
     /// knew), as every lineup and top-up must do before it joins `hunters`.
     pub(super) fn settle_new_brain(&self, b: &mut Brain) {
@@ -378,6 +435,9 @@ impl Game {
         let o = (o.0 as f32, o.1 as f32);
         let mut kept = Vec::new();
         for Slot { id, mut brain } in slots {
+            // nothing simulates on the shelf: a hunter in the middle of a flight or a ladder is stood on the end of its
+            // edge that is on this level (never kept in mid-air, where the coarse drift would carry it off the edge)
+            brain.settle_edge(level);
             shift_brain(&mut brain, o);
             if level == 0 && !id.is_empty() {
                 inf.stored_mut().insert(id, brain);
@@ -459,7 +519,10 @@ impl Game {
 
     /// The lineup of a level never visited (the rule of `reset_hunters` and `ensure_hunters`): Nyxie and Solyth, then the
     /// route hunters for the relays recovered so far, each at a spot out of the runner's sight. Level 0 has no lineup
-    /// here: its residency admits hunters from the layout when it is the active level.
+    /// here: its residency admits hunters from the layout when it is the active level. A route hunter wakes investigating
+    /// where the runner stands only when the lineup is for the level the runner was put on (a load, a respawn, an admin
+    /// jump). The lineup of a neighbour floor, and of a floor the runner just walked onto (the arrival grace), starts
+    /// awake and wandering: it does not gather at the foot of the stairs the runner is coming down.
     fn build_lineup(&self, level: i32, content: &Content) -> Vec<Slot> {
         let (Some(inf), Some((fac, _))) = (self.inf.as_ref(), self.level_parts(level)) else { return Vec::new() };
         if level == 0 {
@@ -472,6 +535,7 @@ impl Game {
             b.last_known_level = level;
             b.set_nav(self.stack_nav.clone());
         };
+        let wake = level == self.runner_level() && !self.resident_hunters.in_arrival_grace();
         let mut out = Vec::new();
         let mut rng = Rng::new(&format!("{seed}:SPECIALS"));
         for (id, tag) in [("nyxie", "NYXIE"), ("solyth", "SOLYTH")] {
@@ -490,7 +554,11 @@ impl Game {
             let Some(p) = spawn_spot_in(fac, self.p.pos, &mut rng) else { break };
             let pick = crate::hunters::pick_for_floor(content, &format!("{seed}:H{n}"), 1 - level, self.difficulty);
             let mut b = Brain::new(content.hunters[pick].clone(), p, &format!("{seed}:HUNTER:{n}"), self.difficulty);
-            b.activate_at(self.p.pos);
+            if wake {
+                b.activate_at(self.p.pos);
+            } else {
+                b.active = true;
+            }
             settle(&mut b);
             out.push(Slot { id: String::new(), brain: b });
         }
@@ -523,6 +591,11 @@ impl Game {
     /// list of `to` becomes the active one. No brain is shifted or reset, and the residency ids travel with the slots.
     /// When `to` was not synced its list alone is made (`pull_slots`: its shelf, its lineup, or empty when it has no
     /// window); no other list moves, and nothing is swapped.
+    ///
+    /// The hunters of `from` go after the runner by the flight (`Brain::follow_cross`): a chaser or investigator from
+    /// anywhere, any other awake hunter from within `follow_cross_cells` of the flight the runner walked. The arrival
+    /// grace starts, so the level reached is not topped up with hunters that already know where the runner stands, and
+    /// the hunters on their way count toward its population (`ensure_hunters_at`).
     pub(super) fn relabel_hunters(&mut self, from: i32, to: i32, content: &Content) {
         let n = self.hunters.len();
         let ids: Vec<String> = match self.inf.as_mut() {
@@ -542,9 +615,11 @@ impl Game {
         // only draws what the host sends: nothing is steered here)
         if !self.remote_hunters {
             let runner = self.p.pos;
+            let entrance = self.walked_flight_entrance(from, to);
             for b in brains.iter_mut().filter(|b| !b.target_is_bot) {
-                b.follow_cross(runner, to);
+                b.follow_cross(runner, to, entrance);
             }
+            self.resident_hunters.start_arrival_grace();
         }
         self.resident_hunters.put(from, join(ids, brains));
         if !self.resident_hunters.has(to) {
@@ -590,6 +665,8 @@ impl Game {
             return;
         }
         let Some(level) = self.inf.as_ref().map(|i| i.level) else { return };
+        // the runner was put on this level (a load, a respawn, an admin jump): it did not walk here
+        self.resident_hunters.end_arrival_grace();
         if level == 0 {
             self.hunters.clear();
             if let Some(inf) = self.inf.as_mut() {

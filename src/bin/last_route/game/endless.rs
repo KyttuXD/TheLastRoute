@@ -1621,6 +1621,11 @@ impl Game {
                 !matches!(h.def.id.as_str(), "nyxie" | "solyth") && h.def.category != "secret" && !h.def.id.starts_with("void_")
             })
             .count() as i32;
+        // a hunter on its way here from a neighbour floor (it follows the runner by the flight) is one of this floor's
+        // hunters already: no fresh one is spawned in its place
+        let have = have + self.followers_bound_for(self.runner_level());
+        // the runner just walked onto this floor: a hunter spawned now starts awake and wandering, not at the runner
+        let grace = self.resident_hunters.in_arrival_grace();
         let seed = self.level_seed();
         for n in have..want {
             let mut rng = Rng::new(&format!("{seed}:SPAWN:{n}"));
@@ -1639,8 +1644,11 @@ impl Game {
                 &format!("{seed}:HUNTER:{n}"),
                 self.difficulty,
             );
-            let at = wake.unwrap_or(self.p.pos);
-            b.activate_at(at);
+            match wake {
+                Some(at) => b.activate_at(at),
+                None if grace => b.active = true,
+                None => b.activate_at(self.p.pos),
+            }
             self.settle_new_brain(&mut b);
             self.hunters.push(b);
         }
@@ -1685,7 +1693,12 @@ impl Game {
         };
         let Some(p) = spot else { return false };
         let mut b = Brain::new(content.hunters[pick].clone(), p, &format!("{tag}:HUNTER"), self.difficulty);
-        b.activate_at(self.p.pos);
+        if near.is_none() && self.resident_hunters.in_arrival_grace() {
+            // a floor's own incursion, rolled as the runner walks onto it: awake, but not sent to the runner
+            b.active = true;
+        } else {
+            b.activate_at(self.p.pos);
+        }
         self.settle_new_brain(&mut b);
         self.hunters.push(b);
         // the residency ids run parallel to the hunter list, and the director's ids index it
@@ -1832,6 +1845,8 @@ impl Game {
         };
         let difficulty = self.difficulty;
         let runner_pos = wake.unwrap_or(self.p.pos);
+        // only a walked arrival with no relay behind it waits: a relay recovered here (`wake`) still wakes at its place
+        let grace = wake.is_none() && self.resident_hunters.in_arrival_grace();
         let o = (origin.0 as f32, origin.1 as f32);
         let Some(inf) = self.inf.as_mut() else { return };
         // the loaded list follows the hunter list (a caller outside this module may have pushed or removed one)
@@ -1895,6 +1910,8 @@ impl Game {
         let old_ids = std::mem::take(&mut inf.loaded);
         for (mut b, id) in old_hunters.into_iter().zip(old_ids) {
             if !id.is_empty() && !wanted.contains(&id) {
+                // stored hunters are not simulated: one in the middle of a flight stands on its level-0 end
+                b.settle_edge(0);
                 shift_brain(&mut b, o);
                 inf.stored.insert(id, b);
                 changed = true;
@@ -1917,7 +1934,12 @@ impl Game {
                 b.pos = q;
             }
             if !b.active {
-                b.activate_at(runner_pos);
+                if grace {
+                    // the runner just walked onto this floor: awake and wandering, not sent to where it stands
+                    b.active = true;
+                } else {
+                    b.activate_at(runner_pos);
+                }
             }
             self.hunters.push(b);
             kept_ids.push(id);
