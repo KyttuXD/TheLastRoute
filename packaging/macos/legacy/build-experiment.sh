@@ -40,9 +40,12 @@ cp "$STAGE/Cargo.lock" "$ROOT/target/test-reports/legacy-$OSVER-dependencies.loc
 cd "$STAGE"
 # Cargo itself only runs on the modern build host. RUSTC points at the patched
 # compiler above, so its bundled upstream standard library is never selected.
-rustup run 1.77.0 cargo build --locked --profile ci --target x86_64-apple-darwin --bin last_route
+# LR_LEGACY_PROFILE: release (the default: fat LTO, the fastest program, what is shipped) or ci (quicker to build,
+# keeps line numbers in a backtrace: use it to chase a crash).
+PROFILE=${LR_LEGACY_PROFILE:-release}
+rustup run 1.77.0 cargo build --locked --profile "$PROFILE" --target x86_64-apple-darwin --bin last_route
 # An unsigned .app for a real Snow Leopard Mac to try. Built, never run: CI has no 10.6 machine.
-BIN="$CARGO_TARGET_DIR/x86_64-apple-darwin/ci/last_route"
+BIN="$CARGO_TARGET_DIR/x86_64-apple-darwin/$PROFILE/last_route"
 otool -L "$BIN" | tee "$ROOT/target/test-reports/legacy-$OSVER-libraries.txt"
 otool -l "$BIN" | grep -A4 -E 'LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION' | tee "$ROOT/target/test-reports/legacy-$OSVER-min-os.txt"
 # every symbol the program asks the system for, for checking against what that system has (docs/MACOS_SNOW_LEOPARD.md)
