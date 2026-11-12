@@ -26,13 +26,21 @@ enum AudioMessage {
     Delete(u32),
 }
 
+/// Last Route patch: loaded sounds are held as 16-bit samples, half the memory of f32. The sources are 16-bit
+/// files and 16-bit rendered cues, so nothing audible is lost; mixing is still done in f32.
+const PCM_SCALE: f32 = 32767.0;
+
+fn to_pcm(samples: &[f32]) -> Arc<[i16]> {
+    samples.iter().map(|s| (s.clamp(-1.0, 1.0) * PCM_SCALE).round() as i16).collect::<Vec<i16>>().into()
+}
+
 #[derive(Debug)]
 pub struct SoundState {
     sound_id: u32,
     play_id: u32,
     /// Godot's `mix_offset`: source frame position in 16.16 fixed point.
     offset: u64,
-    data: Arc<[f32]>,
+    data: Arc<[i16]>,
     looped: bool,
     volume: f32,
 }
@@ -56,7 +64,7 @@ impl SoundState {
         } else {
             k
         } as usize;
-        (self.data[2 * k], self.data[2 * k + 1])
+        (self.data[2 * k] as f32 / PCM_SCALE, self.data[2 * k + 1] as f32 / PCM_SCALE)
     }
 
     /// One output frame (AudioStreamPlaybackResampled::mix).
@@ -98,7 +106,7 @@ pub const ONE_SHOT_VOICES: usize = 16;
 
 pub struct Mixer {
     rx: mpsc::Receiver<AudioMessage>,
-    sounds: HashMap<u32, Arc<[f32]>>,
+    sounds: HashMap<u32, Arc<[i16]>>,
     mixer_state: Vec<SoundState>,
     /// Godot's `mix_increment` for a 44.1 kHz stream at the output rate.
     increment: u64,
@@ -229,7 +237,7 @@ impl Mixer {
         while let Ok(message) = self.rx.try_recv() {
             match message {
                 AudioMessage::AddSound(id, data) => {
-                    self.sounds.insert(id, data.into());
+                    self.sounds.insert(id, to_pcm(&data));
                 }
                 AudioMessage::Play(sound_id, play_id, looped, volume) => {
                     if let Some(data) = self.sounds.get(&sound_id).cloned() {
@@ -294,27 +302,61 @@ impl Mixer {
     }
 }
 
-/// Parse ogg/wav/etc and get resampled to 44100, 2 channel data
-pub fn load_samples_from_file(bytes: &[u8]) -> Result<Vec<f32>, ()> {
-    let mut audio_stream = {
-        let file = std::io::Cursor::new(bytes);
-        audrey::Reader::new(file).unwrap()
-    };
-
-    let description = audio_stream.description();
-    let channels_count = description.channel_count();
-    assert!(channels_count == 1 || channels_count == 2);
-
-    let mut frames: Vec<f32> = Vec::with_capacity(4096);
-    let mut samples_iterator = audio_stream.samples::<f32>().map(std::result::Result::unwrap);
-
-    if channels_count == 1 {
-        frames.extend(samples_iterator.flat_map(|sample| [sample, sample]));
-    } else if channels_count == 2 {
-        frames.extend(samples_iterator);
+/// PCM WAV samples as interleaved f32 with the channel count and sample rate.
+/// Last Route patch: this replaces the audrey decoder (and with it lewton, ogg, hound and dasp). Every sound the
+/// games load is a 16-bit WAV they render themselves; Ogg Vorbis is no longer decoded.
+fn read_wav(bytes: &[u8]) -> Option<(Vec<f32>, usize, u32)> {
+    use std::convert::TryInto;
+    let u16_at = |at: usize| Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
+        return None;
     }
+    let mut at = 12;
+    let mut format = None;
+    while at + 8 <= bytes.len() {
+        let id = bytes.get(at..at + 4)?;
+        let len = u32_at(at + 4)? as usize;
+        let body = at + 8;
+        if id == b"fmt " {
+            // tag 1 is integer PCM, 3 is float; 0xFFFE (extensible) carries the real tag at offset 24
+            let mut tag = u16_at(body)?;
+            if tag == 0xFFFE {
+                tag = u16_at(body + 24)?;
+            }
+            format = Some((tag, u16_at(body + 2)? as usize, u32_at(body + 4)?, u16_at(body + 14)?));
+        } else if id == b"data" {
+            let (tag, channels, rate, bits) = format?;
+            let data = bytes.get(body..body.checked_add(len)?.min(bytes.len()))?;
+            let samples: Vec<f32> = match (tag, bits) {
+                (1, 8) => data.iter().map(|b| (*b as f32 - 128.0) / 128.0).collect(),
+                (1, 16) => data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect(),
+                (1, 24) => data.chunks_exact(3).map(|b| (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0).collect(),
+                (1, 32) => data.chunks_exact(4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0).collect(),
+                (3, 32) => data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect(),
+                _ => return None,
+            };
+            return Some((samples, channels, rate));
+        }
+        at = body.checked_add(len)?.checked_add(len & 1)?;
+    }
+    None
+}
 
-    let sample_rate = description.sample_rate();
+/// Parse a PCM WAV file and get resampled to 44100, 2 channel data
+pub fn load_samples_from_file(bytes: &[u8]) -> Result<Vec<f32>, ()> {
+    let (samples, channels_count, sample_rate) = read_wav(bytes).ok_or(())?;
+    if channels_count != 1 && channels_count != 2 {
+        return Err(());
+    }
+    let mut frames: Vec<f32> = Vec::with_capacity(samples.len() * 2 / channels_count);
+    if channels_count == 1 {
+        frames.extend(samples.into_iter().flat_map(|sample| [sample, sample]));
+    } else {
+        frames.extend(samples);
+    }
+    frames.truncate(frames.len() - frames.len() % 2);
+
 
     // stupid nearest-neighbor resampler (only for files not at 44.1 kHz; the game's cues all are)
     if sample_rate != SOURCE_RATE {
@@ -355,14 +397,37 @@ mod tests {
 
     #[test]
     fn unity_rate_is_exact_two_frames_late() {
-        let data: Arc<[f32]> = (0..200).map(|i| (i as f32 * 0.37).sin()).collect::<Vec<_>>().into();
-        let mut s = SoundState { sound_id: 0, play_id: 0, offset: 0, data: data.clone(), looped: false, volume: 1.0 };
+        let data: Vec<f32> = (0..200).map(|i| (i as f32 * 0.37).sin()).collect();
+        let mut s = SoundState { sound_id: 0, play_id: 0, offset: 0, data: to_pcm(&data), looped: false, volume: 1.0 };
         let inc = mix_increment(44100);
         assert_eq!(inc, FP_LEN);
         let out: Vec<(f32, f32)> = (0..102).map(|_| s.next(inc)).collect();
         assert_eq!(out[0], (0.0, 0.0));
         for k in 2..102 {
-            assert!((out[k].0 - data[2 * (k - 2)]).abs() < 1e-6);
+            // exact to the 16-bit step the samples are stored at
+            assert!((out[k].0 - data[2 * (k - 2)]).abs() < 1.0 / PCM_SCALE);
         }
+    }
+
+    #[test]
+    fn a_16_bit_wav_reads_back_and_other_data_is_refused() {
+        let mut wav = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        for v in [1u16, 2] {
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        wav.extend_from_slice(&44100u32.to_le_bytes());
+        wav.extend_from_slice(&(44100u32 * 4).to_le_bytes());
+        for v in [4u16, 16] {
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&8u32.to_le_bytes());
+        for v in [16384i16, -16384, 32767, -32768] {
+            wav.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(load_samples_from_file(&wav), Ok(vec![0.5, -0.5, 32767.0 / 32768.0, -1.0]));
+        assert_eq!(load_samples_from_file(b"OggS not a wav"), Err(()));
+        assert_eq!(load_samples_from_file(&wav[..30]), Err(()));
     }
 }

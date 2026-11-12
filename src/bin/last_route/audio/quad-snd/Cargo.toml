@@ -24,14 +24,6 @@ version = "0.2"
 [target."cfg(any(target_os = \"linux\", target_os = \"dragonfly\", target_os = \"freebsd\"))".dependencies.quad-alsa-sys]
 version = "0.3.2"
 
-[target."cfg(not(target_arch = \"wasm32\"))".dependencies.audrey]
-version = "0.3"
-features = [
-    "wav",
-    "ogg_vorbis",
-]
-default-features = false
-
 [target."cfg(target_os = \"android\")".dependencies.audir-sles]
 version = "0.1.0"
 

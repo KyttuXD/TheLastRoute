@@ -39,6 +39,7 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
 | Prop models built on first use (`ModelStore`, `shared/assets.rs`) | 190 MB | 292 MB | 77 ms |
 | Fonts: each file loaded once, unused glyphs emptied, caption face on first use | 165 MB | 248 MB | |
 | Identical embedded model pictures share one texture; mesh tiles and model parts trimmed to size | 165 MB | 240 MB | |
+| Loaded sounds held as 16-bit samples instead of f32 (quad-snd patch) | 160 MB | 240 MB | |
 
 Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
 `Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.
@@ -78,10 +79,18 @@ equal pictures now share one texture (`PropModel::parse`, by content hash), whic
 
 `tools/perf/alloc_prof.rs` is the profiler that made this table (how to use it is in the file).
 
+### Tried, no gain (2026-11-12)
+
+- **Welding duplicate mesh vertices.** Counted over 3200 world meshes in a stress run: 2,063,220 vertices, 2,020,189
+  distinct (2% duplicates), 1.5 indices a vertex. The meshes are plain quads with nothing to weld.
+- **glibc allocator settings** (`MALLOC_ARENA_MAX`, mmap and trim thresholds): within run-to-run noise.
+- **Fewer preloaded levels** (`data/stairs_links.json`). One level each way saved about 9 MB, but
+  `the_levels_near_the_runner_are_all_kept_within_the_frame_budget` requires two levels below to stay built, and
+  with that kept (one up, two down) the peak did not move. Left as it was.
+
 ## Next, in order of expected gain
 
 - [ ] World mesh tiles (51 MB): the vertex is 40 bytes (position, UV, colour, a 16-byte normal+mode). Fewer chunks kept around the player, or a smaller vertex, are the two levers; both change rendering code and view distance.
 - [ ] The glyph atlas (16 MB, plus its GPU copy): macroquad stores one-channel glyphs as RGBA and keeps the CPU image. Needs a macroquad patch, or fewer distinct text sizes.
-- [ ] Decoded sounds (9.5 MB): quad-snd holds 32-bit float samples; 16-bit would halve it (a quad-snd patch).
 - [ ] Check that the 110 MB dev executable (32 MB resident) shrinks in the release build, and measure release numbers.
 - [ ] Repeat on the Intel Macs (no `/proc`; use `footprint` or Activity Monitor).
