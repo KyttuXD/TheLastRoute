@@ -1,0 +1,36 @@
+name: macOS Intel test artifact
+
+on:
+  push:
+    branches: [ci/macos-intel-artifact]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-intel-test-artifact
+      - name: Build Intel macOS app (10.12 deployment target)
+        env:
+          ARCHS: x86_64-apple-darwin
+        run: sh packaging/macos/build_app.sh
+      - name: Package Intel app
+        run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: last-route-macos-x86_64-10.12
+          path: dist/last_route-macos-x86_64.zip
+          if-no-files-found: error
+          retention-days: 14

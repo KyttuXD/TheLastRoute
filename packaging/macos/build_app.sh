@@ -16,7 +16,14 @@ for t in $ARCHS; do
 done
 rustup target add $ARCHS
 for t in $ARCHS; do
-    cargo build --release --target "$t" --bin last_route
+    case "$t" in
+        x86_64-apple-darwin)
+            MACOSX_DEPLOYMENT_TARGET=10.12 cargo build --release --target "$t" --bin last_route
+            ;;
+        aarch64-apple-darwin)
+            MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --target "$t" --bin last_route
+            ;;
+    esac
 done
 
 BRANDING=src/bin/last_route/assets/branding
@@ -46,13 +53,14 @@ make_icns() {
     iconutil -c icns "$ICONSET" -o "$1"
 }
 
-# make_bundle TRIPLE SLUG APP_NAME BINARY PLIST ICON_NAME [ICON_SOURCE_256.png]: one .app for one architecture.
+# make_bundle TRIPLE SLUG APP_NAME BINARY PLIST ICON_NAME ICON_SOURCE_256 MIN_OS: one .app for one architecture.
 make_bundle() {
     APP="dist/$2/$3"
     rm -rf "$APP"
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     cp "target/$1/release/$4" "$APP/Contents/MacOS/$4"
-    cp "$5" "$APP/Contents/Info.plist"
+    sed "/<key>LSMinimumSystemVersion<\/key>/{n;s#<string>[^<]*</string>#<string>$8</string>#;}" \
+        "$5" > "$APP/Contents/Info.plist"
     make_icns "$APP/Contents/Resources/$6.icns" "$7"
     # unsigned local build: clear the quarantine flag so it opens on this Mac
     xattr -cr "$APP" 2>/dev/null || true
@@ -61,8 +69,8 @@ make_bundle() {
 
 for t in $ARCHS; do
     case "$t" in
-        x86_64-apple-darwin) SLUG=intel; ARCH=x86_64 ;;
-        aarch64-apple-darwin) SLUG=arm64; ARCH=arm64 ;;
+        x86_64-apple-darwin) SLUG=intel; ARCH=x86_64; MIN_OS=10.12 ;;
+        aarch64-apple-darwin) SLUG=arm64; ARCH=arm64; MIN_OS=11.0 ;;
     esac
-    make_bundle "$t" "$SLUG" "KYTTU The Last Route.app" last_route packaging/macos/Info.plist last_route
+    make_bundle "$t" "$SLUG" "KYTTU The Last Route.app" last_route packaging/macos/Info.plist last_route "" "$MIN_OS"
 done
