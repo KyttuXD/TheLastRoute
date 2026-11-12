@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "hospital",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal1",
+		"tint": "#e4e8ea",
+		"metal": true
+	},
 	"hall_floor": [
 		"vinyl0",
 		"vinyl1"

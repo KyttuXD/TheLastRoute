@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "lab",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal1",
+		"tint": "#c8d4dc",
+		"metal": true
+	},
 	"hall_floor": [
 		"epoxy0",
 		"epoxy0",

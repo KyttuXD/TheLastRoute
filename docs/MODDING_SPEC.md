@@ -157,6 +157,7 @@ A region file is a JSON object. Any top-level key not in the table below is an e
 | `double_room_door` | string | No | Door type for double-width rooms | `"normalDoubleRoomDoor"` |
 | `geometry` | object | No | Wall height and room sizes (section 3.3). Default: game-wide sizes. | `{"wall_height": 6.5}` |
 | `safe_light` | object | No | Safe-zone checkpoint light (section 3.3). Default: colour `[0.95, 0.78, 0.55]`, energy 2.0. | `{"color": [0.2, 0.5, 1], "energy": 4.5}` |
+| `accent` | object | No | Trim of hall pilasters and arches (section 3.3). Default: the maze's accent. | `{"texture": "floor", "kind": "metal0", "tint": "#c9a25a", "metal": true}` |
 
 The `id` is not checked against the file name. Only the `id` inside the file matters.
 
@@ -198,6 +199,15 @@ Example:
 |---|---|---|---|
 | `color` | array of 3 numbers | each 0 to 1 (linear RGB) | `[0.95, 0.78, 0.55]` |
 | `energy` | number | 0.2 to 6.0 | 2.0 |
+
+`accent` (optional) sets the trim of the region's hall pilasters and arches: the pilaster caps and the keystones (the shafts and arch blocks take the hall's own wall). When the block is present, all four keys are required and any other key is an error. A region without the block uses the maze's accent.
+
+| Key | Type | Rule |
+|---|---|---|
+| `texture` | string | Painted texture group: `floor`, `wall`, `ceiling` or `duct` |
+| `kind` | string | A kind of that group, for example `metal0` |
+| `tint` | string | Colour over the texture, written `#rrggbb` |
+| `metal` | boolean | Whether the trim is metal (read, not yet used by the renderer) |
 
 ### 3.4 Pack region rules
 

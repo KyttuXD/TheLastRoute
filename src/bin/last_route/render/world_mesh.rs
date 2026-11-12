@@ -21,7 +21,7 @@ use crate::world::facility::{Cell, DoorDraw, Prop, Stair};
 use crate::world::inferno::InfernoChunk;
 use crate::world::inferno_terrain::Terrain;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
-use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
+use crate::world::route::sewer::core::{Grid, BRIDGE, DRY, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, SOLID, WATER};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
 use super::packed_mesh::PackedMesh;
 use macroquad::prelude::*;
@@ -1917,6 +1917,8 @@ fn build_raw_meshes(
             }
         }
     }
+    // hall pilasters and arches (render/hall_arch.rs), each drawn by the part that owns the hall cell its wall faces
+    add_hall_arches(f, pick, &mut sewer, &mut surf, &mut plain, choices, assets);
     // the picked cells by chunk, for the sewer water and the cave decoration, which are made per chunk
     let mut chunk_cells: HashMap<(i32, i32), HashSet<(i32, i32)>> = HashMap::new();
     if sewer.is_some() || inferno.is_some() {
@@ -2078,6 +2080,132 @@ fn build_raw_meshes(
     meshes.extend(water.finish());
     // cut into tiles, so each mesh's box is tight enough for the scene's fog and frustum culls to drop what is out of view
     meshes.into_iter().flat_map(|m| super::mesh_batch::split_into_tiles(m, super::mesh_batch::tile_size())).collect()
+}
+
+/// The painted texture of a region's arch trim (`RegionAccent`: a group and a kind of the painter tables), or None
+/// when the tables do not know it.
+fn accent_tex(accent: &crate::content::regions::RegionAccent) -> Option<TexRef> {
+    let group = ["floor", "wall", "ceiling", "duct"].into_iter().find(|g| *g == accent.texture)?;
+    let entry = textures::table(group)?.iter().find(|e| e.0 == accent.kind)?;
+    Some(TexRef { group, kind: entry.0, variant: entry.2 })
+}
+
+/// One oriented box (`axes` are its full extents, Godot's basis columns on a unit cube) as six quads, each mapped
+/// from its own plane as Godot's ref_plane_uv.gdshader does (`hall_arch::plane_uv`): u in metres along the face, v
+/// counted in wall tiers from the ceiling of a room `room_h` high, the ground plane on a flat face. So the wall's
+/// courses stay level on the sloped arch blocks and carry on from the wall behind.
+///
+/// Two changes from Godot's numbers, neither of which moves a texel: u is negated on upright faces, because this
+/// build's wall quads run u right to left where Godot's run left to right, and each quad's UVs are shifted by whole
+/// repeats to start near zero (the shader repeats mode 0 UVs), which keeps the packed mesh's UV step fine.
+fn plane_box(b: &mut Builder, centre: Vec3, axes: [Vec3; 3], room_h: f32, tiers: f32, col: Color) {
+    let p = |x: f32, y: f32, z: f32| centre + axes[0] * (x * 0.5) + axes[1] * (y * 0.5) + axes[2] * (z * 0.5);
+    // the corner order of `Builder::cube_basis`
+    let faces: [([Vec3; 4], Vec3); 6] = [
+        ([p(-1., 1., 1.), p(1., 1., 1.), p(1., -1., 1.), p(-1., -1., 1.)], axes[2]),
+        ([p(1., 1., -1.), p(-1., 1., -1.), p(-1., -1., -1.), p(1., -1., -1.)], -axes[2]),
+        ([p(1., 1., 1.), p(1., 1., -1.), p(1., -1., -1.), p(1., -1., 1.)], axes[0]),
+        ([p(-1., 1., -1.), p(-1., 1., 1.), p(-1., -1., 1.), p(-1., -1., -1.)], -axes[0]),
+        ([p(-1., 1., -1.), p(1., 1., -1.), p(1., 1., 1.), p(-1., 1., 1.)], axes[1]),
+        ([p(-1., -1., 1.), p(1., -1., 1.), p(1., -1., -1.), p(-1., -1., -1.)], -axes[1]),
+    ];
+    for (c, n) in faces {
+        let n = n.normalize_or_zero();
+        let mut uv = c.map(|q| super::hall_arch::plane_uv(q, n, 0.0, room_h, tiers));
+        if n.y.abs() <= 0.95 {
+            for t in uv.iter_mut() {
+                t.x = -t.x;
+            }
+        }
+        let lo = uv.iter().fold(vec2(f32::INFINITY, f32::INFINITY), |m, t| m.min(*t)).floor();
+        for t in uv.iter_mut() {
+            *t -= lo;
+        }
+        b.quad(c, uv, n, col, 0.0);
+    }
+}
+
+/// The hall pilasters and hall arches of the picked cells (render/hall_arch.rs, Godot's RefDecor): the shafts and the
+/// arch blocks in the hall's own wall picture, the caps and keystones in the district's accent (`RegionAccent`, a
+/// painted floor kind under a tint; plain tinted colour when the painter tables do not know the kind).
+///
+/// Godot dresses each chunk from its own 45 x 45 grid, so the placement here is per chunk too, in chunk-local cells;
+/// a piece is drawn by the part that owns the open hall cell its wall face looks into, which is one part exactly.
+/// In the sewers the grid is the chunk's `sewer_grid` (open = dry floor or a bridge deck, wall = brick), as Godot's
+/// walk grid is. Only a streamed window is dressed (the finite route has no chunks), and the Inferno is left out: its
+/// floor and ceiling are noisy here and these boxes are flat.
+fn add_hall_arches(
+    f: &Facility,
+    pick: &Pick,
+    sewer: &mut Option<SewerFloor>,
+    surf: &mut HashMap<(&'static str, &'static str), Builder>,
+    plain: &mut Builder,
+    choices: &mut HashMap<(String, String, bool), TextureChoice>,
+    assets: &Assets,
+) {
+    use super::hall_arch::{self, ChunkView, Material};
+    if f.has_lift || f.cols != CHUNK * WINDOW || f.rows != CHUNK * WINDOW || f.terrain().is_some() {
+        return;
+    }
+    let mut by_chunk: HashMap<(i32, i32), Vec<Cell>> = HashMap::new();
+    for &c in &pick.cells {
+        if !f.is_wall_cell(c.x, c.y) {
+            by_chunk.entry(chunk_cell(f.origin, c.x, c.y).0).or_default().push(c);
+        }
+    }
+    let regions = crate::content::regions::table();
+    for (key, cells) in by_chunk {
+        // the chunk's corner in window cells
+        let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+        // a sewer chunk's grid and ramp cells; a sewer window's chunk without a grid is not dressed
+        let sewer_chunk: Option<(Grid, HashSet<(i32, i32)>)> = match sewer.as_mut() {
+            Some(s) => {
+                let Some(grid) = s.grid(key).copied() else { continue };
+                let inputs = crate::world::route::sewer::Inputs { world: &s.seed };
+                let ramps = crate::world::route::sewer::ramp_cells(&inputs, key.0, key.1, s.level).keys().map(|c| (c.x, c.y)).collect();
+                Some((grid, ramps))
+            }
+            None => None,
+        };
+        let solid = |x: i32, z: i32| f.is_wall_cell(at.0 + x, at.1 + z);
+        let code = |x: i32, z: i32| sewer_chunk.as_ref().map(|(grid, _)| grid[z as usize][x as usize]);
+        let open = |x: i32, z: i32| !solid(x, z) && code(x, z).map_or(true, |c| c == DRY || c == BRIDGE);
+        let brick = |x: i32, z: i32| code(x, z).map_or(true, |c| c == SOLID);
+        let room = |x: i32, z: i32| f.room_at((at.0 + x) as f64 + 0.5, (at.1 + z) as f64 + 0.5).is_some();
+        let ramp = |x: i32, z: i32| sewer_chunk.as_ref().is_some_and(|(_, ramps)| ramps.contains(&(x, z)));
+        let height = |x: i32, z: i32| cell_wall_height(f, at.0 + x, at.1 + z);
+        let view = ChunkView { size: CHUNK, sewer: sewer_chunk.is_some(), open: &open, brick: &brick, room: &room, ramp: &ramp, height: &height };
+        let mut decor = hall_arch::Decor::default();
+        for c in cells {
+            let (lx, lz) = (c.x - at.0, c.y - at.1);
+            for d in hall_arch::DIRS {
+                hall_arch::wall_face(&view, lx - d.0, lz - d.1, d, &mut decor);
+            }
+        }
+        // `decor.colliders` (the pilaster shafts, solid to the player in Godot) is not used yet: the body tests of
+        // `Facility` are shared by the runner, the bots and the hunters, and a shaft narrows a one-cell hall to 36 cm
+        let shift = vec3(at.0 as f32, 0.0, at.1 as f32);
+        for b in &decor.boxes {
+            let (cell, room_h, trim) = match b.material {
+                Material::Wall { cell, height } => (cell, height, false),
+                Material::Trim { cell, height } => (cell, height, true),
+            };
+            let (wx, wz) = (at.0 + cell.0, at.1 + cell.1);
+            let tiers = textures::wall_tiers(room_h) as f32;
+            if trim {
+                let accent = regions.accent(f.region_at(wx, wz));
+                let col = accent.map_or(Color::from_rgba(0xb0, 0xaa, 0xa0, 255), |a| Color::from_rgba(a.tint[0], a.tint[1], a.tint[2], 255));
+                match accent.and_then(accent_tex) {
+                    Some(tex) => plane_box(painted(surf, tex, &assets.white), b.centre + shift, b.axes, room_h, tiers, col),
+                    None => plane_box(plain, b.centre + shift, b.axes, room_h, tiers, col),
+                }
+            } else {
+                let (choice, _) = cell_surfaces(f, wx, wz, pick.pad, choices);
+                let wall = choice.wall_at((wx + f.origin.0) as i64, (wz + f.origin.1) as i64);
+                plane_box(painted(surf, wall, assets.wall(room_set(f, wx, wz))), b.centre + shift, b.axes, room_h, tiers, WHITE);
+            }
+        }
+    }
 }
 
 /// The radians a room prop's model is turned by when it is drawn, from its gameplay yaw. Godot turns every

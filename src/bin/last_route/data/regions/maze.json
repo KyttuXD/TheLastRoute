@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "maze",
+	"accent": {
+		"texture": "floor",
+		"kind": "concrete0",
+		"tint": "#b0aaa0",
+		"metal": false
+	},
 	"hall_floor": [
 		"concrete0",
 		"concrete1"

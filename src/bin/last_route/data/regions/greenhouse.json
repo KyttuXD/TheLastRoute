@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "greenhouse",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal2",
+		"tint": "#5f7a5a",
+		"metal": true
+	},
 	"hall_floor": [
 		"terracotta0",
 		"terracotta1",

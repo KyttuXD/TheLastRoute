@@ -42,6 +42,7 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
 | Loaded sounds held as 16-bit samples instead of f32 (quad-snd patch) | 160 MB | 240 MB | |
 | Glyph atlas row-wrap fix (vendored macroquad) | 144 MB | 217 MB | |
 | World mesh tiles kept in an 18-byte vertex while out of sight (`render/packed_mesh.rs`) | 144 MB | 210 MB | |
+| Hall pilasters and arches added (`render/hall_arch.rs`, a Godot feature that was missing): more geometry | 144 MB | 215 MB | |
 
 Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
 `Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.

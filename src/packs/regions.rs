@@ -56,9 +56,10 @@ pub const SCHEMA: &str = "lr.region/1";
 /// The source name of a built-in region (every other source is the id of the pack that added it).
 pub const BUILTIN: &str = "builtin";
 
-/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry` and
-/// `safe_light` are optional: they were added to /1 before the first full release, so /1 stays the schema name.
-const KEYS: [&str; 13] = [
+/// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry`,
+/// `safe_light` and `accent` are optional: they were added to /1 before the first full release, so /1 stays the
+/// schema name.
+const KEYS: [&str; 14] = [
     "schema",
     "id",
     "hall_floor",
@@ -71,6 +72,7 @@ const KEYS: [&str; 13] = [
     "prop_set",
     "geometry",
     "safe_light",
+    "accent",
     // the sewer level generator's layout rules (world/route/sewer/core.rs `Rules`); not read here
     "layout",
 ];
@@ -86,6 +88,8 @@ pub const SAFE_LIGHT_ENERGY_RANGE: (f64, f64) = (0.2, 6.0);
 pub const SAFE_LIGHT_COLOR: [f32; 3] = [0.95, 0.78, 0.55];
 /// The safe-zone checkpoint light's energy when the region has no `safe_light` block.
 pub const SAFE_LIGHT_ENERGY: f32 = 2.0;
+/// The keys of the optional `accent` block. All four are required when the block is there.
+const ACCENT_KEYS: [&str; 4] = ["texture", "kind", "tint", "metal"];
 /// The keys a file must have. `shop_names`, `room_door` and `double_room_door` are optional.
 const REQUIRED: [&str; 7] = [
     "schema",
@@ -143,6 +147,20 @@ impl Default for RegionSafeLight {
     }
 }
 
+/// The optional `accent` block: the trim of the region's archways and hall pilasters (caps, keystones). Godot keeps
+/// it in data/themes/regions/<id>.json `accent` (RefLook.ARCH_ACCENT: texture group, kind, tint, metal); a region
+/// without the block takes the maze's (`RegionTable::accent`, RefLook.arch_accent).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionAccent {
+    /// The painted texture group ("floor", "wall").
+    pub texture: String,
+    /// The kind in that group ("metal0", "concrete0").
+    pub kind: String,
+    /// The tint over the texture, sRGB bytes (the file's "#rrggbb").
+    pub tint: [u8; 3],
+    pub metal: bool,
+}
+
 /// One region's facts, as `lr.region/1` states them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionDef {
@@ -160,6 +178,8 @@ pub struct RegionDef {
     pub geometry: Option<RegionGeometry>,
     /// Safe-zone light colour and energy, when the file has a `safe_light` block. `None` keeps the game's light.
     pub safe_light: Option<RegionSafeLight>,
+    /// Arch and pilaster trim, when the file has an `accent` block. `None` takes the maze's (`RegionTable::accent`).
+    pub accent: Option<RegionAccent>,
     /// `BUILTIN`, or the id of the pack that added or replaced the region.
     pub source: String,
 }
@@ -286,6 +306,44 @@ fn safe_light(file: &str, obj: &Map<String, Value>) -> Result<Option<RegionSafeL
     Ok(Some(s))
 }
 
+/// The optional `accent` block: `texture` and `kind` are non-empty strings, `tint` is "#rrggbb", `metal` a boolean.
+fn accent(file: &str, obj: &Map<String, Value>) -> Result<Option<RegionAccent>, String> {
+    let Some(value) = obj.get("accent") else {
+        return Ok(None);
+    };
+    let block = value
+        .as_object()
+        .ok_or_else(|| wrong(file, "accent", "an object"))?;
+    if let Some(key) = block.keys().find(|k| !ACCENT_KEYS.contains(&k.as_str())) {
+        return Err(format!("{file}: unknown key \"accent.{key}\""));
+    }
+    let text = |key: &str| -> Result<String, String> {
+        block
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| wrong(file, &format!("accent.{key}"), "a non-empty string"))
+    };
+    let tint_text = text("tint")?;
+    let hex = tint_text.strip_prefix('#').unwrap_or(&tint_text);
+    let tint = u32::from_str_radix(hex, 16)
+        .ok()
+        .filter(|_| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|n| [(n >> 16) as u8, (n >> 8) as u8, n as u8])
+        .ok_or_else(|| wrong(file, "accent.tint", "a colour written #rrggbb"))?;
+    let metal = block
+        .get("metal")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| wrong(file, "accent.metal", "true or false"))?;
+    Ok(Some(RegionAccent {
+        texture: text("texture")?,
+        kind: text("kind")?,
+        tint,
+        metal,
+    }))
+}
+
 fn optional_string(file: &str, obj: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
     match obj.get(key) {
         None => Ok(None),
@@ -383,6 +441,7 @@ pub fn parse_file(file: &str, text: &str) -> Result<RegionDef, String> {
         prop_set: prop_set(file, obj)?,
         geometry: geometry(file, obj)?,
         safe_light: safe_light(file, obj)?,
+        accent: accent(file, obj)?,
         source: String::new(),
     })
 }
@@ -391,6 +450,14 @@ impl RegionTable {
     /// The definition of a region id, if the table has one.
     pub fn def(&self, id: &str) -> Option<&RegionDef> {
         self.defs.iter().find(|d| d.id == id)
+    }
+
+    /// The arch and pilaster trim of a region: its own `accent` block, else the maze's (Godot
+    /// `RefLook.arch_accent`, ref_look.gd:244-245). `None` only when the maze has no block either.
+    pub fn accent(&self, id: &str) -> Option<&RegionAccent> {
+        self.def(id)
+            .and_then(|d| d.accent.as_ref())
+            .or_else(|| self.def("maze").and_then(|d| d.accent.as_ref()))
     }
 
     /// Builds the built-in table from `(file, text)` pairs. A bad file is dropped and reported in
@@ -727,6 +794,39 @@ mod tests {
     fn a_safe_light_that_is_not_an_object_fails() {
         let e = fails(&with_safe_light("[1]"));
         assert!(e.contains("\"safe_light\" must be an object"), "{e}");
+    }
+
+    fn with_accent(block: &str) -> String {
+        MIN.replacen("\"id\":\"t\"", &format!("\"id\":\"t\",\"accent\":{block}"), 1)
+    }
+
+    #[test]
+    fn an_accent_block_is_read_and_a_region_without_one_takes_the_maze_trim() {
+        let d = parse_file("t.json", &with_accent(r##"{"texture":"floor","kind":"metal0","tint":"#c9a25a","metal":true}"##)).unwrap();
+        let want = RegionAccent { texture: "floor".into(), kind: "metal0".into(), tint: [0xc9, 0xa2, 0x5a], metal: true };
+        assert_eq!(d.accent, Some(want));
+        assert_eq!(parse_file("t.json", MIN).unwrap().accent, None);
+        // the built-in files carry Godot's data/themes/regions accents; a region with no block falls back to the maze's
+        let table = builtin();
+        let maze = table.accent("maze").expect("the maze has an accent");
+        assert_eq!((maze.kind.as_str(), maze.tint, maze.metal), ("concrete0", [0xb0, 0xaa, 0xa0], false));
+        let hotel = table.accent("hotel").expect("the hotel has an accent");
+        assert_eq!((hotel.kind.as_str(), hotel.tint, hotel.metal), ("metal0", [0xc9, 0xa2, 0x5a], true));
+        assert_eq!(table.accent("ice"), Some(maze));
+        assert_eq!(table.accent("no_such_region"), Some(maze));
+    }
+
+    #[test]
+    fn a_bad_accent_names_the_key() {
+        for (block, key) in [
+            (r##"{"texture":"floor","kind":"metal0","tint":"gold","metal":true}"##, "accent.tint"),
+            (r##"{"texture":"floor","kind":"metal0","tint":"#c9a25a"}"##, "accent.metal"),
+            (r##"{"texture":"floor","tint":"#c9a25a","metal":true}"##, "accent.kind"),
+            (r##"{"texture":"floor","kind":"metal0","tint":"#c9a25a","metal":true,"gloss":1}"##, "accent.gloss"),
+        ] {
+            let e = fails(&with_accent(block));
+            assert!(e.contains(key), "{e}");
+        }
     }
 
     #[test]

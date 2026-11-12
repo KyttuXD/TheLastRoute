@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "mall",
+	"accent": {
+		"texture": "floor",
+		"kind": "terrazzo0",
+		"tint": "#e0dcd4",
+		"metal": false
+	},
 	"hall_floor": [
 		"terrazzo0",
 		"terrazzo1"

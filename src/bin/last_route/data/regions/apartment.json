@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "apartment",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal0",
+		"tint": "#b8955a",
+		"metal": true
+	},
 	"hall_floor": [
 		"parquet0",
 		"parquet1"

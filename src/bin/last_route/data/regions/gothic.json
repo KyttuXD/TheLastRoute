@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "gothic",
+	"accent": {
+		"texture": "floor",
+		"kind": "stone1",
+		"tint": "#a8a29a",
+		"metal": false
+	},
 	"hall_floor": [
 		"stone0",
 		"stone1"

@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "sewer",
+	"accent": {
+		"texture": "floor",
+		"kind": "stone0",
+		"tint": "#9a948a",
+		"metal": false
+	},
 	"hall_floor": [
 		"stone0",
 		"stone1"

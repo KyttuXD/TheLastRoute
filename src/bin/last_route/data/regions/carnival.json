@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "carnival",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal0",
+		"tint": "#d4a84a",
+		"metal": true
+	},
 	"hall_floor": [
 		"check0",
 		"check1"

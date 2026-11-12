@@ -14,6 +14,7 @@ pub mod door;
 pub mod draw_stats;
 pub mod fp_hands;
 pub mod frustum;
+pub mod hall_arch;
 pub mod hiding_cam;
 pub mod hunter_cache;
 pub mod inferno_deco;

@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "beach",
+	"accent": {
+		"texture": "floor",
+		"kind": "driftwood0",
+		"tint": "#e6d8b8",
+		"metal": false
+	},
 	"hall_floor": [
 		"sand0",
 		"sand1",

@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "prison",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal1",
+		"tint": "#8a96a0",
+		"metal": true
+	},
 	"hall_floor": [
 		"concrete0",
 		"concrete1"

@@ -1,6 +1,12 @@
 {
 	"schema": "lr.region/1",
 	"id": "hotel",
+	"accent": {
+		"texture": "floor",
+		"kind": "metal0",
+		"tint": "#c9a25a",
+		"metal": true
+	},
 	"hall_floor": [
 		"carpet_teal"
 	],
