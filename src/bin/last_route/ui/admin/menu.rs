@@ -293,14 +293,7 @@ impl Admin {
         };
         let top = col.y;
         ui.clip = Some(page);
-        unsafe {
-            get_internal_gl().quad_gl.scissor(Some((
-                page.x as i32,
-                page.y as i32,
-                page.w.ceil() as i32,
-                page.h.ceil() as i32,
-            )));
-        }
+        crate::ui::style::clip_begin_pixels(page);
         let had_click = ui.click;
         match tab {
             0 => {
@@ -490,9 +483,7 @@ impl Admin {
             _ => self.fields_page(&mut ui, &mut col, &mut cmds, content),
         }
         self.content_h[tab] = (col.y - top - 4.0 * u).max(0.0);
-        unsafe {
-            get_internal_gl().quad_gl.scissor(None);
-        }
+        crate::ui::style::clip_end();
         ui.clip = None;
         // a page taller than the body shows where it is (it scrolls by wheel, keys and PgUp/PgDn)
         if self.content_h[tab] > page.h + 0.5 {
@@ -1192,14 +1183,7 @@ fn draw_popup(ui: &Ui, p: &Popup, selected: usize, u: f32, sh: f32) {
         2.5 * u,
         PopupLook::BG,
     );
-    unsafe {
-        get_internal_gl().quad_gl.scissor(Some((
-            rect.x as i32,
-            rect.y as i32,
-            rect.w.ceil() as i32,
-            rect.h.ceil() as i32,
-        )));
-    }
+    crate::ui::style::clip_begin_pixels(rect);
     let hovered = (first..first + rows)
         .find(|&i| popup_row(rect, i, p.scroll, u).contains(ui.mouse) && rect.contains(ui.mouse));
     let lit = hovered.unwrap_or(selected);
@@ -1222,7 +1206,5 @@ fn draw_popup(ui: &Ui, p: &Popup, selected: usize, u: f32, sh: f32) {
         };
         ui.text_mid(&p.items[i], r.x + 22.0 * u, r, 8.0, col);
     }
-    unsafe {
-        get_internal_gl().quad_gl.scissor(None);
-    }
+    crate::ui::style::clip_end();
 }

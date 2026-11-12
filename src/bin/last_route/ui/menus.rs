@@ -1521,10 +1521,7 @@ pub fn draw_lobby(
             ui.scroll = 0.0;
         }
     }
-    // Keep the lobby's scroll content clipped to the viewport, not the inner panel.
-    // The panel's logical width can exceed the active canvas after menu scaling, which
-    // otherwise leaves the lobby's right-hand content clipped halfway across the panel.
-    clip_begin(Rect::new(0.0, 0.0, v.x, v.y));
+    clip_begin(Rect::new(inner.x, inner.y, inner.w + 4.0, inner.h));
     let y0 = inner.y - ui.scroll;
     let mut y = y0;
     // the eyebrow, then the room code with COPY CODE under it

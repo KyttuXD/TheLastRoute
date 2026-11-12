@@ -365,16 +365,41 @@ fn wrap(ui: &Ui, text: &str, size: f32, width: f32) -> Vec<String> {
     for para in text.split('\n') {
         let mut line = String::new();
         for word in para.split(' ') {
-            let trial = if line.is_empty() {
-                word.to_string()
-            } else {
-                format!("{line} {word}")
-            };
-            if !line.is_empty() && ui.tw(&trial, size) > width {
-                out.push(std::mem::take(&mut line));
-                line = word.to_string();
-            } else {
-                line = trial;
+            // Server-provided status values can contain long unbroken tokens. Split those
+            // by character boundary too, so a single token cannot escape the panel viewport.
+            let mut pieces = Vec::new();
+            let mut piece = String::new();
+            for ch in word.chars() {
+                let mut candidate = piece.clone();
+                candidate.push(ch);
+                if !piece.is_empty() && ui.tw(&candidate, size) > width {
+                    pieces.push(std::mem::take(&mut piece));
+                }
+                piece.push(ch);
+            }
+            if !piece.is_empty() {
+                pieces.push(piece);
+            }
+            if pieces.is_empty() {
+                pieces.push(String::new());
+            }
+            for (index, word) in pieces.into_iter().enumerate() {
+                if index > 0 && !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                    line = word;
+                    continue;
+                }
+                let trial = if line.is_empty() {
+                    word.clone()
+                } else {
+                    format!("{line} {word}")
+                };
+                if !line.is_empty() && ui.tw(&trial, size) > width {
+                    out.push(std::mem::take(&mut line));
+                    line = word;
+                } else {
+                    line = trial;
+                }
             }
         }
         out.push(line);
@@ -427,14 +452,7 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, account: Option<&api::AccountRep
     }
     hub.scroll = hub.scroll.clamp(0.0, (hub.content_h - body.h).max(0.0));
     ui.clip = Some(body);
-    unsafe {
-        get_internal_gl().quad_gl.scissor(Some((
-            body.x as i32,
-            body.y as i32,
-            body.w.ceil() as i32,
-            body.h.ceil() as i32,
-        )));
-    }
+    crate::ui::style::clip_begin_pixels(body);
     let top = body.y - hub.scroll;
     let mut y = top;
     let row = (line_h(7.0) + 3.0) * u;
@@ -477,9 +495,7 @@ pub fn draw_hub(a: &Assets, hub: &mut HubPanel, account: Option<&api::AccountRep
         }
     }
     hub.content_h = y - top;
-    unsafe {
-        get_internal_gl().quad_gl.scissor(None);
-    }
+    crate::ui::style::clip_end();
     if closed {
         hub.scroll = 0.0;
     }

@@ -18,9 +18,12 @@ rustup target add $ARCHS
 for t in $ARCHS; do
     case "$t" in
         x86_64-apple-darwin)
+            # Rust's supported x86_64 macOS baseline is Sierra; older Mac Pros
+            # need an unsupported OS install, but can run this Intel build there.
             MACOSX_DEPLOYMENT_TARGET=10.12 cargo build --release --target "$t" --bin last_route
             ;;
         aarch64-apple-darwin)
+            # Apple Silicon starts at Big Sur; preserve its existing baseline.
             MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --target "$t" --bin last_route
             ;;
     esac

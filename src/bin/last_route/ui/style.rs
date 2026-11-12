@@ -1109,14 +1109,61 @@ pub fn report_frames() {
 /// Clips drawing to a rectangle (units) until `clip_end` (ScrollContainer's clip).
 pub fn clip_begin(r: Rect) {
     let s = unit();
+    clip_begin_pixels(Rect::new(r.x * s, r.y * s, r.w * s, r.h * s));
+}
+
+/// Converts logical pixels to framebuffer pixels, rounding the edges outward.
+/// Empty or inverted dimensions remain empty, even at fractional origins.
+pub fn logical_to_framebuffer_rect(r: Rect, dpi: f32) -> (i32, i32, i32, i32) {
+    let left = (r.x * dpi).floor() as i32;
+    let top = (r.y * dpi).floor() as i32;
+    let right = ((r.x + r.w.max(0.0)) * dpi).ceil() as i32;
+    let bottom = ((r.y + r.h.max(0.0)) * dpi).ceil() as i32;
+    let width = if r.w > 0.0 { right.saturating_sub(left).max(0) } else { 0 };
+    let height = if r.h > 0.0 { bottom.saturating_sub(top).max(0) } else { 0 };
+    (left, top, width, height)
+}
+
+/// Clips a rectangle already expressed in logical screen pixels (not design units).
+pub fn clip_begin_pixels(r: Rect) {
+    let rect = logical_to_framebuffer_rect(r, screen_dpi_scale());
     let mut gl = unsafe { get_internal_gl() };
     gl.flush();
-    gl.quad_gl.scissor(Some((
-        (r.x * s) as i32,
-        (r.y * s) as i32,
-        (r.w * s).max(0.0) as i32,
-        (r.h * s).max(0.0) as i32,
-    )));
+    gl.quad_gl.scissor(Some(rect));
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::logical_to_framebuffer_rect;
+    use macroquad::prelude::Rect;
+
+    #[test]
+    fn scales_logical_pixels_for_each_dpi() {
+        let rect = Rect::new(10.0, 20.0, 30.0, 40.0);
+        assert_eq!(logical_to_framebuffer_rect(rect, 1.0), (10, 20, 30, 40));
+        assert_eq!(logical_to_framebuffer_rect(rect, 1.5), (15, 30, 45, 60));
+        assert_eq!(logical_to_framebuffer_rect(rect, 2.0), (20, 40, 60, 80));
+    }
+
+    #[test]
+    fn rounds_fractional_edges_outward() {
+        let rect = Rect::new(-0.25, 1.25, 2.5, 3.5);
+        assert_eq!(logical_to_framebuffer_rect(rect, 1.0), (-1, 1, 4, 4));
+        assert_eq!(logical_to_framebuffer_rect(rect, 1.5), (-1, 1, 5, 7));
+        assert_eq!(logical_to_framebuffer_rect(rect, 2.0), (-1, 2, 6, 8));
+    }
+
+    #[test]
+    fn dimensions_are_nonnegative_and_empty_stays_empty() {
+        for dpi in [1.0, 1.5, 2.0] {
+            for (w, h) in [(0.0, 0.0), (-2.0, -3.0), (0.0, -1.0)] {
+                let (_, _, width, height) =
+                    logical_to_framebuffer_rect(Rect::new(0.25, -0.25, w, h), dpi);
+                assert_eq!((width, height), (0, 0));
+            }
+            assert_eq!(logical_to_framebuffer_rect(Rect::new(0.25, 0.25, -1.0, 2.0), dpi).2, 0);
+        }
+    }
 }
 
 pub fn clip_end() {
