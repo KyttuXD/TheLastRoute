@@ -401,7 +401,7 @@ fn started_by_launcher() -> bool {
 }
 
 /// Unix time (UTC) of the last finished update check this run; 0 = none.
-static LAST_CHECK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static LAST_CHECK: crate::shared::atomic64::AtomicI64 = crate::shared::atomic64::AtomicI64::new(0);
 
 /// Stamps a finished check now (kept in UTC; shown in the player's zone).
 fn stamp_check() {

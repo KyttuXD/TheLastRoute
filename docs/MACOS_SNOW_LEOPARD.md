@@ -75,7 +75,7 @@ and `Cargo.lock` are not touched.
 
 | Crate | Problem with 1.77 | Staged fix |
 |---|---|---|
-| `winresource` (build) | pulls `toml` 1.x, edition 2024, unreadable by Cargo 1.77 | line removed (Windows-only icon step) |
+| `winresource` (build) | pulls `toml` 1.x, edition 2024, unreadable by Cargo 1.77 | line removed in the stage; since 2026-11-12 it is a Windows-host-only build dependency anyway |
 | `fontdue` 0.9.5 | `cast_signed` | pinned to 0.9.3 |
 | `macroquad` 0.4.16 | `size_of` from the 1.80 prelude | pinned to 0.4.13 |
 | `indexmap`, `zeroize`, `wasm-bindgen`, `web-sys` | declare a newer rust-version | lowered by Cargo's MSRV-aware resolver |

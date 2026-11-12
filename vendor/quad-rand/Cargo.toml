@@ -1,0 +1,14 @@
+# quad-rand 0.2.3 from crates.io with one Last Route patch (LAST_ROUTE_PATCHES.md): no 64-bit atomic is needed.
+[package]
+name = "quad-rand"
+version = "0.2.3"
+edition = "2018"
+license = "MIT"
+description = "Pseudo random implementation with core atomics."
+
+[lib]
+name = "quad_rand"
+path = "src/lib.rs"
+
+[dependencies]
+rand = { version = "0.8", optional = true }

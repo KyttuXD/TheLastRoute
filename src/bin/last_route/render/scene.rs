@@ -25,7 +25,8 @@ use macroquad::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::shared::atomic64::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::OnceLock;
 
 /// The asset key of an interactable's model, built at compile time: `item_path!("relay")` is

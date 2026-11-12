@@ -17,7 +17,8 @@ use std::cmp::Ordering;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::f32::consts::SQRT_2;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::shared::atomic64::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;

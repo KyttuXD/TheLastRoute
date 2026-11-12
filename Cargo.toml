@@ -77,7 +77,9 @@ name = "lr_story_server"
 path = "src/bin/lr_story_server/main.rs"
 required-features = ["server"]
 
-[build-dependencies]
+# The Windows icon step in build.rs (#[cfg(windows)], so the build host). Other hosts never download or compile it
+# or its toml crates.
+[target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
 [profile.dev]
@@ -123,3 +125,5 @@ opt-level = 2
 quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
 # miniquad 0.4.11 with Metal fixes and a live frame-pacer switch (vendor/miniquad/LAST_ROUTE_PATCHES.md).
 miniquad = { path = "vendor/miniquad" }
+# quad-rand 0.2.3 without its 64-bit atomic, so 32-bit PowerPC builds (vendor/quad-rand/LAST_ROUTE_PATCHES.md).
+quad-rand = { path = "vendor/quad-rand" }

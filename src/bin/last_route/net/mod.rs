@@ -213,7 +213,8 @@ pub fn scrub(text: &str) -> String {
 pub fn random_bytes(n: usize) -> Vec<u8> {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::shared::atomic64::AtomicU64;
+    use std::sync::atomic::Ordering;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut out = Vec::with_capacity(n + 8);
     while out.len() < n {

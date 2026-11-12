@@ -1,20 +1,22 @@
 # PowerPC
 
-Status (2026-11-12): the game **type-checks** for 64-bit big-endian PowerPC Linux. Nothing has been linked or run on
-PowerPC. A much smaller zero-dependency port for weaker machines is started in the separate `LastRoute-RustLite` folder.
+Status (2026-11-12): the game **type-checks** for 64-bit and 32-bit big-endian PowerPC Linux. Nothing has been linked
+or run on PowerPC. A much smaller zero-dependency port for weaker machines is started in the separate `LastRoute-RustLite` folder.
 
 | Target | Machines | State |
 |---|---|---|
-| `powerpc64-unknown-linux-gnu` | G5 Macs and POWER under Linux | `sh packaging/powerpc/check.sh` passes: every crate and the game, no source change needed |
-| `powerpc-unknown-linux-gnu` | G3/G4 Macs under Linux | stops in `quad-rand` 0.2.3: it uses `AtomicU64`, which 32-bit PowerPC does not have |
+| `powerpc64-unknown-linux-gnu` | G5 Macs and POWER under Linux | `sh packaging/powerpc/check.sh` passes |
+| `powerpc-unknown-linux-gnu` | G3/G4 Macs under Linux | `sh packaging/powerpc/check.sh 32` passes |
 | Mac OS X on PowerPC (10.4, 10.5) | any PowerPC Mac on its own system | not possible: rustc has no `powerpc-apple-darwin` target |
 
-## What 32-bit needs
+## What 32-bit needed
 
-1. `quad-rand` patched to keep its state without a 64-bit atomic (a vendored copy and one `[patch.crates-io]` line,
-   as miniquad and quad-snd already have). `Cargo.toml` is off-limits to agents (AGENTS.md), so this waits for KT.
-2. The game's own 64-bit atomics (47 uses in 10 files, for example `net/relay.rs`, `render/scene.rs`,
-   `shared/skins.rs`) moved to a small wrapper that uses a mutex where `target_has_atomic = "64"` is false.
+32-bit PowerPC has no 64-bit atomic instruction.
+
+1. `quad-rand` is vendored (`vendor/quad-rand`, one patch, `[patch.crates-io]`): its state is two 32-bit halves there.
+2. The game's 64-bit atomics come from `shared/atomic64.rs`: the standard types where they exist, a mutex around the
+   number on 32-bit PowerPC. New code must import `AtomicU64`/`AtomicI64` from there, not from `std`.
+   Test-only files (`hunters/bulk_bench.rs`, `net/ws_test_hub.rs`) and `lr_server` still use `std`.
 
 ## Not known until it runs
 
