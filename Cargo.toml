@@ -124,5 +124,7 @@ opt-level = 2
 quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
 # miniquad 0.4.11 with Metal fixes and a live frame-pacer switch (vendor/miniquad/LAST_ROUTE_PATCHES.md).
 miniquad = { path = "vendor/miniquad" }
+# macroquad 0.4.16 with a smaller glyph atlas (vendor/macroquad/LAST_ROUTE_PATCHES.md).
+macroquad = { path = "vendor/macroquad" }
 # quad-rand 0.2.3 without its 64-bit atomic, so 32-bit PowerPC builds (vendor/quad-rand/LAST_ROUTE_PATCHES.md).
 quad-rand = { path = "vendor/quad-rand" }

@@ -13,6 +13,9 @@ fi
 MANIFEST="$STAGE/Cargo.toml"
 # winresource (Windows icon step) pulls edition-2024 toml crates, which Cargo 1.77 cannot read even when unused.
 sed -i.bak '/^winresource = /d' "$MANIFEST" && rm "$MANIFEST.bak"
+# The repo vendors macroquad 0.4.16 (vendor/macroquad), which needs Rust 1.82. Drop that patch line here; 0.4.14
+# from crates.io is staged below instead, with the same atlas fix.
+sed -i.bak '/^macroquad = { path = "vendor\/macroquad" }$/d' "$MANIFEST" && rm "$MANIFEST.bak"
 cargo +1.99.1 update --manifest-path "$MANIFEST"
 # fontdue declares no rust-version; 0.9.4+ uses cast_signed (1.87).
 cargo +1.99.1 update --manifest-path "$MANIFEST" -p fontdue --precise 0.9.3
@@ -34,6 +37,10 @@ grep -rlE '(^|[^:_a-zA-Z])size_of(_val)?::<|[^:_a-zA-Z]size_of(_val)?\(' "$STAGE
     grep -qE '^\s*use .*size_of|^\s*(mem::)?\{?.*size_of.*\},?$' "$file" && continue
     printf '\n#[allow(unused_imports)]\nuse core::mem::size_of;\n' >> "$file"
 done
+# The glyph atlas row-wrap fix of vendor/macroquad/LAST_ROUTE_PATCHES.md (the line is the same in 0.4.14).
+ATLAS="$STAGE/vendor/macroquad-legacy/src/text/atlas.rs"
+grep -q 'let x = if self.cursor_x + (width as u16) < self.image.width {' "$ATLAS"
+sed -i.bak 's/let x = if self.cursor_x + (width as u16) < self.image.width {/let x = if self.cursor_x + Self::GAP + (width as u16) <= self.image.width {/' "$ATLAS" && rm "$ATLAS.bak"
 # Color::from_rgba (and from_hex, which calls it) divides floats in a const fn (allowed since 1.82).
 # The game never calls either in a const.
 sed -i.bak -e 's/pub const fn from_rgba(/pub fn from_rgba(/' -e 's/pub const fn from_hex(/pub fn from_hex(/' "$STAGE/vendor/macroquad-legacy/src/color.rs" && rm "$STAGE/vendor/macroquad-legacy/src/color.rs.bak"

@@ -1,0 +1,29 @@
+# macroquad 0.4.16 from crates.io with Last Route patches (LAST_ROUTE_PATCHES.md). Examples, tests and the js
+# folder are left out; the dependency table is the crate's own.
+[package]
+name = "macroquad"
+version = "0.4.16"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Simple and easy to use graphics library"
+
+[lib]
+name = "macroquad"
+path = "src/lib.rs"
+
+[features]
+audio = ["quad-snd"]
+default = []
+glam-serde = ["glam/serde"]
+log-rs = ["log"]
+
+[dependencies]
+backtrace = { version = "0.3.60", optional = true }
+fontdue = "0.9"
+glam = { version = "0.27", features = ["scalar-math"] }
+image = { version = "0.24", default-features = false, features = ["png", "tga"] }
+log = { version = "0.4", optional = true }
+macroquad_macro = "0.1.8"
+miniquad = { version = "=0.4.11", features = ["log-impl"] }
+quad-rand = "0.2.3"
+quad-snd = { version = "0.2", optional = true }

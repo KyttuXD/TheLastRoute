@@ -40,6 +40,7 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
 | Fonts: each file loaded once, unused glyphs emptied, caption face on first use | 165 MB | 248 MB | |
 | Identical embedded model pictures share one texture; mesh tiles and model parts trimmed to size | 165 MB | 240 MB | |
 | Loaded sounds held as 16-bit samples instead of f32 (quad-snd patch) | 160 MB | 240 MB | |
+| Glyph atlas row-wrap fix (vendored macroquad) | 144 MB | 217 MB | |
 
 Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
 `Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.
@@ -91,6 +92,6 @@ equal pictures now share one texture (`PropModel::parse`, by content hash), whic
 ## Next, in order of expected gain
 
 - [ ] World mesh tiles (51 MB): the vertex is 40 bytes (position, UV, colour, a 16-byte normal+mode). Fewer chunks kept around the player, or a smaller vertex, are the two levers; both change rendering code and view distance.
-- [ ] The glyph atlas (16 MB, plus its GPU copy): macroquad stores one-channel glyphs as RGBA and keeps the CPU image. Needs a macroquad patch, or fewer distinct text sizes.
+- [ ] The glyph atlas still stores one-channel glyphs as RGBA and keeps a CPU copy. Small now that it no longer over-grows (see `vendor/macroquad/LAST_ROUTE_PATCHES.md`); a one-channel atlas would need shader changes.
 - [ ] Check that the 110 MB dev executable (32 MB resident) shrinks in the release build, and measure release numbers.
 - [ ] Repeat on the Intel Macs (no `/proc`; use `footprint` or Activity Monitor).
