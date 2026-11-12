@@ -12,6 +12,7 @@
 
 use super::data::{is_vent_room, tuning, ROOMS};
 use super::map::{map, SPAWN};
+#[allow(unused_imports)] // some of these are used by the tests only
 use super::presence::{booth_focus, visitor_pos, Presence};
 use super::sim::{Over, Sim, SimEvent, SimOpts, SysState};
 use super::world::{booth_ambient, booth_lights, feed_lights, Booth, Hall, PropKit};

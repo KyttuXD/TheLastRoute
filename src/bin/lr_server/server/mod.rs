@@ -115,6 +115,7 @@ pub struct EnetRoom {
     pub port: i64,
     pub transport: String,
     pub host_user: String,
+    #[allow(dead_code)] // nothing calls it yet
     pub instance: String,
     pub players: f64,
     pub session_active: bool,

@@ -106,9 +106,11 @@ const ITEM_ABANDON: usize = 4;
 pub enum SaveStatus {
     /// No save has been tried this session.
     Unknown,
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     Saving,
     /// Saved this many seconds ago.
     Saved(f32),
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     Failed,
 }
 

@@ -22,6 +22,7 @@ pub const FILE: &str = "hud/teammate_markers.json";
 pub enum Status {
     Ok,
     Down,
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     Caught,
 }
 

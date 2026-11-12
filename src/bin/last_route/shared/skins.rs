@@ -226,6 +226,8 @@ fn memory_custom() -> std::sync::MutexGuard<'static, Option<Vec<u8>>> {
 /// The applied custom skin kept in memory (no skins folder: the browser has no files, a desktop without a user folder
 /// has none either). The browser also keeps it in localStorage and reads it back on the first use after a page load.
 fn stored_custom() -> Option<Vec<u8>> {
+    // only the browser build fills it in below
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
     let mut held = memory_custom();
     #[cfg(target_arch = "wasm32")]
     if held.is_none() {

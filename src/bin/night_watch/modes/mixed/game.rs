@@ -12,9 +12,11 @@
 
 use super::data::{endless_clock, hours_text, tun, Kind, Side};
 use super::sim::{Auto, Ev, EvType, MixedSim, Over, Threat};
+#[allow(unused_imports)] // some of these are used by the tests only
 use super::skin::{self, SkinBag, CAMS};
 use super::world::{self, HubWorld};
 use crate::audio::cue_names;
+#[allow(unused_imports)] // some of these are used by the tests only
 use crate::core::{fnv1a, AdminEntry, CallScript, EndCard, Fnv, Headless, Mode, Outcome, Session, ShiftCtx};
 use crate::gfx::office::{SEAT, SPAWN};
 use crate::gfx::{Office, OfficeConfig, OfficeVariant};

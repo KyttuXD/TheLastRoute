@@ -10,6 +10,7 @@ use macroquad::prelude::*;
 
 /// What the badge shows right now.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct Badge {
     pub text: String,
     /// 0-100 while downloading.
@@ -20,24 +21,29 @@ pub struct Badge {
 
 /// What the player pressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // not wired into the game yet
 pub enum Click {
     RestartNow,
     Later,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 fn text_of(key: &str) -> String {
     startup::data().get("update_badge").and_then(|b| b.get(key)).and_then(|v| v.as_str()).unwrap_or_default().to_string()
 }
 
+#[allow(dead_code)] // not wired into the game yet
 fn number_of(key: &str, fallback: f32) -> f32 {
     startup::data().get("update_badge").and_then(|b| b.get(key)).and_then(|v| v.as_f64()).map_or(fallback, |n| n as f32)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 fn with_percent(template: &str, p: u32) -> String {
     template.replace("{percent}", &p.to_string())
 }
 
 /// The badge for an updater state; `None` when nothing is to be shown (also after LATER, `dismissed`).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn badge_for(status: &UpdateStatus, dismissed: bool) -> Option<Badge> {
     match status {
         UpdateStatus::Downloading { got, total, .. } => {
@@ -50,6 +56,7 @@ pub fn badge_for(status: &UpdateStatus, dismissed: bool) -> Option<Badge> {
 }
 
 /// The status-bar text during a run (empty when there is nothing to say).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn status_line(status: &UpdateStatus) -> String {
     match status {
         UpdateStatus::Downloading { got, total, .. } => with_percent(&text_of("run_status"), percent(*got, *total).min(100)),
@@ -58,12 +65,14 @@ pub fn status_line(status: &UpdateStatus) -> String {
     }
 }
 
+#[allow(dead_code)] // not wired into the game yet
 fn button_rects(r: Rect) -> (Rect, Rect) {
     let w = r.w * 0.5 - 6.0;
     (Rect::new(r.x + 4.0, r.y + r.h + 4.0, w, r.h), Rect::new(r.x + r.w * 0.5 + 2.0, r.y + r.h + 4.0, w, r.h))
 }
 
 /// Paints the badge top-centre and returns the button pressed this frame.
+#[allow(dead_code)] // not wired into the game yet
 pub fn draw(badge: &Badge) -> Option<Click> {
     let (w, h, top) = (number_of("width", 360.0), number_of("height", 34.0), number_of("top_margin", 10.0));
     let r = Rect::new((screen_width() - w) * 0.5, top, w, h);

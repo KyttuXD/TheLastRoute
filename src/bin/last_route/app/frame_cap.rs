@@ -29,11 +29,13 @@ pub fn effective_cap(user: Option<u32>, focused: bool, pause_on_focus_loss: bool
 }
 
 /// The length of one frame at `fps`.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn period(fps: u32) -> Duration {
     Duration::from_secs_f64(1.0 / fps.max(1) as f64)
 }
 
 /// How long to sleep after a frame that took `elapsed`, to hold the loop to `cap`.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn sleep_for(elapsed: Duration, cap: Option<u32>) -> Duration {
     match cap {
         Some(fps) => period(fps).saturating_sub(elapsed),
@@ -51,6 +53,7 @@ pub fn unfocused_sleep(focused: bool, pause_on_focus_loss: bool, f: &Frame) -> D
 }
 
 /// The ADS setting as a level: 0 off, 1 gentle, 2 annoying (anything else is off).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn ads_level(ads: &str) -> u8 {
     match ads {
         "gentle" => 1,

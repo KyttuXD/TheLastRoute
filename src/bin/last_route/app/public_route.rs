@@ -284,6 +284,7 @@ mod tests {
 /// once, and never more than the data's `join_per_minute`. The join itself is `net::world_sync::join_public_room`; this
 /// holds the decision and the line the title shows.
 #[derive(Default, Debug)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct TitleJoin {
     throttle: JoinThrottle,
     busy: bool,
@@ -292,6 +293,7 @@ pub struct TitleJoin {
 
 /// What a press of the title button asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum TitlePress {
     /// Start the join with this code.
     Join(crate::net::public_route::TitleEntry),
@@ -303,6 +305,7 @@ pub enum TitlePress {
 
 impl TitleJoin {
     /// The button was pressed at `now_msec` (any monotonic millisecond clock).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn press(&mut self, limits: &PublicLimits, now_msec: u64) -> TitlePress {
         if self.busy {
             return TitlePress::Busy;
@@ -317,16 +320,20 @@ impl TitleJoin {
     }
 
     /// The join ended: `Ok` joined (or opened) the room, `Err` carries the line to show.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn finished(&mut self, result: Result<(), String>) {
         self.busy = false;
         self.status = result.err().map(|e| e.to_uppercase()).unwrap_or_default();
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn busy(&self) -> bool {
         self.busy
     }
 
     /// The line under the button; empty when there is nothing to say.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn status(&self) -> &str {
         &self.status
     }

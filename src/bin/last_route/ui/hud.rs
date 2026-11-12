@@ -624,6 +624,7 @@ pub fn draw_hud_with_runners(
 /// is captured, so the pause menu, the map and the other free-cursor screens show none. A hidden player
 /// or a struggle to break free keeps the screen's own marks instead.
 /// Text of one co-op chat line on the HUD: "NAME: text" (a system line has no name).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn chat_line_text(line: &crate::net::chat::ChatLine) -> String {
     if line.system || line.display_name.is_empty() {
         line.text.clone()
@@ -636,6 +637,7 @@ pub fn chat_line_text(line: &crate::net::chat::ChatLine) -> String {
 /// the HUD, with the feed it keeps).
 /// Sender names in their colour, lines fading out (the box closed); `app` calls `chat_box::draw_chat` instead while it
 /// keeps a [`super::chat_box::ChatBox`], which also shows the input row and the recent history.
+#[allow(dead_code)] // not wired into the game yet
 pub fn draw_chat_feed(a: &Assets, feed: &crate::net::chat::ChatFeed) {
     super::chat_box::draw_chat(a, feed, &super::chat_box::ChatBox::default());
 }

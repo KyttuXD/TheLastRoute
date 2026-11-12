@@ -176,7 +176,7 @@ pub fn subset(font: &[u8], keep: impl Fn(char) -> bool) -> Option<Vec<u8>> {
     }
     let mut new_glyf = Vec::with_capacity(glyf.len() / 2);
     let mut new_loca = Vec::with_capacity(loca.len());
-    let mut put = |offset: usize, out: &mut Vec<u8>| {
+    let put = |offset: usize, out: &mut Vec<u8>| {
         if long {
             out.extend_from_slice(&(offset as u32).to_be_bytes());
         } else {

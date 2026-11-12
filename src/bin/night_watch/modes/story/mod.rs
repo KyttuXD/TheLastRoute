@@ -13,6 +13,7 @@ pub mod sim;
 pub mod world;
 
 pub use game::{StoryAdmin, StoryGame};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use sim::{StoryHeadless, StoryLogic};
 
 use crate::core::{Headless, Mode, Session};

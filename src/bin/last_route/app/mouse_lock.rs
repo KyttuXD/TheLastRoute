@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 
 #[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 struct State {
     claims: Vec<String>,
     wanted: bool,
@@ -17,6 +18,7 @@ struct State {
 thread_local!(static STATE: RefCell<State> = RefCell::new(State::default()));
 
 /// Names a reason the cursor must be free. Claiming twice under one name is one claim.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn claim(name: &str) {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -26,11 +28,13 @@ pub fn claim(name: &str) {
     });
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn release(name: &str) {
     STATE.with(|s| s.borrow_mut().claims.retain(|c| c != name));
 }
 
 /// Claims or releases by a flag, for a screen that knows each frame whether it is open.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn claim_if(name: &str, open: bool) {
     if open {
         claim(name)
@@ -39,20 +43,24 @@ pub fn claim_if(name: &str, open: bool) {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn any_claim() -> bool {
     STATE.with(|s| !s.borrow().claims.is_empty())
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn claim_names() -> Vec<String> {
     STATE.with(|s| s.borrow().claims.clone())
 }
 
 /// The look asks for the cursor locked (`true`) or free (`false`). A held claim wins.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn set_wanted(grab: bool) {
     STATE.with(|s| s.borrow_mut().wanted = grab);
 }
 
 /// Whether the cursor is locked right now: wanted, and nothing claims it.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn locked() -> bool {
     STATE.with(|s| {
         let s = s.borrow();
@@ -61,11 +69,13 @@ pub fn locked() -> bool {
 }
 
 /// The rule: any claim keeps the cursor free.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn decide(wanted: bool, any_claim: bool) -> bool {
     wanted && !any_claim
 }
 
 /// What to tell the window now: `Some(lock)` when it differs from the last time, else `None`. Pure so it can be tested.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn pending() -> Option<bool> {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -80,6 +90,7 @@ pub fn pending() -> Option<bool> {
 }
 
 /// Tells the window the cursor state, when it changed. Call once a frame.
+#[allow(dead_code)] // not wired into the game yet
 pub fn sync() {
     if let Some(lock) = pending() {
         macroquad::prelude::set_cursor_grab(lock);
@@ -88,6 +99,7 @@ pub fn sync() {
 }
 
 /// Forgets what the window was told, so the next `sync` sends it again (after the browser dropped the pointer lock).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn forget_applied() {
     STATE.with(|s| s.borrow_mut().applied = None);
 }

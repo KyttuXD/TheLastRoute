@@ -216,6 +216,7 @@ impl Sim {
     /// A run on the Infinite route for a room seed text (the text a host's `Start` message carries), the way a client
     /// enters it: `route::run_seed_of_text` is the run seed and the text the world seed. `no_local_runner` makes it a
     /// dedicated room's game (game/remote_targets.rs): no runner plays, the guests are the targets.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the browser build has no caller for it
     pub fn new_room_run(&mut self, diff: Difficulty, room_text: &str, no_local_runner: bool) {
         let seed = crate::world::route::run_seed_of_text(room_text);
         let mut g = Game::new_infinite_sim(diff, seed, room_text, 0, &self.content, &self.catalog);
@@ -292,6 +293,7 @@ impl Sim {
 
     /// One frame of a dedicated room (`Game::no_local_runner`): no controls, and none of the per-frame event log, which
     /// watches the local runner. The room's own outputs are read from the game (catches, the hunter frame).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the browser build has no caller for it
     pub fn step_room(&mut self) {
         let Some(g) = self.game.as_mut() else { return };
         g.step(self.dt, &Controls::default(), &self.content, &self.catalog, &self.sounds);

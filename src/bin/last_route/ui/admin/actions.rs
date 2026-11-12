@@ -65,6 +65,7 @@ fn npc_set_smart(g: &mut Game, i: usize, smart: i32) -> String {
 
 /// The NPC commands this build runs, by id (`npc_live` in data/admin/menu.json). The rest of the grid
 /// (`npc_pending`) is drawn gray and answers with a line that names the command.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub(super) fn npc_op_live(op: &str) -> bool {
     menu().npc_live.contains(&op)
 }
@@ -1069,6 +1070,7 @@ impl Admin {
     }
 
     /// _admin_status: the STATUS page readout.
+    #[allow(dead_code)] // not wired into the game yet
     pub(super) fn status(&self, g: &Game) -> String {
         self.status_with(g, &RoomStatus::default())
     }
@@ -1185,6 +1187,7 @@ pub struct RoomStatus {
 
 impl RoomStatus {
     /// Solo, hosting or joined, for the STATUS line (a hosted room is never shown as offline).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn net_state(&self) -> super::hunter_view::NetState {
         use super::hunter_view::NetState;
         if self.code.is_empty() {

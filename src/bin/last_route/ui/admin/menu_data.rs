@@ -28,6 +28,7 @@ pub(super) struct MenuData {
     pub npc_ops: Vec<(&'static str, &'static str)>,
     pub npc_all: Vec<(&'static str, &'static str)>,
     /// The NPC command ids this build runs (the rest are `npc_pending`).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub npc_live: Vec<&'static str>,
     /// The NPC commands that cannot act yet, each with the reason its tooltip shows.
     pub npc_pending: Vec<(&'static str, &'static str)>,

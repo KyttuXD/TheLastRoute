@@ -338,6 +338,7 @@ impl ReservedRooms {
     }
 
     /// Forgets an admin room's saved settings.
+    #[allow(dead_code)] // nothing calls it yet
     pub fn forget_admin_room(&mut self, code: &str) {
         if self.admin_rooms.remove(&admin_code(code)).is_some() {
             self.save();

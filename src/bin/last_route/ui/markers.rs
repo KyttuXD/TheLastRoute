@@ -201,6 +201,7 @@ pub fn all_markers(g: &Game, remotes: &[RemoteView]) -> Vec<Marker> {
 
 /// How strongly a map pin is drawn: whole on the shown level, else the strength the data sets for the minimap or the full
 /// map (`data/hud/teammate_markers.json`, dimmed and never dropped); None only when the data sets it to zero.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn pin_alpha(level: i32, shown_level: i32, full: bool) -> Option<f32> {
     super::teammate_markers::pin_strength(level, shown_level, full, 0.0, super::teammate_markers::rules())
 }

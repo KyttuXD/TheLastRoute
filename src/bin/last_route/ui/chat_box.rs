@@ -33,6 +33,7 @@ pub fn cut_chars(text: &str, max: usize) -> String {
 }
 
 /// The key code for the data's open key (a letter A to Z); T when the letter is not one.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn open_key_code(letter: &str) -> KeyCode {
     const LETTERS: [KeyCode; 26] = [
         KeyCode::A, KeyCode::B, KeyCode::C, KeyCode::D, KeyCode::E, KeyCode::F, KeyCode::G, KeyCode::H, KeyCode::I,
@@ -106,6 +107,7 @@ impl ChatBox {
     }
 
     /// Adds pasted or queued text the same way (each character through [`ChatBox::insert_char`]).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn insert_str(&mut self, s: &str) {
         for c in s.chars() {
             self.insert_char(c);

@@ -797,10 +797,9 @@ mod tests {
         let catalog = Catalog::load();
         let (mut g, i) = ladder_game(&content, &catalog);
         let step = LADDER_CLIMB_SPEED * DT;
-        let mut last = g.p.eye_y();
         g.start_ladder(i);
         run(&mut g, &quiet(), MOUNT + DT, &content, &catalog);
-        last = g.p.eye_y();
+        let mut last = g.p.eye_y();
         let mut frames = 0;
         let c = back();
         while g.ladder.is_some() {

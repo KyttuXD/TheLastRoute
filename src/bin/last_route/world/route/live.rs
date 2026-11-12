@@ -177,7 +177,7 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
         })
         .collect();
 
-    let mut fixtures = Fixtures {
+    let fixtures = Fixtures {
         vents: wall_fixtures
             .iter()
             .filter(|x| x.kind == "vent")

@@ -439,6 +439,7 @@ static PANICKED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a process ending now ended cleanly: it did not panic. (A hard abort or a kill never reaches the exit
 /// hook at all, which is what leaves the marker behind.)
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the browser build has no caller for it
 fn exit_is_clean(panicked: bool) -> bool {
     !panicked
 }

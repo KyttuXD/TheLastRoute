@@ -41,6 +41,7 @@ impl Rules {
     }
 
     /// Slots in the pack with the named backpacks worn (additive; an unknown id adds nothing).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn capacity(&self, worn: &[&str]) -> usize {
         self.base_slots
             + worn
@@ -62,6 +63,7 @@ pub fn rules() -> &'static Rules {
 }
 
 /// (columns, rows) of the Tab grid for `slots` cells: the hotbar's row width, as many rows as it takes.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn grid_size(slots: usize, columns: usize) -> (usize, usize) {
     let c = columns.max(1);
     (c, slots.div_ceil(c))

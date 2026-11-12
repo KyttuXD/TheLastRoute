@@ -28,7 +28,9 @@
 
 use crate::account_service::AccountService;
 use crate::upstream::{Upstream, UpstreamError};
-use crate::util::{base64, from_base64, log_error, log_warn, sha256_hex, system_clock, write_atomic, Clock, Reply, SessionLookup};
+#[cfg(test)]
+use crate::util::system_clock;
+use crate::util::{base64, from_base64, log_error, log_warn, sha256_hex, write_atomic, Clock, Reply, SessionLookup};
 use last_route_core::shared::skin_validate;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

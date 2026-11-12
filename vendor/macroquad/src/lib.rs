@@ -35,6 +35,9 @@
 //!     }
 //! }
 //!```
+// Last Route: this vendored crate keeps its upstream code as it is, so the lints newer compilers raise on it are
+// switched off here (see LAST_ROUTE_PATCHES.md).
+#![allow(unknown_lints, dead_code, static_mut_refs, mismatched_lifetime_syntaxes, unexpected_cfgs)]
 
 use miniquad::*;
 

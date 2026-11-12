@@ -165,6 +165,7 @@ impl RoomService {
 
     /// Host KICK / BAN: `{ room, playerId, sessionToken, action: "kick" | "ban", targetId | targetName }`.
     /// `protected` says an account name the host may not remove (owners, from `ops/moderation.rs`).
+    #[allow(dead_code)] // nothing calls it yet
     pub fn moderate_player(&mut self, body: &Value, protected: &dyn Fn(&str) -> bool) -> Reply {
         self.moderate_player_accounts(body, protected).0
     }

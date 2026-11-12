@@ -10,10 +10,13 @@ use crate::net::NetError;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub const SCHEMA: &str = "lr.startup/1";
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 const TEXT: &str = include_str!("../data/startup.json");
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct Rules {
     pub min_splash_s: f32,
     /// How many times the check is tried before the game gives up and starts anyway.
@@ -24,6 +27,7 @@ pub struct Rules {
     pub admin_skip_hub: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn parse(text: &str) -> Result<Rules, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("startup.json: {e}"))?;
     if v.get("schema").and_then(Value::as_str) != Some(SCHEMA) {
@@ -47,29 +51,34 @@ pub fn parse(text: &str) -> Result<Rules, String> {
     Ok(rules)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn rules() -> &'static Rules {
     static R: OnceLock<Rules> = OnceLock::new();
     R.get_or_init(|| parse(TEXT).unwrap_or_else(|e| panic!("{e}")))
 }
 
 /// The whole file, for the badge and panel texts.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn data() -> &'static Value {
     static D: OnceLock<Value> = OnceLock::new();
     D.get_or_init(|| serde_json::from_str(TEXT).unwrap_or_else(|e| panic!("startup.json: {e}")))
 }
 
 /// TODO 1023: whether the hub is skipped for this account (the flag is data, the admin bit comes from the server's answer).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn skip_hub(reply: &api::AccountReply) -> bool {
     rules().admin_skip_hub && reply.grants_admin_ui()
 }
 
 /// One update check on the worker thread (the manifest request; the updater's own timeout applies).
+#[allow(dead_code)] // not wired into the game yet
 pub fn check_once(platform: &str) -> Result<UpdateManifest, NetError> {
     api::update_manifest(platform)
 }
 
 /// What the caller must do after a [`Gate::tick`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum Action {
     Nothing,
     /// Start an update check now, then call [`Gate::report`] with how it ended.
@@ -77,6 +86,7 @@ pub enum Action {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 enum State {
     Idle,
     InFlight,
@@ -86,6 +96,7 @@ enum State {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct Gate {
     rules: Rules,
     elapsed: f32,
@@ -94,11 +105,13 @@ pub struct Gate {
 }
 
 impl Gate {
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn new(rules: Rules) -> Gate {
         Gate { rules, elapsed: 0.0, started: 0, state: State::Idle }
     }
 
     /// Advances the splash clock and the retry wait.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn tick(&mut self, dt: f32) -> Action {
         let dt = dt.max(0.0);
         self.elapsed += dt;
@@ -124,6 +137,7 @@ impl Gate {
     }
 
     /// The result of the check [`Action::StartCheck`] asked for.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn report(&mut self, answered: bool) {
         if self.state != State::InFlight {
             return;
@@ -138,20 +152,25 @@ impl Gate {
     }
 
     /// The check is over (answered, or out of attempts).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn check_done(&self) -> bool {
         matches!(self.state, State::Finished(_))
     }
 
     /// The check answered (false while pending and after giving up).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn check_answered(&self) -> bool {
         self.state == State::Finished(true)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn attempts_started(&self) -> u32 {
         self.started
     }
 
     /// The splash has been up long enough AND the check is over: the game may start.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn ready(&self) -> bool {
         self.elapsed >= self.rules.min_splash_s && self.check_done()
     }

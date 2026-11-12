@@ -97,6 +97,7 @@ impl When {
 
 /// How much of the row is drawn, widest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum Tier {
     Full,
     Compact,
@@ -436,6 +437,7 @@ pub fn readout(label: &str, value: f32, unit: &str, zone: &str) -> String {
 }
 
 /// The value text for a tier: the rounded number and unit, with the zone name at the full tier; nothing below compact.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn value_text(bar: &BarDef, r: &Resolved, tier: Tier) -> String {
     let n = format!("{}{}", r.value.round() as i32, bar.unit);
     match tier {
@@ -447,6 +449,7 @@ pub fn value_text(bar: &BarDef, r: &Resolved, tier: Tier) -> String {
 
 /// The longest value text a bar can show at a tier (its widest number with its longest zone or override name), so the
 /// value column never changes width from frame to frame.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn widest_value_text(bar: &BarDef, tier: Tier) -> String {
     let num = format!("{}{}", bar.max.round() as i32, bar.unit);
     match tier {
@@ -467,6 +470,7 @@ pub fn widest_value_text(bar: &BarDef, tier: Tier) -> String {
 
 /// The text widths a tier decision needs, each the widest over the bars.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct Widths {
     pub label: f32,
     pub short: f32,
@@ -475,6 +479,7 @@ pub struct Widths {
 }
 
 /// The widest tier whose row leaves a bar at least `layout.bar_min` units inside `avail` units.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn choose_tier(avail: f32, l: &Layout, icon: f32, w: &Widths) -> Tier {
     let need = |label: f32, value: f32| {
         let mut n = icon + l.gap + l.bar_min;
@@ -499,6 +504,7 @@ pub fn choose_tier(avail: f32, l: &Layout, icon: f32, w: &Widths) -> Tier {
 
 /// Which tick numbers fit under a bar: each is centred on its tick (kept inside the bar) and is dropped when it would
 /// come within `min_gap` of the one before it. `ticks` is `(position as a fraction of the bar, label width)` left to right.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn fit_tick_labels(bar_w: f32, ticks: &[(f32, f32)], min_gap: f32) -> Vec<bool> {
     let mut last_end = f32::NEG_INFINITY;
     ticks
@@ -588,6 +594,7 @@ impl Snapshot {
 }
 
 /// The temperature item's source line under the TEMP bar: its type and the temperature it pushes the body toward.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn source_line(mode: Mode, target: f32) -> String {
     format!("{} ITEM > {}", mode.label(), target.round() as i32)
 }

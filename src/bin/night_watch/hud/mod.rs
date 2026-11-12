@@ -9,6 +9,7 @@ pub mod death;
 pub mod monitor;
 pub mod status;
 
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use admin::{common_entries as admin_common_entries, AdminAction, AdminGate, AdminOverlay, AdminRegistry, ClassicAdmin, ModeAdmin};
 pub use death::{pick_line, DeathMoment};
 

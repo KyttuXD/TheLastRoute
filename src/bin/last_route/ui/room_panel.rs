@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 
 /// One line of the player list.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct PanelRow {
     /// The runner's session id; None for the local runner before it has one.
     pub peer: Option<u32>,
@@ -36,6 +37,7 @@ pub struct PanelRow {
 /// The rows of the player list: the local runner first, then every runner the roster lists, each once. `local_peer` is
 /// this runner's session id when it has one (a guest); a roster entry with that id, or with this runner's name, is the
 /// local row and is not listed twice. `is_admin` is the directory's admin flag for a name.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn roster_rows(local_name: &str, local_is_host: bool, local_peer: Option<u32>, roster: &[RosterEntry], is_admin: &dyn Fn(&str) -> bool) -> Vec<PanelRow> {
     let status = |host: bool| if host { line("status_host_staging", "HOST // STAGING", &[]) } else { line("status_staging", "STAGING", &[]) };
     let local = local_name.trim().to_uppercase();
@@ -71,6 +73,7 @@ pub fn roster_rows(local_name: &str, local_is_host: bool, local_peer: Option<u32
 }
 
 /// The text of a row: `NAME // HOST // YOU // ADMIN // 42MS` with the tags it has.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn row_text(row: &PanelRow) -> String {
     let mut parts = vec![row.name.clone()];
     if row.host {
@@ -90,6 +93,7 @@ pub fn row_text(row: &PanelRow) -> String {
 
 /// What applying a host message did to a panel.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum Applied {
     /// The lobby settings were replaced (a guest's read-only copy).
     Settings,
@@ -104,10 +108,12 @@ pub enum Applied {
 }
 
 /// The key of the route choice in the settings' extra fields.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub const ROUTE_KEY: &str = "route";
 
 /// The staging panel of a room.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct RoomPanel {
     host: bool,
     settings: RoomSettings,
@@ -115,30 +121,37 @@ pub struct RoomPanel {
 }
 
 impl RoomPanel {
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn new(host: bool, code: &str) -> RoomPanel {
         RoomPanel { host, settings: RoomSettings { code: code.trim().to_uppercase(), ..RoomSettings::default() }, out: Vec::new() }
     }
 
     /// Guests may not change anything: the settings are the host's.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn read_only(&self) -> bool {
         !self.host
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn settings(&self) -> &RoomSettings {
         &self.settings
     }
 
     /// The route the host chose; empty before a choice.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn route(&self) -> &str {
         self.settings.rest.get(ROUTE_KEY).and_then(Value::as_str).unwrap_or("")
     }
 
     /// The label under a read-only setting.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn read_only_note(&self) -> Option<String> {
         self.read_only().then(|| line("settings_read_only", "SET BY THE HOST", &[]))
     }
 
     /// Host: changes the settings with `edit` and queues them for the guests. False (and nothing changes) on a guest.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn edit_settings(&mut self, edit: impl FnOnce(&mut RoomSettings)) -> bool {
         if !self.host {
             return false;
@@ -149,6 +162,7 @@ impl RoomPanel {
     }
 
     /// Host: the route choice, sent to the guests with the settings. False on a guest or an empty choice.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn choose_route(&mut self, route: &str) -> bool {
         let route = route.trim();
         if route.is_empty() {
@@ -160,6 +174,7 @@ impl RoomPanel {
     }
 
     /// Host: starts the route; the guests get the settings with the start.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn start(&mut self) -> bool {
         if !self.host {
             return false;
@@ -169,6 +184,7 @@ impl RoomPanel {
     }
 
     /// Host: ends the route (the room stays open).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn end(&mut self, reason: &str) -> bool {
         if !self.host {
             return false;
@@ -178,11 +194,13 @@ impl RoomPanel {
     }
 
     /// The messages the host owes its guests since the last call (broadcast them).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn take_outgoing(&mut self) -> Vec<Message> {
         std::mem::take(&mut self.out)
     }
 
     /// A guest takes what the host sent. A host never takes settings from the wire.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn apply(&mut self, event: &LobbyEvent) -> Applied {
         if self.host {
             return Applied::Ignored;
@@ -205,6 +223,7 @@ impl RoomPanel {
 
 /// Why a typed room code is not joined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum CodeError {
     Empty,
     WrongLength,
@@ -212,6 +231,7 @@ pub enum CodeError {
 }
 
 /// The code to join from what the player typed: trimmed, upper case, five letters or digits.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn check_join_code(typed: &str) -> Result<String, CodeError> {
     let code = typed.trim().to_uppercase();
     if code.is_empty() {
@@ -228,6 +248,7 @@ pub fn check_join_code(typed: &str) -> Result<String, CodeError> {
 
 /// Where a JOIN ROOM attempt is.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum JoinPhase {
     Idle,
     /// The directory is being asked for the room.
@@ -238,6 +259,7 @@ pub enum JoinPhase {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct JoinState {
     pub phase: JoinPhase,
 }
@@ -251,6 +273,7 @@ impl Default for JoinState {
 impl JoinState {
     /// The player pressed JOIN with `typed`. A valid code is returned for the caller to look up and join; a bad one
     /// puts the error on screen and returns None. Pressing again while a join is under way returns None.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn submit(&mut self, typed: &str) -> Option<String> {
         if matches!(self.phase, JoinPhase::Checking(_) | JoinPhase::Joining(_)) {
             return None;
@@ -273,6 +296,7 @@ impl JoinState {
     }
 
     /// The directory has the room: the link opens.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn found(&mut self) {
         if let JoinPhase::Checking(code) = &self.phase {
             self.phase = JoinPhase::Joining(code.clone());
@@ -280,20 +304,25 @@ impl JoinState {
     }
 
     /// The lookup or the link failed.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn failed(&mut self, error: &NetError) {
         self.phase = JoinPhase::Failed(join_error_text(error));
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     /// The link is up: back to idle.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn joined(&mut self) {
         self.phase = JoinPhase::Idle;
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn busy(&self) -> bool {
         matches!(self.phase, JoinPhase::Checking(_) | JoinPhase::Joining(_))
     }
 
     /// The feedback line; empty when idle.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn text(&self) -> String {
         match &self.phase {
             JoinPhase::Idle => String::new(),
@@ -305,6 +334,7 @@ impl JoinState {
 }
 
 /// One line for a failed join: not found, full, another build, or a plain failure.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn join_error_text(error: &NetError) -> String {
     let said = error.message_or("").to_uppercase();
     if said.contains("BUILD MISMATCH") {
@@ -321,6 +351,7 @@ pub fn join_error_text(error: &NetError) -> String {
 
 /// What to do about the room's mod packs.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum PackVerdict {
     Fine,
     /// Show this line and play on.
@@ -330,6 +361,7 @@ pub enum PackVerdict {
 }
 
 /// The data switch `data/net/anticheat.json` "packs.refuse_on_mismatch" (off when the file is missing).
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn refuse_on_mismatch() -> bool {
     static REFUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *REFUSE.get_or_init(|| {
@@ -342,6 +374,7 @@ pub fn refuse_on_mismatch() -> bool {
 }
 
 /// A pack check turned into what the guest sees. A match, or a host that announced nothing, is fine.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn pack_verdict(check: &PackCheck, refuse: bool) -> PackVerdict {
     let names = check.names();
     if names.is_empty() {
@@ -357,6 +390,7 @@ pub fn pack_verdict(check: &PackCheck, refuse: bool) -> PackVerdict {
 
 /// REFRESH of the open-room list: presses are spaced `refresh_min_seconds` apart and ignored while a request is out.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct Refresh {
     pending: bool,
     last: Option<f64>,
@@ -364,6 +398,7 @@ pub struct Refresh {
 
 impl Refresh {
     /// True when the press starts a request (the caller then calls the list api and, when it answers, [`Refresh::done`]).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn press(&mut self, now: f64) -> bool {
         if self.pending || self.last.map_or(false, |t| now - t < rules().refresh_min_seconds) {
             return false;
@@ -373,11 +408,13 @@ impl Refresh {
         true
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn done(&mut self) {
         self.pending = false;
     }
 
     /// The button label.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn label(&self) -> String {
         if self.pending {
             line("refreshing", "REFRESHING...", &[])

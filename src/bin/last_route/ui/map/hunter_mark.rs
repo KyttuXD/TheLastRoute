@@ -158,6 +158,7 @@ impl MarkerColors {
     }
 
     /// The ids that have a colour, in order.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn void_ids(&self) -> impl Iterator<Item = &str> {
         self.void.keys().map(|k| k.as_str())
     }

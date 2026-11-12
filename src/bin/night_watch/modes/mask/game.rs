@@ -12,6 +12,7 @@
 
 use super::controls::{CtlEvent, CtlKind, MaskControls, Panel};
 use super::data::{map, rules, VENT_HUNTERS};
+#[allow(unused_imports)] // some of these are used by the tests only
 use super::sim::{Ev, HallState, MaskSim, Over, RushState, SimInput, VentState};
 use super::walk::Stage;
 use super::world::{feed_lights, office_lights, MaskWorld};

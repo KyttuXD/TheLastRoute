@@ -15,6 +15,7 @@ pub mod skin;
 pub mod world;
 
 pub use game::{MixedAdmin, MixedGame, WalkingHeadless};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use sim::{MixedHeadless, MixedSim};
 
 use crate::core::{Headless, Mode, Session};

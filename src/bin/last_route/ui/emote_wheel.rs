@@ -24,6 +24,7 @@ pub fn pick_pointer(count: usize, centre: Vec2, pointer: Vec2, inner_px: f32) ->
 }
 
 /// The slice a stick points at: `x` right and `y` down, each -1..1. Nothing under `dead_zone` (0..1) of full push.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn pick_stick(count: usize, x: f32, y: f32, dead_zone: f32) -> Option<usize> {
     slice_at(count, x, y, dead_zone.max(1e-4))
 }

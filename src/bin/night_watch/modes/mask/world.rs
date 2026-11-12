@@ -12,6 +12,7 @@
 //! 3 m nearer the south wall (off the prize corner's lane), the ducts start outside the office's side wall, the vent hub
 //! is 3.0 m high (a 2.58 m hunter fits under its pipes) and the Show Stage has a step up at its front.
 
+#[allow(unused_imports)] // some of these are used by the tests only
 use super::data::{map, rules, side_of_room};
 use super::props;
 use super::sim::Lit;

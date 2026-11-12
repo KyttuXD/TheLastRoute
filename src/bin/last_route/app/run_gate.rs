@@ -67,6 +67,7 @@ pub fn hand_back_on_grab(pz: &mut Pause, online: bool, held_by_hunter: bool, loc
 pub struct PointerWait(bool);
 
 impl PointerWait {
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn waiting(self) -> bool {
         self.0
     }
@@ -119,6 +120,7 @@ pub fn held_only(c: &Controls) -> Controls {
 /// stand-in, so its input is blocked and the WAITING FOR HOST overlay shows. A host or a solo run never waits.
 /// Time comes in as `dt`; the slow-host line after `wait_for_world_seconds` (data/net/rejoin.json) is the only timing.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct WorldWait {
     applied: bool,
     waited: f64,
@@ -126,16 +128,19 @@ pub struct WorldWait {
 
 impl WorldWait {
     /// A new guest link: wait again for a snapshot.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn reset(&mut self) {
         *self = WorldWait::default();
     }
 
     /// The first snapshot of the host's world was applied.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn snapshot_applied(&mut self) {
         self.applied = true;
     }
 
     /// Frame time spent waiting (nothing once the world is in).
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn tick(&mut self, dt: f64) {
         if !self.applied && dt.is_finite() && dt > 0.0 {
             self.waited += dt;
@@ -148,6 +153,8 @@ impl WorldWait {
     }
 
     /// The overlay line while blocked; None otherwise. After the data's wait it says the host is slow.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn overlay(&self, guest: bool) -> Option<String> {
         if !self.blocked(guest) {
             return None;
@@ -163,6 +170,7 @@ impl WorldWait {
 
 /// [`controls_for`] for a client that may still be waiting for the host's world: a waiting guest stands with blank
 /// controls (nothing pressed reaches the stand-in world), whatever the pause state.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn controls_for_guest(paused: bool, online: bool, wait: &WorldWait, guest: bool, c: &Controls) -> Option<Controls> {
     if wait.blocked(guest) {
         return Some(Controls::default());

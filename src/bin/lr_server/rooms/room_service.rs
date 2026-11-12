@@ -813,6 +813,7 @@ impl RoomService {
         Ok((code, index))
     }
 
+    #[allow(dead_code)] // nothing calls it yet
     pub fn join_room(&mut self, body: &Value) -> Reply {
         self.join_with(body, &super::admin_rooms::JoinContext::plain())
     }

@@ -537,6 +537,7 @@ impl Admin {
     }
 
     /// DEBUG VIEW toggles for the renderer: COLLIDERS, PATHS, NAV.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn debug_colliders(&self) -> bool {
         self.enabled && self.show_collision
     }

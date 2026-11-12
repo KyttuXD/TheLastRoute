@@ -20,10 +20,17 @@ pub mod pose_state;
 pub mod poses;
 pub mod rig;
 
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use anim::MODEL_SCALE;
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use behaviour::{ActorDriver, Agent, BehaviourData, BehaviourEvent, Crowd};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use nav::{NavKind, NavMap, NavNode, NavWalker, Pace};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use place::{face, hunter_scale, slot_offset, stand_spot, yaw_of_dir, yaw_toward};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use pose_state::{pose_for_key, pose_for_state, PoseState, VentPose, VentStep};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use poses::{compile_nw_poses, compile_nw_poses_for};
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use rig::{bone_matrices, Actor, HunterLib};

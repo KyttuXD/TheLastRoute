@@ -5,6 +5,8 @@ pub mod text;
 pub mod theme;
 pub mod widgets;
 
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use text::{fit, fit_with, glyph, line_height, measure, text, text_center, text_right, wrap, wrap_with};
 pub use theme::*;
+#[allow(unused_imports)] // some of these are used by the tests only
 pub use widgets::{apply_text_char, button_colors, slider_value_at, ButtonStyle, Ui, UiResult};

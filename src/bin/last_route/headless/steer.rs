@@ -79,6 +79,7 @@ pub fn absolute_path(g: &Game, s: Stair) -> Vec<(f32, f32)> {
 
 /// Walks the flight `s` (a stair of the current facility) from its own end to its far end for at most `max_frames`
 /// frames. Places the body on the first waypoint, then every frame faces the next waypoint and holds forward.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn walk_flight(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, max_frames: usize) -> FlightWalk {
     walk_flight_until(g, s, content, catalog, max_frames, false)
 }
@@ -97,6 +98,7 @@ pub fn walk_flight_until(
 
 /// As `walk_flight`, returning the absolute feet y after every stepped frame (the first entry is the start y). The walk
 /// is the walked relabel of the continuous levels: no interact press, the level label flips by itself.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn walk_flight_abs_y(g: &mut Game, s: Stair, content: &Content, catalog: &Catalog, max_frames: usize) -> Vec<f32> {
     walk_flight_trace(g, s, content, catalog, max_frames, false).1
 }

@@ -280,12 +280,14 @@ pub fn hearing_circle(pos: (f32, f32), radius: f32) -> Vec<(f32, f32)> {
 }
 
 /// The fail reason's label for the overlay caption (empty when the route exists).
+#[allow(dead_code)] // not wired into the game yet
 pub fn fail_caption(f: Option<PathFail>) -> &'static str {
     f.map_or("", PathFail::label)
 }
 
 /// The kind of net state the STATUS page reports (TODO 26 / 321).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum NetState {
     Solo,
     Hosted,
@@ -293,6 +295,7 @@ pub enum NetState {
 }
 
 /// The STATUS line for a net state and room code: upper case, and a hosted room is never OFFLINE.
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub fn net_status_text(state: NetState, code: &str) -> String {
     match state {
         NetState::Solo => "SOLO // NO ROOM".to_string(),
@@ -311,6 +314,7 @@ pub struct Flag {
 
 /// What the owner decided; the app turns it into a net/api.rs call (hook for the moderation endpoint).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub enum Verdict {
     Approve(String),
     Dismiss(String),
@@ -318,6 +322,7 @@ pub enum Verdict {
 
 /// The owner moderation review queue.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
 pub struct ModQueue {
     pub flags: Vec<Flag>,
     pub decided: Vec<Verdict>,
@@ -325,11 +330,13 @@ pub struct ModQueue {
 
 impl ModQueue {
     /// Replaces the list with the server's flags, cut to the data maximum.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn set(&mut self, mut flags: Vec<Flag>) {
         flags.truncate(cfg().queue_max);
         self.flags = flags;
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     fn decide(&mut self, id: &str, approve: bool) -> Option<Verdict> {
         let i = self.flags.iter().position(|f| f.id == id)?;
         self.flags.remove(i);
@@ -338,15 +345,19 @@ impl ModQueue {
         Some(v)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn approve(&mut self, id: &str) -> Option<Verdict> {
         self.decide(id, true)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn dismiss(&mut self, id: &str) -> Option<Verdict> {
         self.decide(id, false)
     }
 
     /// The row text for a flag, upper case.
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn row(f: &Flag) -> String {
         format!("{} // {} // {}", f.who.to_uppercase(), f.reason.to_uppercase(), f.id.to_uppercase())
     }

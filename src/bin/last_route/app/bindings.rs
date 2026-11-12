@@ -303,10 +303,12 @@ impl Bindings {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn set(&mut self, id: &str, key: &str) -> Result<(), BindError> {
         self.set_in(rules(), id, key)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn add(&mut self, id: &str, key: &str) -> Result<(), BindError> {
         self.add_in(rules(), id, key)
     }
@@ -344,6 +346,7 @@ impl Bindings {
         self.reset_in(rules(), id);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // not wired into the game yet; its tests use it
     pub fn reset_all(&mut self) {
         self.over.clear();
     }

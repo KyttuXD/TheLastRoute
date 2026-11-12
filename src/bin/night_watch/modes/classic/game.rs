@@ -25,6 +25,7 @@ use crate::gfx::building::{classic_layout, Building};
 use crate::gfx::office::{Office, OfficeConfig, SPAWN};
 use crate::gfx::LightSet;
 use crate::hunters::{yaw_toward, Actor, ActorDriver, BehaviourEvent, PoseState};
+#[allow(unused_imports)] // some of these are used by the tests only
 use macroquad::prelude::{vec3, Vec3};
 use std::collections::BTreeMap;
 
