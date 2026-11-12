@@ -75,14 +75,22 @@ and `Cargo.lock` are not touched.
 
 | Crate | Problem with 1.77 | Staged fix |
 |---|---|---|
-| `winresource` (build) | pulls `toml` 1.x, edition 2024, unreadable by Cargo 1.77 | line removed in the stage; since 2026-11-12 it is a Windows-host-only build dependency anyway |
+| `winresource` (build) | pulls `toml` 1.x, edition 2024, unreadable by Cargo 1.77 | line removed (it is a Windows-host-only build dependency anyway) |
 | `fontdue` 0.9.5 | `cast_signed` | pinned to 0.9.3 |
-| `macroquad` 0.4.16 | `size_of` from the 1.80 prelude | pinned to 0.4.13 |
+| `macroquad` 0.4.16 | const float math (1.82) | 0.4.14 copied into the stage and patched: `size_of` imports, `Color::from_rgba`/`from_hex` not `const`, miniquad requirement set to the vendored 0.4.11 |
 | `indexmap`, `zeroize`, `wasm-bindgen`, `web-sys` | declare a newer rust-version | lowered by Cargo's MSRV-aware resolver |
 
-With these, every dependency that needs no C compiler checks for `x86_64-apple-darwin` under 1.77, including
-`macroquad`, vendored `miniquad` (legacy cfg) and the `objc2` crates behind `rfd`. Not checked on Linux: `ring`
-(needs Apple clang), and so `rustls` and the game crate itself. The `runtime` job is the check for those.
+`packaging/macos/legacy/stage-dependencies.sh` does all of this to a disposable copy; `build-experiment.sh` calls it.
+
+The game's own code now builds with 1.77 too. What that took (all in the normal source, same behaviour everywhere):
+`Waker::noop` replaced by `shared::task::noop_waker`; inline `const { }` array elements replaced by a const item;
+float division in `const fn` colour helpers replaced by the `ui::style::UNIT` table; two borrowed temporaries
+(`render/scene.rs`, `world/route/layout.rs`) given names. Keep new code inside Rust 1.77 if the legacy build matters:
+the check is `cargo check` under 1.77 on the staged copy (what the `runtime` job does on a Mac).
+
+Checked on Linux with rustup's 1.77 and `--target x86_64-apple-darwin` (`LR_MACOS_LEGACY=1`): the whole game
+type-checks. That check cannot compile `ring`'s C or link; the `runtime` job does both and packages
+`last_route-macos-10.6-UNTESTED.zip` (deployment target 10.6, MacPorts legacy-support library beside the executable).
 
 Open risk: `rfd` 0.17 (the SKIN tab file panel) uses `objc2-app-kit`, which is written for 10.12+. It compiles;
 whether it runs on 10.6.8 is unknown. If it does not, the legacy build needs its own `NSOpenPanel` call.
@@ -90,14 +98,8 @@ whether it runs on 10.6.8 is unknown. If it does not, the legacy build needs its
 ## Remaining work
 
 - Verify the patched runtime on real 10.6.8; modern GitHub macOS runners cannot do this.
-- Get the `runtime` job's game build green. Run 43158564186 (2026-11-12): the `renderer` job passes, and with the
-  pins every dependency builds with the Darwin 10 compiler, `ring` included. The game crate then fails on two things:
-  - `macroquad` 0.4.13 is too old for the game (`render_target_ex`, `RenderTargetParams`, `Camera3D::z_near/z_far`,
-    `get_dropped_files`, `set_frame_pacer`). It needs 0.4.14 or newer with the `size_of` imports added (4 errors
-    under 1.77), as a patched copy in the staged build.
-  - The game uses language features newer than 1.77: inline `const { }` blocks (`render/draw_stats.rs`) and
-    `Waker::noop` (`audio/engine.rs`, `shared/file_pick.rs`).
-- Package that build as its own `.app` (LSMinimumSystemVersion 10.6) once it links.
+- Get the `runtime` job's game build and link green in CI (it type-checks locally).
+- Run `last_route-macos-10.6-UNTESTED.zip` on the 2008 Mac Pro and report what happens (window, GL, audio, HTTPS).
 - Verify the legacy renderer and remaining platform calls on Snow Leopard.
 - Audit linked Apple frameworks, audio, file dialogs and TLS dependencies.
 - Build and test the actual game, retaining gameplay and other OS behavior.

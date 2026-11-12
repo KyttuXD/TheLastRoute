@@ -17,21 +17,28 @@ use macroquad::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 
+/// `n / 255` for each byte. A table, because float division inside a `const fn` needs Rust 1.82 and the legacy
+/// macOS build uses 1.77 (docs/MACOS_SNOW_LEOPARD.md); a const item may divide, and the values are the same.
+pub const UNIT: [f32; 256] = {
+    let mut t = [0.0; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = i as f32 / 255.0;
+        i += 1;
+    }
+    t
+};
+
 pub const fn hex(v: u32) -> Color {
-    Color::new(
-        ((v >> 16) & 255) as f32 / 255.0,
-        ((v >> 8) & 255) as f32 / 255.0,
-        (v & 255) as f32 / 255.0,
-        1.0,
-    )
+    Color::new(UNIT[((v >> 16) & 255) as usize], UNIT[((v >> 8) & 255) as usize], UNIT[(v & 255) as usize], 1.0)
 }
 
 pub const fn hexa(v: u32) -> Color {
     Color::new(
-        ((v >> 24) & 255) as f32 / 255.0,
-        ((v >> 16) & 255) as f32 / 255.0,
-        ((v >> 8) & 255) as f32 / 255.0,
-        (v & 255) as f32 / 255.0,
+        UNIT[((v >> 24) & 255) as usize],
+        UNIT[((v >> 16) & 255) as usize],
+        UNIT[((v >> 8) & 255) as usize],
+        UNIT[(v & 255) as usize],
     )
 }
 

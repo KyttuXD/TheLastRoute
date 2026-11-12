@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 
 use macroquad::audio::{
     load_sound_from_bytes, play_sound, set_sound_volume, stop_sound, PlaySoundParams, Sound,
@@ -152,7 +152,8 @@ pub(crate) async fn load_frames(frames: &[[f32; 2]]) -> Option<Sound> {
 pub(crate) fn load_frames_now(frames: &[[f32; 2]]) -> Option<Sound> {
     let bytes = cues::wav_bytes(frames);
     let mut fut = std::pin::pin!(load_sound_from_bytes(&bytes));
-    let mut cx = Context::from_waker(Waker::noop());
+    let waker = crate::shared::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
     match fut.as_mut().poll(&mut cx) {
         Poll::Ready(Ok(s)) => Some(s),
         _ => None,

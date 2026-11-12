@@ -1,6 +1,6 @@
 # Experimental Intel OS X 10.6.8 (Snow Leopard) port: docs/MACOS_SNOW_LEOPARD.md.
 # Manual only (Actions > macos-legacy > Run workflow), so it adds no check to pushes and pull requests.
-# Nothing is published: the reports are private run artifacts, not a game download.
+# Nothing is published. The runtime job's artifact holds an UNTESTED 10.6 app for a real Snow Leopard Mac to try.
 name: macos-legacy
 on:
   workflow_dispatch:
@@ -87,5 +87,6 @@ jobs:
             runtime-probe-*.txt
             legacy-game-build.txt
             target/test-reports/snow-leopard-*
+            dist/last_route-macos-10.6-UNTESTED.zip
           retention-days: 3
           if-no-files-found: warn

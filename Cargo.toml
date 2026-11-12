@@ -18,7 +18,6 @@ path = "src/lib.rs"
 
 [dependencies]
 macroquad = { version = "0.4", features = ["audio"] }
-gltf = { version = "1", default-features = false, features = ["utils", "names"] }
 # preserve_order keeps object keys in insertion order, like JSON.stringify in Node (lr_server needs it).
 serde_json = { version = "1", features = ["preserve_order"] }
 # lr_server's dependencies. They build only with the `server` feature, so the game

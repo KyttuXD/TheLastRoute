@@ -320,42 +320,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e05e7e6723e3455f4818c7b26e855439f7546cf617ef669d1adedb8669e5cb9"
 
 [[package]]
-name = "gltf"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7"
-dependencies = [
- "byteorder",
- "gltf-json",
- "lazy_static",
- "serde_json",
-]
-
-[[package]]
-name = "gltf-derive"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14070e711538afba5d6c807edb74bcb84e5dbb9211a3bf5dea0dfab5b24f4c51"
-dependencies = [
- "inflections",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "gltf-json"
-version = "1.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6176f9d60a7eab0a877e8e96548605dedbde9190a7ae1e80bbcc1c9af03ab14"
-dependencies = [
- "gltf-derive",
- "serde",
- "serde_derive",
- "serde_json",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -417,12 +381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inflections"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a257582fdcde896fd96463bf2d40eefea0580021c0712a0e2b028b60b47a837a"
-
-[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -453,7 +411,6 @@ name = "last_route"
 version = "0.1.0"
 dependencies = [
  "getrandom",
- "gltf",
  "hmac",
  "indexmap",
  "lr_update",
@@ -972,7 +929,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn",
 ]
 
 [[package]]
@@ -1052,17 +1009,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "syn"
-version = "2.0.119"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
 
 [[package]]
 name = "syn"
@@ -1216,7 +1162,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn",
  "wasm-bindgen-shared",
 ]
 

@@ -492,7 +492,7 @@ mod imp {
     fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
         use std::future::Future;
         use std::pin::Pin;
-        use std::task::{Context, Poll, Waker};
+        use std::task::{Context, Poll};
         let mut dialog = rfd::AsyncFileDialog::new().set_title(title(directory));
         if let Some(dir) = start_dir() {
             dialog = dialog.set_directory(dir);
@@ -508,7 +508,8 @@ mod imp {
         } else {
             Box::pin(async move { dialog.pick_file().await.map(|h| vec![h.path().to_path_buf()]) })
         };
-        Dialog(Box::new(move || match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        let waker = crate::shared::task::noop_waker();
+        Dialog(Box::new(move || match future.as_mut().poll(&mut Context::from_waker(&waker)) {
             Poll::Pending => None,
             Poll::Ready(answer) => Some(answer),
         }))

@@ -837,6 +837,8 @@ pub fn draw_scene(
                     _ => None,
                 }
             };
+            // bound first: a closure written inside the struct is a temporary before Rust 1.79 (legacy macOS build)
+            let path_ahead = |d| h.path_look_ahead(d);
             let input = Input {
                 pos: h.pos,
                 brain_facing: h.facing,
@@ -862,7 +864,7 @@ pub fn draw_scene(
                     h.mechanic(),
                 ),
                 look_target,
-                path_ahead: Some(&|d| h.path_look_ahead(d)),
+                path_ahead: Some(&path_ahead),
                 chase_style: &h.def.chase_style,
                 camera: g.eye(),
                 grabbing: held,

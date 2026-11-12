@@ -52,8 +52,11 @@ pub const SECTIONS: [(Section, &str); 5] = [
 
 const SECTION_COUNT: usize = 5;
 static SECTION_NOW: AtomicU64 = AtomicU64::new(4);
-static SECTION_MESHES: [AtomicU64; SECTION_COUNT] = [const { AtomicU64::new(0) }; SECTION_COUNT];
-static SECTION_CALLS: [AtomicU64; SECTION_COUNT] = [const { AtomicU64::new(0) }; SECTION_COUNT];
+// a const item, not an inline `const { }` block: those need Rust 1.79 and the legacy macOS build uses 1.77
+#[allow(clippy::declare_interior_mutable_const)]
+const ZERO: AtomicU64 = AtomicU64::new(0);
+static SECTION_MESHES: [AtomicU64; SECTION_COUNT] = [ZERO; SECTION_COUNT];
+static SECTION_CALLS: [AtomicU64; SECTION_COUNT] = [ZERO; SECTION_COUNT];
 
 /// Names the section the following draws belong to (until the next call or the next frame start).
 pub fn set_section(s: Section) {

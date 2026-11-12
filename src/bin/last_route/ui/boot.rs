@@ -400,7 +400,8 @@ impl Layout {
 
 /// An 8-bit sRGB colour with a 0..1 alpha.
 const fn c8(r: u8, g: u8, b: u8, a: f32) -> Color {
-    Color::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a)
+    use crate::ui::style::UNIT;
+    Color::new(UNIT[r as usize], UNIT[g as usize], UNIT[b as usize], a)
 }
 
 const INK: (u8, u8, u8) = (240, 231, 220);

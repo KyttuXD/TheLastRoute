@@ -6,6 +6,16 @@
 
 use std::time::Duration;
 
+/// A waker that does nothing, for polling a future by hand once per frame. (`Waker::noop` needs Rust 1.85; the
+/// legacy macOS build uses 1.77, docs/MACOS_SNOW_LEOPARD.md.)
+pub fn noop_waker() -> std::task::Waker {
+    struct Noop;
+    impl std::task::Wake for Noop {
+        fn wake(self: std::sync::Arc<Self>) {}
+    }
+    std::task::Waker::from(std::sync::Arc::new(Noop))
+}
+
 /// Runs `work` on its own thread (native). In the browser it runs at once, on the calling thread, so it must
 /// finish quickly (a request that the browser build refuses does).
 #[cfg(not(target_arch = "wasm32"))]

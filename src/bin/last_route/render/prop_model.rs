@@ -346,69 +346,35 @@ impl PropModel {
         sibling: &dyn Fn(&str) -> Option<Vec<u8>>,
         white: &Texture2D,
     ) -> Option<PropModel> {
-        let g = gltf::Gltf::from_slice(bytes).ok()?;
-        let mut buffers: Vec<Vec<u8>> = vec![];
-        for b in g.buffers() {
-            let data = match b.source() {
-                gltf::buffer::Source::Bin => g.blob.clone()?,
-                gltf::buffer::Source::Uri(u) => sibling(u)?,
-            };
-            buffers.push(data);
-        }
+        use crate::render::glb::{Glb, ImageSource};
+        let g = Glb::parse(bytes)?;
+        let buffers = g.buffers(sibling)?;
         let mut textures: Vec<Option<Texture2D>> = vec![];
         for img in g.images() {
-            let data = match img.source() {
-                gltf::image::Source::View { view, .. } => {
-                    // A view that runs past its buffer leaves the picture out (white fallback), never panics.
-                    checked_view(&buffers, view.buffer().index(), view.offset(), view.length()).map(|s| s.to_vec())
-                }
-                gltf::image::Source::Uri { uri, .. } => sibling(uri),
+            let data = match img {
+                // A view that runs past its buffer leaves the picture out (white fallback), never panics.
+                Some(ImageSource::View { buffer, offset, length }) => checked_view(&buffers, buffer, offset, length).map(|s| s.to_vec()),
+                Some(ImageSource::Uri(uri)) => sibling(&uri),
+                None => None,
             };
             textures.push(data.map(|d| new_texture(&d)));
         }
         let mut by_tex: HashMap<Option<usize>, Geometry> = HashMap::new();
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
-        let scene = g.default_scene().or_else(|| g.scenes().next())?;
-        let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
-        while let Some((node, parent)) = stack.pop() {
-            let m = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
-            for child in node.children() {
-                stack.push((child, m));
-            }
-            let Some(mesh) = node.mesh() else { continue };
+        for (matrix, mesh) in g.mesh_nodes()? {
+            let m = Mat4::from_cols_array(&matrix);
             let nm = Mat3::from_mat4(m).inverse().transpose();
-            for prim in mesh.primitives() {
-                if prim.mode() != gltf::mesh::Mode::Triangles {
-                    continue;
-                }
-                let reader = prim.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
-                let Some(pos) = reader.read_positions() else {
-                    continue;
-                };
-                let pos: Vec<[f32; 3]> = pos.collect();
-                let normals: Vec<[f32; 3]> = reader
-                    .read_normals()
-                    .map(|n| n.collect())
-                    .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; pos.len()]);
-                let uvs: Vec<[f32; 2]> = reader
-                    .read_tex_coords(0)
-                    .map(|t| t.into_f32().collect())
-                    .unwrap_or_else(|| vec![[0.0, 0.0]; pos.len()]);
-                let cols: Vec<[f32; 4]> = reader
-                    .read_colors(0)
-                    .map(|c| c.into_rgba_f32().collect())
-                    .unwrap_or_else(|| vec![[1.0; 4]; pos.len()]);
+            for prim in g.primitives(mesh, &buffers) {
+                let pos = prim.positions;
+                let normals = prim.normals.unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; pos.len()]);
+                let uvs = prim.uvs.unwrap_or_else(|| vec![[0.0, 0.0]; pos.len()]);
+                let cols = prim.colors.unwrap_or_else(|| vec![[1.0; 4]; pos.len()]);
                 if !attr_counts_match(pos.len(), normals.len(), uvs.len(), cols.len()) {
                     continue;
                 }
-                let factor = prim.material().pbr_metallic_roughness().base_color_factor();
-                let tex_index = prim
-                    .material()
-                    .pbr_metallic_roughness()
-                    .base_color_texture()
-                    .map(|t| t.texture().source().index())
-                    .filter(|i| textures.get(*i).map(|t| t.is_some()).unwrap_or(false));
+                let factor = prim.base_color;
+                let tex_index = prim.image.filter(|i| textures.get(*i).map(|t| t.is_some()).unwrap_or(false));
                 let entry = by_tex.entry(tex_index).or_default();
                 let base = entry.verts.len() as u32;
                 for i in 0..pos.len() {
@@ -424,8 +390,9 @@ impl PropModel {
                         normal: vec4(n.x, n.y, n.z, 1.0),
                     });
                 }
-                match reader.read_indices() {
-                    Some(ix) => entry.idx.extend(ix.into_u32().map(|i| i + base)),
+                match prim.indices {
+                    // an index past the vertices would read outside the mesh: drop those triangles' indices
+                    Some(ix) => entry.idx.extend(ix.into_iter().filter(|i| (*i as usize) < pos.len()).map(|i| i + base)),
                     None => entry.idx.extend((0..pos.len() as u32).map(|i| i + base)),
                 }
             }

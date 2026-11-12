@@ -7,6 +7,7 @@ pub mod admin_pulse;
 pub mod hunter_view_overlay;
 pub mod anim;
 pub mod bbmodel;
+pub mod glb;
 pub mod beam;
 pub mod builder;
 pub mod door;

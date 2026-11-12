@@ -961,14 +961,17 @@ fn music_wing_carve(grid: &mut Grid, rect: Rect, door: V2, part: &str) -> Wing {
         V2::new(rect.x + if flip { SLOT - 1 - local.x } else { local.x }, rect.y + local.y)
     };
     // (type, local rect, door side) per LAYOUTS (music_wing.gd:22)
+    // named arrays: a borrowed array literal in a match arm is a temporary before Rust 1.79 (legacy macOS build)
+    let stage = [("music_stage", Rect::new(6, 4, 15, 13), "east")];
+    let wing = [
+        ("practice_room", Rect::new(0, 0, 11, 9), "south"),
+        ("practice_room", Rect::new(10, 0, 11, 9), "south"),
+        ("instrument_storage", Rect::new(0, 12, 11, 9), "north"),
+        ("recording_booth", Rect::new(10, 12, 11, 9), "north"),
+    ];
     let entries: &[(&'static str, Rect, &str)] = match part {
-        "stage" => &[("music_stage", Rect::new(6, 4, 15, 13), "east")],
-        _ => &[
-            ("practice_room", Rect::new(0, 0, 11, 9), "south"),
-            ("practice_room", Rect::new(10, 0, 11, 9), "south"),
-            ("instrument_storage", Rect::new(0, 12, 11, 9), "north"),
-            ("recording_booth", Rect::new(10, 12, 11, 9), "north"),
-        ],
+        "stage" => &stage,
+        _ => &wing,
     };
     let mut rooms = Vec::new();
     for &(room_type, local, side) in entries {
