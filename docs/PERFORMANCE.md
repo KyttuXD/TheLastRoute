@@ -55,7 +55,20 @@ start fade follows the clock, so two shots differ by one overall brightness fact
 The menu sits at about 144 MB. What holds the memory, and everything tried, is in [RAM_PASS.md](RAM_PASS.md); the
 triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
 
+## One core, and a slow machine (2026-11-12)
+
+- **One core on KT's PC:** the stress run pinned to one core (`taskset -c 0`) averages 1.04 ms a frame (960 fps),
+  against 0.99 ms on all cores. The game's frame is one thread, so the number of cores is not what limits a
+  dual-core machine; the speed of one core and the graphics driver are.
+- **KT's Mac Pro 3,1** (2008, Xeon E5462 2.8 GHz, Radeon HD 2600, OS X 10.6.8, the legacy build, dev profile): the
+  25 second `mixed` stress run averages about 70 fps (well over the 30 fps floor), with the worst 1% of frames
+  near 6 fps. Where the time goes there: a new window of chunks arriving costs 80 to 150 ms in one frame
+  (`window residency` 55 ms, `window adopt` 25 ms, `window grid` 17 ms, `resident build` 16 ms), and drawing costs
+  follow the number of draw calls, not the number of vertices (the HUD cost as much as the 3D pass).
+- What that points to, in order: spread the window arrival over more frames on slow machines; fewer draw calls in
+  the HUD; a release build of the legacy app (it is a dev-profile build today).
+
 ## Not known yet
 
-- No number exists for a low-end PC or for the PowerPC and Snow Leopard builds.
+- No number exists for a low-end PC or for the PowerPC builds.
 - The MacBook Air numbers predate the RAM pass.

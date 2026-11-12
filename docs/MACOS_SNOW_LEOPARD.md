@@ -1,52 +1,60 @@
 # Intel Snow Leopard port status
 
-Target: Intel x86_64 OS X 10.6.8. This is not PowerPC and is not yet a working game port.
+Target: Intel x86_64 OS X 10.5 to 10.11 (KT's Mac Pro 3,1 on 10.6.8). This is not PowerPC.
 The normal game artifact still requires macOS 10.12 or later.
 
-## Download (2026-11-12)
+## Download and state (2026-11-12)
 
-The target machine is KT's Mac Pro 3,1 (2008, two Xeon "Harpertown" processors, 64-bit). It shipped with OS X 10.5,
-so 10.5 is the lowest system it can run.
+**It runs.** The legacy app starts, draws correctly and plays on KT's Mac Pro 3,1 (2008, two Xeon E5462, Radeon HD
+2600, OS X 10.6.8): a 25 second `mixed` stress run averages about 70 frames a second, with no crash.
 
 The `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy) holds
-`last_route-macos-10.6-UNTESTED.zip` and `last_route-macos-10.5-UNTESTED.zip`, the apps the `runtime` job of the
-`macos-legacy` workflow builds. To rebuild them: `gh workflow run macos-legacy.yml` (from main).
+`last_route-macos-legacy.zip`: **one app for 64-bit Intel Macs on OS X 10.5 up to 10.11** (the normal app needs
+10.12). To rebuild it: `gh workflow run macos-legacy.yml` (from main). It has every feature of the normal build
+except Metal: file drops and the file chooser use old AppKit calls instead of the ones the normal build uses.
 
-### First run on the Mac Pro (2026-11-12)
+Not tried: OS X 10.5 itself, 10.7 to 10.11, any other Mac, sound, the network, a whole play session.
 
-The first 10.6 app died at once with "Illegal instruction". Two causes were found by reading the program, not on the
-machine (it was not reachable for a test):
+| Wanted | State |
+|---|---|
+| OS X 10.6.8, Intel 64-bit (Mac Pro 3,1) | runs |
+| OS X 10.5, Intel 64-bit | same app; built for it, not tried on it |
+| 32-bit Intel (Core Duo Macs) | not built: a 32-bit Darwin 9 compiler exists at MacPorts, nothing is set up |
+| OS X 10.4, Intel | not built: MacPorts has no Darwin 8 Rust, and the Mac Pro 3,1 cannot run 10.4 |
+| Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X. A PowerPC Mac can run the PowerPC Linux build under Linux ([POWERPC.md](POWERPC.md)) |
 
-1. **The compatibility library was never used.** The build Mac's linker found `clock_gettime`,
-   `clock_gettime_nsec_np` and `getentropy` in its own libSystem and tied them to libSystem by name. OS X 10.6 has
-   none of them. Not one symbol was bound to `libMacportsLegacySystem`. The build now links with a flat namespace, so
-   the old system looks in every loaded library; `packaging/macos/legacy/machobind.py` prints where each imported
-   symbol is bound and the build fails if the namespace is not flat.
-2. **Calls newer than the system.** `NSPasteboardTypeFileURL` (10.13, a data symbol: the program does not start
-   without it), the `rfd` file chooser (blocks and Objective-C runtime calls from 10.7), `NSRunningApplication`,
-   `setActivationPolicy:` and `-[NSImage initWithCGImage:size:]` (all 10.6, which matters on 10.5), and an unused
-   ImageIO framework link. They are left out or asked for first (vendor/miniquad/LAST_ROUTE_PATCHES.md item 9). The
-   legacy build therefore has no file chooser and takes no file drops.
+### How it was got running (each found on the Mac Pro, in this order)
 
-Whether the app starts now is not known. To test on the Mac: unzip, then run
-`"KYTTU The Last Route (10.6 test).app/Contents/MacOS/last_route"` from Terminal, so that what it prints is kept.
+1. **"Illegal instruction" at start.** The compatibility library was never used: the build Mac's linker tied
+   `clock_gettime` and friends to libSystem by name. Now linked with a flat namespace
+   (`packaging/macos/legacy/machobind.py` checks it).
+2. **Dies in dyld before it starts.** A program linked for 10.6 is written in the LC_MAIN format, which arrived in
+   10.8. A program linked for 10.5 gets the old format (LC_UNIXTHREAD) and loads on 10.6, so the one legacy app is
+   the 10.5 build; the build fails if the format is not the old one.
+3. **Symbols newer than the system:** `NSPasteboardTypeFileURL` (10.13), the `rfd` file chooser (10.7),
+   `NSRunningApplication`, `setActivationPolicy:`, `-[NSImage initWithCGImage:size:]` (10.6). Replaced by old
+   calls or asked for first.
+4. **Panic in the first render pass:** OpenGL 2.1 has no `glClearDepthf`. The machine's OpenGL was asked for all
+   125 functions the renderer loads; that was the only missing one that is called.
+5. **White window:** the OpenGL context was attached before the window was on screen ("invalid drawable"). It is
+   attached again once the window is shown.
+6. A thousand "autoreleased with no pool" lines: the legacy build now has autorelease pools.
+
+All of it is in `vendor/miniquad` behind `cfg(lr_macos_legacy)` (LAST_ROUTE_PATCHES.md items 9 and 10) and in
+`packaging/macos/legacy/`.
+
+### Testing on the Mac Pro
+
+The Mac is for testing only: nothing is compiled there. Copy the zip over, unzip, and either open the app or run
+`"KYTTU The Last Route (legacy).app/Contents/MacOS/last_route" --offline --stress 25 --stress-log /tmp/s.csv` from
+Terminal to keep what it prints. `--screenshot FILE` with `LR_SHOT_RUN=1 LR_SHOT_INF=1` writes the picture the game
+drew.
 
 ### The 10.5 build
 
 MacPorts publishes a Darwin 9 build of the Rust 1.77 standard library (no Grand Central Dispatch, which 10.5 lacks)
 but no 10.5 binary of legacy-support. `packaging/macos/legacy/bootstrap-leopard.sh` fetches the first and builds the
-second from source for a 10.5 target; `build-experiment.sh FOLDER 10.5` builds the game with them. It builds and
-links. It has not run.
-
-What there is no build for, and why:
-
-| Wanted | State |
-|---|---|
-| OS X 10.6.8, Intel 64-bit (2008 Mac Pro) | built, untested |
-| OS X 10.6, 32-bit Intel (Core Duo Macs) | not built: the compiler used is the 64-bit Darwin 10 one |
-| OS X 10.5, Intel 64-bit | built, untested (see above) |
-| OS X 10.4, Intel | not built: MacPorts has no Darwin 8 Rust, and the Mac Pro 3,1 cannot run 10.4 |
-| Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X. A PowerPC Mac can run the PowerPC Linux build under Linux ([POWERPC.md](POWERPC.md)) |
+second from source for a 10.5 target; `build-experiment.sh FOLDER` builds the game with them.
 
 ## Implemented renderer foundation
 

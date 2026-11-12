@@ -1,4 +1,4 @@
-# Experimental Intel OS X 10.6.8 (Snow Leopard) port: docs/MACOS_SNOW_LEOPARD.md.
+# Experimental legacy Intel Mac build (OS X 10.5 to 10.11): docs/MACOS_SNOW_LEOPARD.md.
 # Manual only (Actions > macos-legacy > Run workflow), so it adds no check to pushes and pull requests.
 # The runtime job publishes the legacy app (one program for OS X 10.5 to 10.11) to the rolling "nightly-legacy" pre-release (run from main only),
 # next to the PowerPC Linux builds of powerpc.yml, for a real Snow Leopard Mac to try.
@@ -13,8 +13,8 @@ env:
   RUST_TOOLCHAIN: "1.99.1"
   CARGO_BUILD_JOBS: "4"
   NIGHTLY_TAG: nightly-legacy
-  NIGHTLY_TITLE: Nightly legacy (OS X 10.6 Intel, PowerPC Linux) - UNTESTED
-  NIGHTLY_NOTES: "Experimental builds for old machines, built by hand from the Actions tab (workflows macos-legacy and powerpc). UNTESTED: none of these files has run on the hardware it is for. last_route-macos-10.6-UNTESTED.zip is for Intel Macs on OS X 10.6.8 (64-bit). The powerpc files are for PowerPC machines running Linux (big-endian, glibc 2.35 or newer); there is no build for Mac OS X on PowerPC or for OS X 10.5 and lower (docs/MACOS_SNOW_LEOPARD.md, docs/POWERPC.md). The files are replaced in place on each run."
+  NIGHTLY_TITLE: Nightly legacy (OS X 10.5 to 10.11 Intel, PowerPC Linux)
+  NIGHTLY_NOTES: "Experimental builds for old machines, built by hand from the Actions tab (workflows macos-legacy and powerpc). last_route-macos-legacy.zip is one app for 64-bit Intel Macs on OS X 10.5 to 10.11: it starts, draws and plays a stress run on a 2008 Mac Pro (3,1) under OS X 10.6.8, and has not been tried on other Macs or systems. The powerpc files are for PowerPC machines running Linux (big-endian, glibc 2.35 or newer) and are UNTESTED on real hardware; there is no build for Mac OS X on PowerPC (docs/MACOS_SNOW_LEOPARD.md, docs/POWERPC.md). The files are replaced in place on each run."
 
 jobs:
   # The legacy renderer (LR_MACOS_LEGACY=1) built with the normal compiler and its 10.12 runtime.
