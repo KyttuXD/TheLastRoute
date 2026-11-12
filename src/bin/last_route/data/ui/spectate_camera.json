@@ -4,5 +4,6 @@
   "height": 1.9,
   "look_height": 1.2,
   "follow_label": "FOLLOW CAMERA [F]",
+  "out_of_sight": "TOO FAR AWAY TO SHOW // [F] OWN VIEW",
   "cycle_hint": "[Q] AND [E] SWITCH RUNNER"
 }

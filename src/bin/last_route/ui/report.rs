@@ -366,19 +366,22 @@ pub fn draw_watching(a: &Assets, target: Option<&str>) {
         Some(name) => labels.watching_line(&name.to_uppercase()),
         None => labels.no_one.clone(),
     };
+    // top centre: the corners hold the frame counter and the minimap
     let y = 14.0;
-    label_r(a, F::Body, &line, v.x - 14.0, y, 7.0, p.amber);
-    label_r(a, F::Body, &labels.hint, v.x - 14.0, y + lh(F::Body, 7.0) + 2.0, 5.0, p.dim);
+    label_c(a, F::Body, &line, v.x * 0.5, y, 7.0, p.amber);
+    label_c(a, F::Body, &labels.hint, v.x * 0.5, y + lh(F::Body, 7.0) + 2.0, 5.0, p.dim);
 }
 
 /// The follow-camera labels under the watching line (data/ui/spectate_camera.json), drawn while the follow camera is on.
-pub fn draw_follow_hint(a: &Assets) {
+/// `in_sight` is false when the watched runner is too far from this runner's loaded floor to be shown.
+pub fn draw_follow_hint(a: &Assets, in_sight: bool) {
     let p = pal();
     let v = view();
     let cfg = crate::game::spectate::camera_cfg();
     let y = 14.0 + (lh(F::Body, 7.0) + 2.0) + (lh(F::Body, 5.0) + 4.0);
-    label_r(a, F::Body, &cfg.follow_label, v.x - 14.0, y, 5.0, p.amber);
-    label_r(a, F::Body, &cfg.cycle_hint, v.x - 14.0, y + lh(F::Body, 5.0) + 2.0, 5.0, p.dim);
+    let first = if in_sight { &cfg.follow_label } else { &cfg.out_of_sight };
+    label_c(a, F::Body, first, v.x * 0.5, y, 5.0, p.amber);
+    label_c(a, F::Body, &cfg.cycle_hint, v.x * 0.5, y + lh(F::Body, 5.0) + 2.0, 5.0, p.dim);
 }
 
 /// The SPECTATE prompt of a downed runner, low on the screen. True when it is pressed this frame.

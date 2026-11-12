@@ -158,6 +158,18 @@ thread_local! {
 /// The runner's eye and view basis (forward, right, up): the player's own, or, while hiding (and gliding in or out),
 /// the locker's window view from `render/hiding_cam.rs` (the eye at the spot's vent, the look clamped to its cone).
 pub fn view(g: &Game) -> (Vec3, Vec3, Vec3, Vec3) {
+    // a spectator's follow camera (game/spectate.rs): behind the watched runner, pulled in clear of a wall behind it
+    if let Some((eye, look)) = g.spectate_camera() {
+        let (eye, look) = (Vec3::from(eye), Vec3::from(look));
+        let back = eye - look;
+        let free = free_run(&g.fac, look, back, back.length());
+        let eye = look + back.normalize_or_zero() * (free - 0.15).clamp(0.3, back.length().max(0.3));
+        let fwd = (look - eye).normalize_or_zero();
+        let right = vec3(0.0, 1.0, 0.0).cross(fwd).normalize_or_zero();
+        if fwd != Vec3::ZERO && right != Vec3::ZERO {
+            return (eye, fwd, right, right.cross(fwd).normalize());
+        }
+    }
     let eye = g.eye();
     let (fwd, right, up) = g.camera_basis();
     let h = hide::player_now();

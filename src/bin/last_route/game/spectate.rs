@@ -4,9 +4,12 @@
 //! in the room. A spectator keeps watching: it follows another runner's view, cycled with LEFT and RIGHT
 //! ([`Spectate::cycle`]), and it cannot move, interact or be caught. The labels are in data/ui/spectate.json.
 //!
-//! Limits: the camera is still the spectator's own body; following the watched runner's camera is not built yet
-//! (the target is kept and named on screen). A spectator stays a spectator for the rest of the run, even if a teammate
-//! revives it.
+//! The camera sits behind the watched runner ([`Game::spectate_camera`], on from the start; [F] goes back to the
+//! spectator's own eyes). It can only show what this client has loaded: a runner outside this runner's window of
+//! chunks, or more than a storey above or below, is named on screen but the view stays with the spectator's body.
+//!
+//! A downed runner starts watching with the prompt button or with [E] (its mouse is held by the look, so a key is
+//! needed). A teammate's revive ends the watching and gives the controls back; a dead runner watches until the run ends.
 
 use super::{Controls, Game};
 use serde_json::Value;
@@ -77,6 +80,8 @@ pub struct CameraCfg {
     /// Height of the point the camera looks at.
     pub look_height: f32,
     pub follow_label: String,
+    /// Shown in place of `follow_label` while the watched runner is too far from this runner's floor to be shown.
+    pub out_of_sight: String,
     pub cycle_hint: String,
 }
 
@@ -97,7 +102,7 @@ impl CameraCfg {
                 .filter(|x| !x.trim().is_empty())
                 .ok_or_else(|| format!("{k} must be a non-empty string"))
         };
-        Ok(CameraCfg { distance: n("distance")?, height: n("height")?, look_height: n("look_height")?, follow_label: s("follow_label")?, cycle_hint: s("cycle_hint")? })
+        Ok(CameraCfg { distance: n("distance")?, height: n("height")?, look_height: n("look_height")?, follow_label: s("follow_label")?, out_of_sight: s("out_of_sight")?, cycle_hint: s("cycle_hint")? })
     }
 }
 
@@ -135,6 +140,15 @@ pub struct Spectate {
     pub follow: bool,
 }
 
+/// Where the watched runner stands, as this client last heard: its place in this window's cells, its feet height, its
+/// yaw. The app sets it each frame (`Game::spectate_watched`) from the runners near enough to be drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Watched {
+    pub at: (f32, f32),
+    pub h: f32,
+    pub yaw: f32,
+}
+
 /// Whether the player may choose SPECTATE: it is downed or dead, and another runner is in the room to watch.
 pub fn may_spectate(downed: bool, over: bool, peers: &[u32]) -> bool {
     (downed || over) && !peers.is_empty()
@@ -143,7 +157,7 @@ pub fn may_spectate(downed: bool, over: bool, peers: &[u32]) -> bool {
 impl Spectate {
     /// The transition into spectator mode: watching the first other runner. None when the player may not spectate.
     pub fn enter(downed: bool, over: bool, peers: &[u32]) -> Option<Spectate> {
-        may_spectate(downed, over, peers).then(|| Spectate { target: peers.first().copied(), follow: false })
+        may_spectate(downed, over, peers).then(|| Spectate { target: peers.first().copied(), follow: true })
     }
 
     /// Moves the watched runner `step` places along `peers` (wrapping at both ends). A target no longer in the room, or
@@ -169,13 +183,37 @@ impl Game {
     }
 
     /// The controls the run actually gets this frame: a spectator gets none, so it cannot move, interact, use items or
-    /// open shops. The player's own keys pass through otherwise.
+    /// open shops. The one key a downed spectator keeps is the use key, which spends a revive kit (game/revive.rs).
+    /// The player's own keys pass through otherwise.
     pub fn effective_controls(&self, c: &Controls) -> Controls {
         if self.spectating() {
-            Controls::default()
+            Controls { use_item: self.downed.is_some() && c.use_item, ..Controls::default() }
         } else {
             c.clone()
         }
+    }
+
+    /// Ends the watching of a runner who is back on its feet (a revive): the controls and the view are its own again.
+    /// A dead runner keeps watching.
+    pub fn spectate_leave_if_up(&mut self) {
+        if self.downed.is_none() && self.report.is_none() {
+            self.spectate = None;
+            self.spectate_watched = None;
+        }
+    }
+
+    /// The follow camera this frame: the eye behind the watched runner and the point it looks at, in the scene's
+    /// coordinates. None when not following, or when the watched runner is not near enough to be drawn here.
+    pub fn spectate_camera(&self) -> Option<([f32; 3], [f32; 3])> {
+        if !self.spectate_following() {
+            return None;
+        }
+        let w = self.spectate_watched?;
+        let inside = w.at.0 >= 0.0 && w.at.1 >= 0.0 && w.at.0 < self.fac.cols as f32 && w.at.1 < self.fac.rows as f32;
+        if !inside {
+            return None;
+        }
+        Some(follow_pose([w.at.0, w.h, w.at.1], [-w.yaw.sin(), -w.yaw.cos()], camera_cfg()))
     }
 
     /// [F]: toggles the camera behind the watched runner. No effect when not spectating.
@@ -251,8 +289,8 @@ mod tests {
 
     #[test]
     fn a_downed_or_dead_runner_with_someone_to_watch_goes_to_spectate() {
-        assert_eq!(Spectate::enter(true, false, &[2, 3]), Some(Spectate { target: Some(2), follow: false }), "downed: watches the first runner");
-        assert_eq!(Spectate::enter(false, true, &[5]), Some(Spectate { target: Some(5), follow: false }), "dead: watches the first runner");
+        assert_eq!(Spectate::enter(true, false, &[2, 3]), Some(Spectate { target: Some(2), follow: true }), "downed: watches the first runner");
+        assert_eq!(Spectate::enter(false, true, &[5]), Some(Spectate { target: Some(5), follow: true }), "dead: watches the first runner");
         assert!(Spectate::enter(true, false, &[]).is_none(), "alone in the room: nobody to watch");
     }
 
@@ -306,6 +344,9 @@ mod tests {
         assert!(!g.spectate_following(), "a runner who is not spectating cannot follow");
         g.end_run(0, "caught");
         assert!(g.spectate_enter(&[2]));
+        assert!(g.spectate_following(), "the follow camera is on from the start");
+        g.spectate_toggle_follow();
+        assert!(!g.spectate_following(), "[F] goes back to the spectator's own eyes");
         g.spectate_toggle_follow();
         assert!(g.spectate_following());
         g.spectate_cycle(&[], 1);
@@ -352,6 +393,77 @@ mod tests {
         let before = g.p.pos;
         g.step(0.5, &given, &Content::load(), &Catalog::load(), &crate::audio::Sounds::default());
         assert_eq!(g.p.pos, before, "a spectator body does not walk");
+    }
+
+    #[test]
+    fn a_downed_runner_cannot_move_before_or_while_it_watches() {
+        let (content, catalog, sounds) = (Content::load(), Catalog::load(), crate::audio::Sounds::default());
+        let mut g = game();
+        g.room_teammates = 1;
+        g.end_run(0, "caught");
+        assert!(g.runner_downed());
+        let pressed = Controls { fwd: 1.0, strafe: 1.0, sprint: true, jump: true, ..Controls::default() };
+        let before = g.p.pos;
+        for _ in 0..30 {
+            g.step(1.0 / 60.0, &pressed, &content, &catalog, &sounds);
+        }
+        assert_eq!(g.p.pos, before, "a downed runner lies still");
+        assert!(g.spectate_enter(&[2]));
+        for _ in 0..30 {
+            g.step(1.0 / 60.0, &pressed, &content, &catalog, &sounds);
+        }
+        assert_eq!(g.p.pos, before, "and still lies there while it watches");
+    }
+
+    #[test]
+    fn a_revive_ends_the_watching_and_gives_the_controls_back() {
+        let mut g = game();
+        g.room_teammates = 1;
+        g.end_run(0, "caught");
+        assert!(g.spectate_enter(&[2]));
+        g.spectate_watched = Some(Watched { at: (5.0, 5.0), h: 0.0, yaw: 0.0 });
+        g.spectate_leave_if_up();
+        assert!(g.spectating(), "still down: still watching");
+        g.downed = None;
+        g.spectate_leave_if_up();
+        assert!(!g.spectating() && g.spectate_watched.is_none(), "back up: the view and the keys are its own");
+        let pressed = Controls { fwd: 1.0, ..Controls::default() };
+        assert_eq!(g.effective_controls(&pressed).fwd, 1.0);
+        // a dead runner keeps watching
+        let mut dead = game();
+        dead.end_run(0, "caught");
+        assert!(dead.report.is_some() && dead.spectate_enter(&[2]));
+        dead.spectate_leave_if_up();
+        assert!(dead.spectating());
+    }
+
+    #[test]
+    fn a_downed_spectator_keeps_only_the_revive_kit_key() {
+        let mut g = game();
+        g.room_teammates = 1;
+        g.end_run(0, "caught");
+        assert!(g.spectate_enter(&[2]));
+        let pressed = Controls { fwd: 1.0, interact: true, use_item: true, ..Controls::default() };
+        let given = g.effective_controls(&pressed);
+        assert!(given.use_item && given.fwd == 0.0 && !given.interact);
+    }
+
+    #[test]
+    fn the_follow_camera_needs_a_watched_runner_inside_the_window() {
+        let mut g = game();
+        g.end_run(0, "caught");
+        assert!(g.spectate_enter(&[2]));
+        assert!(g.spectate_camera().is_none(), "nothing heard of the runner yet");
+        g.spectate_watched = Some(Watched { at: (20.0, 30.0), h: 0.0, yaw: 0.0 });
+        let (eye, look) = g.spectate_camera().expect("in the window: followed");
+        let cfg = camera_cfg();
+        // yaw 0 faces -z (game/player.rs forward2), so the eye is behind at +z
+        assert!((eye[0] - 20.0).abs() < 1e-4 && (eye[2] - (30.0 + cfg.distance)).abs() < 1e-4 && (look[2] - 30.0).abs() < 1e-4);
+        g.spectate_watched = Some(Watched { at: (-4.0, 30.0), h: 0.0, yaw: 0.0 });
+        assert!(g.spectate_camera().is_none(), "outside this window: not drawn here, so not followed");
+        g.spectate_watched = Some(Watched { at: (20.0, 30.0), h: 0.0, yaw: 0.0 });
+        g.spectate_toggle_follow();
+        assert!(g.spectate_camera().is_none(), "[F] off: the spectator's own eyes");
     }
 
     #[test]

@@ -256,6 +256,8 @@ pub struct Game {
     pub revive_net: revive::ReviveNet,
     /// The spectator state of a downed or dead runner (game/spectate.rs): Some while it watches another runner.
     pub spectate: Option<spectate::Spectate>,
+    /// Where the watched runner stands, when it is near enough to be drawn here (the app sets it each frame).
+    pub spectate_watched: Option<spectate::Watched>,
     escape_cooldown: f32,
     escape_cooldown_scale: f32,
     escape_grace: f32,
@@ -426,6 +428,7 @@ impl Game {
             downed_npcs: std::collections::BTreeMap::new(),
             revive_net: revive::ReviveNet::default(),
             spectate: None,
+            spectate_watched: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,
@@ -583,6 +586,7 @@ impl Game {
             downed_npcs: std::collections::BTreeMap::new(),
             revive_net: revive::ReviveNet::default(),
             spectate: None,
+            spectate_watched: None,
             escape_cooldown: 0.0,
             escape_cooldown_scale: 1.0,
             escape_grace: 0.0,

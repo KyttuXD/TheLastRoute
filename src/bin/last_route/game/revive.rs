@@ -318,6 +318,8 @@ impl Game {
                 self.downed = None;
                 // a just-revived runner cannot be instantly re-grabbed (resolve_capture, hunting.rs:526)
                 self.grant_post_revive_grace(hunter);
+                // a runner who was watching the others gets its own view and keys back (game/spectate.rs)
+                self.spectate_leave_if_up();
                 self.say("YOU ARE BACK UP");
             } else if d.remaining <= 0.0 {
                 self.downed = None;

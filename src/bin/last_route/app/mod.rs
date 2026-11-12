@@ -12,6 +12,7 @@
 //!   LR_SHOT_FLASH=0         with a run: start with the flashlight off (default on)
 //!   LR_SHOT_EMPTY=1         with a run: select the first empty hotbar slot (nothing in hand)
 //!   LR_SHOT_REMOTE=1        with a run: a second runner stands three metres ahead, as in an open room
+//!   LR_SHOT_SPECTATE=1      with LR_SHOT_REMOTE=1: the view is a spectator's follow camera behind that runner
 //!   LR_SHOT_SEED=n          with LR_SHOT_RUN=1: the run seed (default 20261101)
 //!   LR_SHOT_LEVEL=n         with LR_SHOT_RUN=1 (Infinite route): start on level n (-3 has spirals in open bays)
 //!   LR_SHOT_STAIRS=shape    with a run: stand on the landing of the first flight down of a shape (spiral | switchback |
@@ -151,6 +152,8 @@ pub fn render_play_with(
     perf::flush_timed("gl flush");
     let view_layer = {
         let _t = perf::section("viewmodel");
+        // (a spectator's follow camera is not behind this runner's hands; the layer is still drawn and returned, the
+        // caller leaves it off the screen then)
         viewmodel::draw_view_layer(g, a, mat, &t.view)
     };
     perf::flush_timed("gl flush view");
@@ -166,7 +169,7 @@ pub fn render_play_with(
     };
     draw_texture_ex(&t.scene.texture, 0.0, 0.0, WHITE, p.clone());
     // the held-item layer is blitted only when something was drawn into it (an empty layer is fully transparent)
-    if view_layer {
+    if view_layer && g.spectate_camera().is_none() {
         draw_texture_ex(&t.view.texture, 0.0, 0.0, WHITE, p);
     }
     crate::ui::markers::draw_nametags(g, a, &t.scene, &crate::ui::markers::all_markers(g, remotes));
@@ -1582,6 +1585,16 @@ pub async fn run(
             if screenshot.is_some() && env("LR_SHOT_REMOTE").is_some() {
                 remotes.push(shot_remote(g));
             }
+            // LR_SHOT_SPECTATE=1 (with LR_SHOT_REMOTE=1): this runner watches that second runner, as a downed one would
+            if screenshot.is_some() && env("LR_SHOT_SPECTATE").is_some() {
+                g.spectate = remotes.first().map(|r| crate::game::spectate::Spectate { target: Some(r.peer), follow: true });
+            }
+            // where the watched runner stands, for the spectator's follow camera (game/spectate.rs): only a runner near
+            // enough to be drawn here can be followed
+            g.spectate_watched = g
+                .spectate_target()
+                .and_then(|t| remotes.iter().find(|r| r.peer == t))
+                .map(|r| crate::game::spectate::Watched { at: (r.x, r.y), h: r.h, yaw: r.yaw });
             g.sync_other_hiders(&remotes);
             let mut marks = crate::ui::markers::all_markers(g, &remotes);
             // the pins and markers dim with the seconds since each teammate's last sample (cosmetic)
@@ -2057,10 +2070,14 @@ pub async fn run(
                         let name = spectate_roster.iter().find(|(p, _)| Some(*p) == target).map(|(_, n)| n.as_str());
                         report::draw_watching(&w.assets, name);
                         if g.spectate_following() {
-                            report::draw_follow_hint(&w.assets);
+                            report::draw_follow_hint(&w.assets, g.spectate_camera().is_some());
                         }
-                    } else if g.runner_downed() && !spectate_peers.is_empty() && report::draw_downed_prompt(&w.assets) {
-                        g.spectate_enter(&spectate_peers);
+                    } else if g.runner_downed() && !spectate_peers.is_empty() {
+                        // the prompt's button, or [E]: a downed runner's mouse is held by the look, so it needs a key
+                        let pressed = report::draw_downed_prompt(&w.assets);
+                        if pressed || is_key_pressed(KeyCode::E) {
+                            g.spectate_enter(&spectate_peers);
+                        }
                     }
                     if !hud_hidden {
                         hud::draw_crosshair(g, grabbed);
