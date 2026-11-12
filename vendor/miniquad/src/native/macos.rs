@@ -1486,6 +1486,14 @@ where
     let app_delegate_instance: ObjcId = msg_send![app_delegate_class, new];
     (*app_delegate_instance).set_ivar("activated", false);
 
+    // Last Route: a pool for what is autoreleased while the window is set up (never drained: it lives as long as the
+    // program; the loop below has its own).
+    #[cfg(lr_macos_legacy)]
+    {
+        let pool = msg_send_![class!(NSAutoreleasePool), alloc];
+        let _startup_pool: ObjcId = msg_send_![pool, init];
+    }
+
     let ns_app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
     let () = msg_send![ns_app, setDelegate: app_delegate_instance];
     // Last Route: setActivationPolicy: arrived in 10.6. On 10.5 an app started from its bundle is a regular app already.
@@ -1596,6 +1604,16 @@ where
     msg_send_![window, orderFront: nil];
     let () = msg_send![window, makeKeyAndOrderFront: nil];
 
+    // Last Route: on OS X 10.6 the setView: above comes too early (the view is not in a window on screen yet): the
+    // system logs "invalid drawable", the context stays attached to nothing and the window stays white while the
+    // game draws (seen on a Mac Pro 3,1). Attach it again now that the window is up.
+    #[cfg(lr_macos_legacy)]
+    if conf.platform.apple_gfx_api == AppleGfxApi::OpenGl {
+        msg_send_![display.gl_context, setView: view];
+        msg_send_![display.gl_context, update];
+        msg_send_![display.gl_context, makeCurrentContext];
+    }
+
     let () = msg_send![ns_app, finishLaunching];
 
     // Found this here: https://github.com/kovidgoyal/kitty/issues/6341#issuecomment-1578348104
@@ -1624,6 +1642,13 @@ where
     };
     let mut done = false;
     while !(done || crate::native_display().lock().unwrap().quit_ordered) {
+        // Last Route: one autorelease pool a turn of the loop. Without one, every object AppKit autoreleases is
+        // leaked (OS X 10.6 logs each one: about a thousand lines in a 20 second run).
+        #[cfg(lr_macos_legacy)]
+        let loop_pool: ObjcId = {
+            let pool = msg_send_![class!(NSAutoreleasePool), alloc];
+            msg_send_![pool, init]
+        };
 
         // Wait at the top for just in time rendering
         if let Some(frame_pacer) = frame_pacer.as_ref() {
@@ -1668,6 +1693,8 @@ where
             perform_redraw(&mut display, conf.platform.apple_gfx_api, false);
         }
 
+        #[cfg(lr_macos_legacy)]
+        msg_send_![loop_pool, drain];
     }
 }
 
