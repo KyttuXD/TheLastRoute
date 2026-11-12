@@ -10,6 +10,8 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: "1.99.1"
+  CARGO_BUILD_JOBS: "4"
+  MACOSX_DEPLOYMENT_TARGET: "10.12"
 
 jobs:
   macos-intel:
@@ -26,6 +28,34 @@ jobs:
         env:
           ARCHS: x86_64-apple-darwin
         run: sh packaging/macos/build_app.sh
+      - name: Verify Intel binary and bundle deployment targets
+        shell: bash
+        run: |
+          app="dist/intel/KYTTU The Last Route.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 10.12
+          lipo -verify_arch x86_64 "$app/Contents/MacOS/last_route"
+          xcrun vtool -show-build "$app/Contents/MacOS/last_route" | tee /tmp/last-route-build-version.txt
+          grep -Eq '(minos|version)[[:space:]]+10\.12(\.0)?([[:space:]]|$)' /tmp/last-route-build-version.txt
+      - name: Compile native unit tests
+        run: cargo test --locked --no-run --lib --bin last_route --target x86_64-apple-darwin --message-format=json > test-executables.jsonl
+      - name: Run native unit test executables
+        run: |
+          python3 - <<'PY'
+          import json
+          import subprocess
+          executables = set()
+          with open('test-executables.jsonl') as stream:
+              for line in stream:
+                  event = json.loads(line)
+                  if event.get('reason') == 'compiler-artifact' and event.get('profile', {}).get('test') and event.get('executable'):
+                      executables.add(event['executable'])
+          assert executables, 'No native test executables found'
+          for executable in sorted(executables):
+              subprocess.run([executable, '--test-threads=4'], check=True)
+          PY
+      - name: Run headless gameplay suites on Intel macOS
+        run: |
+          target/x86_64-apple-darwin/release/last_route --headless --test-suite "tests/*.json" --out target/test-reports/macos-intel-suite.json
       - name: Package Intel app
         run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
       - uses: actions/upload-artifact@v4
