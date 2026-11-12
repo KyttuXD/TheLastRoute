@@ -17,6 +17,11 @@ pub(crate) fn symbol_alias(name: &[u8]) -> Option<&'static [u8]> {
         b"glDeleteRenderbuffers" => b"glDeleteRenderbuffersEXT\0",
         b"glRenderbufferStorage" => b"glRenderbufferStorageEXT\0",
         b"glGenerateMipmap" => b"glGenerateMipmapEXT\0",
+        // present on OS X 10.6's OpenGL 2.1 under these names only (asked of a Mac Pro 3,1's OpenGL framework)
+        b"glDrawArraysInstanced" => b"glDrawArraysInstancedARB\0",
+        b"glDrawElementsInstanced" => b"glDrawElementsInstancedARB\0",
+        b"glVertexAttribDivisor" => b"glVertexAttribDivisorARB\0",
+        b"glVertexAttribIPointer" => b"glVertexAttribIPointerEXT\0",
         _ => return None,
     })
 }

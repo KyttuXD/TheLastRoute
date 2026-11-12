@@ -1617,6 +1617,11 @@ impl RenderingBackend for GlContext {
         if let Some(v) = depth {
             bits |= GL_DEPTH_BUFFER_BIT;
             unsafe {
+                // Last Route: glClearDepthf arrived with OpenGL 4.1; the old Macs' OpenGL 2.1 has glClearDepth only
+                // (found on a Mac Pro 3,1: the first render pass panicked on the missing function).
+                #[cfg(lr_macos_legacy)]
+                glClearDepth(v as _);
+                #[cfg(not(lr_macos_legacy))]
                 glClearDepthf(v);
             }
         }
