@@ -90,7 +90,13 @@ whether it runs on 10.6.8 is unknown. If it does not, the legacy build needs its
 ## Remaining work
 
 - Verify the patched runtime on real 10.6.8; modern GitHub macOS runners cannot do this.
-- Get the `runtime` job's game build green (the pins above are in; `ring` and the game crate are next).
+- Get the `runtime` job's game build green. Run 43158564186 (2026-11-12): the `renderer` job passes, and with the
+  pins every dependency builds with the Darwin 10 compiler, `ring` included. The game crate then fails on two things:
+  - `macroquad` 0.4.13 is too old for the game (`render_target_ex`, `RenderTargetParams`, `Camera3D::z_near/z_far`,
+    `get_dropped_files`, `set_frame_pacer`). It needs 0.4.14 or newer with the `size_of` imports added (4 errors
+    under 1.77), as a patched copy in the staged build.
+  - The game uses language features newer than 1.77: inline `const { }` blocks (`render/draw_stats.rs`) and
+    `Waker::noop` (`audio/engine.rs`, `shared/file_pick.rs`).
 - Package that build as its own `.app` (LSMinimumSystemVersion 10.6) once it links.
 - Verify the legacy renderer and remaining platform calls on Snow Leopard.
 - Audit linked Apple frameworks, audio, file dialogs and TLS dependencies.
