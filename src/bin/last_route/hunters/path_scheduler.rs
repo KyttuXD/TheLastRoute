@@ -342,7 +342,7 @@ fn descend(fac: &Facility, dist: &[f32], start: Cell, to: Cell, gates: &[Cell], 
                 continue;
             }
             let cand = dn + step_len(dx, dy) * enter_cost(water, n);
-            if best.is_none_or(|(b, _)| cand < b) {
+            if best.map_or(true, |(b, _)| cand < b) {
                 best = Some((cand, n));
             }
         }

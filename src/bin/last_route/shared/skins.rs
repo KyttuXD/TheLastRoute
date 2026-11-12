@@ -782,7 +782,7 @@ pub fn fetch_skin_bytes(cfg: &SkinConfig, backend_base: &str, id: &str) -> Resul
     let limit = read_limit();
     let mut why: Option<String> = None;
     let mut note = |text: String| {
-        if why.as_ref().is_none_or(|old| old.ends_with("404")) {
+        if why.as_ref().map_or(true, |old| old.ends_with("404")) {
             why = Some(text);
         }
     };

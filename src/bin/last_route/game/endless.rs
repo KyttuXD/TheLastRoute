@@ -2070,7 +2070,7 @@ impl Game {
     /// sight finds: the runner begins in it, and the map should not open on a blank.
     fn reveal_start_room(&mut self) {
         // level 0 only: the sewer and the Inferno start with what the line of sight finds, as before
-        if self.inf.as_ref().is_none_or(|i| i.level != 0) {
+        if self.inf.as_ref().map_or(true, |i| i.level != 0) {
             return;
         }
         let Some(sz) = self.fac.safe_zone else { return };
@@ -3409,7 +3409,7 @@ mod tests {
                 continue;
             }
             let d = pdist(s.cell.center(), at);
-            if best.is_none_or(|(_, b)| d < b) {
+            if best.map_or(true, |(_, b)| d < b) {
                 best = Some((i, d));
             }
         }

@@ -2578,7 +2578,7 @@ impl Brain {
     fn can_reach(&self, fac: &Facility, p: (f32, f32)) -> bool {
         // a search the budget deferred counts as reachable until it is answered (a walk that cannot get there gives up)
         let priority = self.plan_priority(p);
-        self.grid_route(fac, cell_of(p), priority, false).is_none_or(|route| !route.is_empty())
+        self.grid_route(fac, cell_of(p), priority, false).map_or(true, |route| !route.is_empty())
     }
 
     /// The hiding spot whose centre is nearest the last sighting, when it is within `reach` and a route leads to it.

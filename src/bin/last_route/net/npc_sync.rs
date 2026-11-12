@@ -119,7 +119,7 @@ fn flag(state: &Map<String, Value>, key: &str) -> bool {
 impl NpcSync {
     /// Host: whether a round of places is due (every [`NPC_SEND_EVERY`]). The host builds the wire states only then.
     pub fn due(&self, now: Instant) -> bool {
-        self.last_send.is_none_or(|t| now.duration_since(t) >= NPC_SEND_EVERY)
+        self.last_send.map_or(true, |t| now.duration_since(t) >= NPC_SEND_EVERY)
     }
 
     /// Host: a remove for each NPC the last call named that is gone now (sent every frame, due or not), from the ids of the

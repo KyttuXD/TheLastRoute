@@ -48,6 +48,13 @@ Downloads are SHA-256 checked and extracted into a private runner directory;
 there is no system installation. It compiles and executes the standalone probe
 automatically. Modern-host success still does not establish 10.6.8 execution.
 
+After the runtime probe, CI attempts a real game build with that legacy compiler.
+It resolves a separate dependency graph in a disposable `git archive` source
+copy using MSRV-aware Cargo resolution, then builds with the matching legacy
+Cargo. The checkout's release manifests and lockfile are hash-checked for
+changes. No experimental executable is packaged or labeled 10.6.8-compatible
+until the remaining compiler and runtime issues are resolved.
+
 The standalone runtime probe is also available for developer investigation; it
 is not a prerequisite imposed on players. The deliverable must be a self-contained
 game, not a requirement for players to install Rust or MacPorts.

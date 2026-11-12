@@ -16,6 +16,9 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
       - name: Fetch checked Darwin 10 compiler and compatibility library
         run: sh packaging/macos/legacy/bootstrap-runtime.sh "$RUNNER_TEMP/lr-snow-runtime"
       - name: Compile and exercise patched runtime
@@ -32,9 +35,22 @@ jobs:
           otool -l "$root/runtime-probe" | tee runtime-probe-load-commands.txt
           "$root/runtime-probe" | tee runtime-probe-result.txt
           echo 'This validates a patched runtime on the CI host, not execution of the game on 10.6.8.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Attempt isolated legacy-compiler game build
+        shell: bash
+        run: |
+          set -o pipefail
+          rustup toolchain install 1.77.0 --profile minimal --no-self-update
+          shasum -a 256 Cargo.toml Cargo.lock > release-manifests-before.txt
+          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee legacy-game-build.txt
+      - name: Verify normal release manifests were not changed
+        if: always()
+        run: test ! -f release-manifests-before.txt || shasum -a 256 --check release-manifests-before.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: snow-leopard-runtime-investigation-reports
-          path: runtime-probe-*.txt
+          path: |
+            runtime-probe-*.txt
+            legacy-game-build.txt
+            target/test-reports/snow-leopard-dependencies.lock
           if-no-files-found: warn

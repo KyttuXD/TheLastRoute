@@ -200,7 +200,7 @@ impl Game {
                 if !sight_to_cell(|x, z| self.fac.is_floor(x, z), self.p.pos, (base.0 + c.x, base.1 + c.y)) {
                     continue;
                 }
-                if best.is_none_or(|b| d < b.0) {
+                if best.map_or(true, |b| d < b.0) {
                     best = Some((d, n, need));
                 }
             }
