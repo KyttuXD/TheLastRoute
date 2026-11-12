@@ -1,6 +1,6 @@
 # Experimental Intel OS X 10.6.8 (Snow Leopard) port: docs/MACOS_SNOW_LEOPARD.md.
 # Manual only (Actions > macos-legacy > Run workflow), so it adds no check to pushes and pull requests.
-# The runtime job publishes its UNTESTED 10.6 app to the rolling "nightly-legacy" pre-release (run from main only),
+# The runtime job publishes the legacy app (one program for OS X 10.5 to 10.11) to the rolling "nightly-legacy" pre-release (run from main only),
 # next to the PowerPC Linux builds of powerpc.yml, for a real Snow Leopard Mac to try.
 name: macos-legacy
 on:
@@ -79,35 +79,27 @@ jobs:
           otool -L "$root/runtime-probe" | tee runtime-probe-libraries.txt
           otool -l "$root/runtime-probe" > runtime-probe-load-commands.txt
           "$root/runtime-probe" | tee runtime-probe-result.txt
-      - name: Game build with the Darwin 10 compiler
+      # One legacy app for OS X 10.5 to 10.11: built for 10.5 (Leopard), the system the Mac Pro 3,1 shipped with.
+      - name: Legacy game build (OS X 10.5 and later)
         shell: bash
         run: |
           set -o pipefail
           rustup toolchain install 1.77.0 --profile minimal --no-self-update
-          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee legacy-game-build.txt
-      # OS X 10.5 (Leopard), the system the Mac Pro 3,1 shipped with. An attempt: it may fail without failing the job.
-      - name: Leopard (10.5) game build attempt
-        id: leopard
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          sh packaging/macos/legacy/bootstrap-leopard.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee leopard-bootstrap.txt
-          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 10.5 2>&1 | tee leopard-game-build.txt
+          sh packaging/macos/legacy/bootstrap-leopard.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee legacy-bootstrap.txt
+          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 10.5 2>&1 | tee legacy-game-build.txt
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: macos-legacy-runtime-reports
           path: |
             runtime-probe-*.txt
-            legacy-game-build.txt
-            leopard-*.txt
+            legacy-*.txt
             target/test-reports/legacy-*
-            dist/last_route-macos-10.*-UNTESTED.zip
+            dist/last_route-macos-legacy.zip
           retention-days: 3
           if-no-files-found: warn
       - name: Publish to nightly-legacy
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-macos-10.*-UNTESTED.zip
+        run: sh packaging/nightly.sh dist/last_route-macos-legacy.zip

@@ -516,7 +516,6 @@ mod imp {
         }))
     }
 
-    #[cfg(not(lr_macos_legacy))]
     pub fn open(kind: &str, multiple: bool, directory: bool) -> Result<u32, String> {
         if !available() {
             return Err(NO_CHOOSER.to_string());
@@ -525,11 +524,112 @@ mod imp {
         Ok(REGISTRY.with(|r| r.borrow_mut().open_with(directory, Box::new(move || real_dialog(kind, multiple, directory)))))
     }
 
-    /// The old-Mac build (OS X 10.6 and lower) has no chooser: the `rfd` crate needs system calls from 10.7 and is
-    /// left out of that build (packaging/macos/legacy/stage-dependencies.sh).
+    /// The old-Mac build's dialog (OS X 10.5 and up): AppKit's own open panel, asked through the Objective-C runtime
+    /// with calls that exist since 10.5. The `rfd` crate needs system calls from 10.7 and is left out of that build
+    /// (packaging/macos/legacy/stage-dependencies.sh). The panel runs modally: the old systems draw the GL view
+    /// without a layer, so the nested loop that aborted the game on current systems (see above) does no harm there.
     #[cfg(lr_macos_legacy)]
-    pub fn open(_kind: &str, _multiple: bool, _directory: bool) -> Result<u32, String> {
-        Err(NO_CHOOSER.to_string())
+    fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
+        let mut answer = Some(legacy_panel(&extensions_of(&kind), multiple, directory, start_dir()));
+        Dialog(Box::new(move || answer.take().or(Some(None))))
+    }
+
+    #[cfg(lr_macos_legacy)]
+    fn legacy_panel(exts: &[String], multiple: bool, directory: bool, start: Option<PathBuf>) -> Option<Vec<PathBuf>> {
+        use core::ffi::{c_char, c_long, c_void};
+        use std::ffi::{CStr, CString};
+        type Id = *mut c_void;
+        #[link(name = "objc")]
+        extern "C" {
+            fn objc_getClass(name: *const c_char) -> Id;
+            fn sel_registerName(name: *const c_char) -> Id;
+            fn objc_msgSend();
+        }
+        // `objc_msgSend` is called through a pointer typed to each call's signature (app/pacing.rs does the same)
+        type Msg0 = unsafe extern "C" fn(Id, Id) -> Id;
+        type Msg1 = unsafe extern "C" fn(Id, Id, Id) -> Id;
+        type MsgBool = unsafe extern "C" fn(Id, Id, i8);
+        type MsgLong = unsafe extern "C" fn(Id, Id) -> c_long;
+        type MsgAt = unsafe extern "C" fn(Id, Id, std::ffi::c_ulong) -> Id;
+        type MsgCStr = unsafe extern "C" fn(Id, Id, *const c_char) -> Id;
+        type MsgResponds = unsafe extern "C" fn(Id, Id, Id) -> i8;
+        unsafe {
+            let raw = objc_msgSend as *const ();
+            let (m0, m1, mb, ml, mat, mc, mr): (Msg0, Msg1, MsgBool, MsgLong, MsgAt, MsgCStr, MsgResponds) = (
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+                std::mem::transmute(raw),
+            );
+            let sel = |name: &str| {
+                let c = CString::new(name).expect("a selector has no NUL");
+                sel_registerName(c.as_ptr())
+            };
+            let class = |name: &str| {
+                let c = CString::new(name).expect("a class name has no NUL");
+                objc_getClass(c.as_ptr())
+            };
+            let nsstring = |text: &str| -> Id {
+                let c = CString::new(text.replace('\0', "")).expect("NUL removed");
+                mc(class("NSString"), sel("stringWithUTF8String:"), c.as_ptr())
+            };
+            let responds = |object: Id, name: &str| mr(object, sel("respondsToSelector:"), sel(name)) != 0;
+            let panel_class = class("NSOpenPanel");
+            if panel_class.is_null() {
+                return None;
+            }
+            let panel = m0(panel_class, sel("openPanel"));
+            if panel.is_null() {
+                return None;
+            }
+            mb(panel, sel("setCanChooseFiles:"), i8::from(!directory));
+            mb(panel, sel("setCanChooseDirectories:"), i8::from(directory));
+            mb(panel, sel("setAllowsMultipleSelection:"), i8::from(multiple));
+            if !exts.is_empty() && !directory {
+                let types = m0(class("NSMutableArray"), sel("array"));
+                for e in exts {
+                    m1(types, sel("addObject:"), nsstring(e));
+                }
+                m1(panel, sel("setAllowedFileTypes:"), types);
+            }
+            if let Some(dir) = start.as_ref().and_then(|d| d.to_str()) {
+                if responds(panel, "setDirectory:") {
+                    m1(panel, sel("setDirectory:"), nsstring(dir));
+                }
+            }
+            // NSOKButton / NSModalResponseOK is 1
+            if ml(panel, sel("runModal")) != 1 {
+                return None;
+            }
+            // `filenames` is the 10.5 call; later systems that dropped it answer to `URLs`
+            let (list, are_urls) = if responds(panel, "filenames") {
+                (m0(panel, sel("filenames")), false)
+            } else {
+                (m0(panel, sel("URLs")), true)
+            };
+            if list.is_null() {
+                return None;
+            }
+            let count = ml(list, sel("count")).max(0) as std::ffi::c_ulong;
+            let mut out = Vec::new();
+            for i in 0..count {
+                let mut item = mat(list, sel("objectAtIndex:"), i);
+                if are_urls && !item.is_null() {
+                    item = m0(item, sel("path"));
+                }
+                if item.is_null() {
+                    continue;
+                }
+                let text = m0(item, sel("UTF8String")) as *const c_char;
+                if !text.is_null() {
+                    out.push(PathBuf::from(CStr::from_ptr(text).to_string_lossy().into_owned()));
+                }
+            }
+            (!out.is_empty()).then_some(out)
+        }
     }
 }
 

@@ -707,16 +707,67 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
         }
     }
 
-    // Last Route: the legacy build takes no file drops. NSPasteboardTypeFileURL (10.13) is a data symbol the old
-    // systems' AppKit does not have, and a program that asks for it does not start there.
+    // Last Route: the legacy build takes file drops through NSFilenamesPboardType, which every system since 10.0
+    // has. NSPasteboardTypeFileURL (10.13) is a data symbol the old systems' AppKit does not have (a program that
+    // asks for it does not start there), and readObjectsForClasses:options: is 10.6.
     #[cfg(lr_macos_legacy)]
-    extern "C" fn dragging_entered(_this: &Object, _sel: Sel, _sender: ObjcId) -> NSDragOperation {
-        NSDragOperation::None
+    extern "C" fn dragging_entered(_this: &Object, _sel: Sel, sender: ObjcId) -> NSDragOperation {
+        unsafe {
+            let pasteboard: ObjcId = msg_send![sender, draggingPasteboard];
+            let file_types: ObjcId =
+                msg_send![class!(NSArray), arrayWithObject: NSFilenamesPboardType];
+            let matched_type: ObjcId = msg_send![pasteboard, availableTypeFromArray: file_types];
+            if matched_type != nil {
+                NSDragOperation::Copy
+            } else {
+                NSDragOperation::None
+            }
+        }
     }
 
     #[cfg(lr_macos_legacy)]
-    extern "C" fn perform_drag_operation(_this: &Object, _sel: Sel, _sender: ObjcId) -> BOOL {
-        NO
+    extern "C" fn perform_drag_operation(this: &Object, _sel: Sel, sender: ObjcId) -> BOOL {
+        let payload = get_window_payload(this);
+
+        unsafe {
+            let pasteboard: ObjcId = msg_send![sender, draggingPasteboard];
+            // an NSArray of NSString paths
+            let names: ObjcId = msg_send![pasteboard, propertyListForType: NSFilenamesPboardType];
+            if names == nil {
+                return NO;
+            }
+
+            let count: usize = msg_send![names, count];
+            let mut d = native_display().lock().unwrap();
+            d.dropped_files = Default::default();
+
+            for i in 0..count {
+                let path_nsstring: ObjcId = msg_send![names, objectAtIndex: i];
+                if path_nsstring == nil {
+                    continue;
+                }
+                let path = std::path::PathBuf::from(nsstring_to_string(path_nsstring));
+                if let Ok(bytes) = std::fs::read(&path) {
+                    d.dropped_files.paths.push(path);
+                    d.dropped_files.bytes.push(bytes);
+                }
+            }
+
+            let has_dropped_files = !d.dropped_files.paths.is_empty();
+
+            // Drop the native display lock before invoking user callbacks.
+            drop(d);
+
+            if !has_dropped_files {
+                return NO;
+            }
+
+            if let Some(event_handler) = payload.context() {
+                event_handler.files_dropped_event();
+            }
+
+            YES
+        }
     }
 
     #[cfg(not(lr_macos_legacy))]
@@ -1504,6 +1555,12 @@ where
     {
         let dragged_types: ObjcId =
             msg_send![class!(NSArray), arrayWithObject: NSPasteboardTypeFileURL];
+        let () = msg_send![view, registerForDraggedTypes: dragged_types];
+    }
+    #[cfg(lr_macos_legacy)]
+    {
+        let dragged_types: ObjcId =
+            msg_send![class!(NSArray), arrayWithObject: NSFilenamesPboardType];
         let () = msg_send![view, registerForDraggedTypes: dragged_types];
     }
 

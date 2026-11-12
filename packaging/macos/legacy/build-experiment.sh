@@ -3,10 +3,12 @@
 set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel)
 TOOLCHAIN=${1:?usage: build-experiment.sh BOOTSTRAP_DIRECTORY [10.6|10.5]}
-# The system to build for: 10.6 (Snow Leopard, the default) or 10.5 (Leopard; needs bootstrap-leopard.sh run first).
-# The 10.5 build uses the same compiler program with the standard library MacPorts built for Darwin 9 and a
-# compatibility library built for 10.5; the compiler itself still runs with the Darwin 10 library.
-OSVER=${2:-10.6}
+# The system to build for: 10.5 (Leopard, the default; needs bootstrap-leopard.sh run first) or 10.6.
+# The 10.5 build is THE legacy app: one program for OS X 10.5 up to 10.11. It uses the same compiler program with the
+# standard library MacPorts built for Darwin 9 and a compatibility library built for 10.5; the compiler itself still
+# runs with the Darwin 10 library. The 10.6 target is kept for comparison only and does not run on 10.6: the current
+# linker writes it in the LC_MAIN program format, which arrived in 10.8 (seen on a Mac Pro 3,1: it dies in dyld).
+OSVER=${2:-10.5}
 case "$OSVER" in
     10.6) COMPILER="$TOOLCHAIN/compiler"; SUPPORT="$TOOLCHAIN/support/opt/local/lib" ;;
     10.5) COMPILER="$TOOLCHAIN/compiler-leopard"; SUPPORT="$TOOLCHAIN/support-leopard/opt/local/lib" ;;
@@ -50,7 +52,17 @@ if ! head -n 1 "$ROOT/target/test-reports/legacy-$OSVER-imports.txt" | grep -q F
     echo "the program is not linked with a flat namespace: it would not find the compatibility library's functions" >&2
     exit 1
 fi
-APP="$ROOT/dist/legacy-$OSVER/KYTTU The Last Route ($OSVER test).app"
+# the program format must be the old one (LC_UNIXTHREAD, load command 5): OS X before 10.8 cannot start LC_MAIN
+python3 -c 'import struct,sys;d=open(sys.argv[1],"rb").read();n=struct.unpack_from("<I",d,16)[0];o=32;c=[]
+for _ in range(n):
+    k,s=struct.unpack_from("<II",d,o);c.append(k);o+=s
+print("program format:", "LC_UNIXTHREAD (runs on 10.5+)" if 5 in c else "LC_MAIN (needs 10.8+)")' "$BIN" | tee "$ROOT/target/test-reports/legacy-$OSVER-format.txt"
+if [ "$OSVER" = 10.5 ] && ! grep -q LC_UNIXTHREAD "$ROOT/target/test-reports/legacy-$OSVER-format.txt"; then
+    echo "the legacy program is in a format OS X 10.5 to 10.7 cannot start" >&2
+    exit 1
+fi
+if [ "$OSVER" = 10.5 ]; then NAME=legacy; else NAME=$OSVER; fi
+APP="$ROOT/dist/legacy-$OSVER/KYTTU The Last Route ($NAME).app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/last_route"
@@ -60,5 +72,5 @@ install_name_tool -change /opt/local/lib/libMacportsLegacySystem.B.dylib \
     @executable_path/libMacportsLegacySystem.B.dylib "$APP/Contents/MacOS/last_route"
 sed '/<key>LSMinimumSystemVersion<\/key>/{n;s#<string>[^<]*</string>#<string>'"$OSVER"'</string>#;}' \
     "$ROOT/packaging/macos/Info.plist" > "$APP/Contents/Info.plist"
-(cd "$ROOT/dist/legacy-$OSVER" && zip -qry "../last_route-macos-$OSVER-UNTESTED.zip" "$(basename "$APP")")
-echo "Built dist/last_route-macos-$OSVER-UNTESTED.zip. It has never run on OS X $OSVER: graphics, audio and TLS are unverified."
+(cd "$ROOT/dist/legacy-$OSVER" && zip -qry "../last_route-macos-$NAME.zip" "$(basename "$APP")")
+echo "Built dist/last_route-macos-$NAME.zip for OS X $OSVER and later."

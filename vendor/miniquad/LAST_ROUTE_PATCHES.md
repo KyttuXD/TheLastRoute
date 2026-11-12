@@ -62,8 +62,9 @@ GL / WebGL fix (all GL targets, wasm included):
 Old systems (legacy build only, `cfg(lr_macos_legacy)`; found by reading, then on a Mac Pro 3,1):
 
 9. `src/native/macos.rs` and `src/native/apple/frameworks.rs`: calls that OS X 10.6 or 10.5 do not have are left out
-   or asked for first. File drops are off (`NSPasteboardTypeFileURL` is a 10.13 data symbol, and a program that asks
-   for it does not start on an older AppKit; `readObjectsForClasses:options:` is 10.6). `NSRunningApplication` (10.6)
+   or asked for first. File drops go through `NSFilenamesPboardType` and `propertyListForType:` (every system since
+   10.0): `NSPasteboardTypeFileURL` is a 10.13 data symbol, and a program that asks for it does not start on an
+   older AppKit; `readObjectsForClasses:options:` is 10.6. `NSRunningApplication` (10.6)
    is replaced by `-[NSApplication activateIgnoringOtherApps:]` and `NSProcessInfo.processName`.
    `setActivationPolicy:` and `-[NSImage initWithCGImage:size:]` (both 10.6) are called only when the system answers
    to them (this check is in every build; it is always true on a current system). The unused `ImageIO` framework link

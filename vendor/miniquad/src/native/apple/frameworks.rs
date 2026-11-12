@@ -116,6 +116,8 @@ extern "C" {
     pub static NSPasteboardURLReadingFileURLsOnlyKey: ObjcId;
     pub static NSTrackingArea: ObjcId;
     pub static NSStringPboardType: ObjcId;
+    /// Last Route: the pasteboard type of dropped file paths on every system since 10.0 (the legacy build's drops).
+    pub static NSFilenamesPboardType: ObjcId;
     pub static NSPasteboardTypeFileURL: ObjcId;
 }
 
