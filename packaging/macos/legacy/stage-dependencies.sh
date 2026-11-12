@@ -13,6 +13,9 @@ fi
 MANIFEST="$STAGE/Cargo.toml"
 # winresource (Windows icon step) pulls edition-2024 toml crates, which Cargo 1.77 cannot read even when unused.
 sed -i.bak '/^winresource = /d' "$MANIFEST" && rm "$MANIFEST.bak"
+# rfd (the file chooser) needs Objective-C runtime calls and block symbols from OS X 10.7; a program that asks for
+# them does not start on 10.6 or 10.5. The legacy build has no chooser (shared/file_pick.rs).
+sed -i.bak '/^rfd = /d' "$MANIFEST" && rm "$MANIFEST.bak"
 # The repo vendors macroquad 0.4.16 (vendor/macroquad), which needs Rust 1.82. Drop that patch line here; 0.4.14
 # from crates.io is staged below instead, with the same atlas fix.
 sed -i.bak '/^macroquad = { path = "vendor\/macroquad" }$/d' "$MANIFEST" && rm "$MANIFEST.bak"

@@ -365,10 +365,20 @@ pub fn define_app_delegate() -> *const Class {
             let activated: bool = *this.get_ivar("activated");
             if !activated {
                 this.set_ivar("activated", true);
-                let ns_app: ObjcId = msg_send![class!(NSRunningApplication), currentApplication];
-                let options =
-                    NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps;
-                msg_send_![ns_app, activateWithOptions: options];
+                // Last Route: NSRunningApplication arrived in 10.6; the legacy build asks NSApplication itself.
+                #[cfg(lr_macos_legacy)]
+                {
+                    let ns_app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
+                    let () = msg_send![ns_app, activateIgnoringOtherApps: YES];
+                }
+                #[cfg(not(lr_macos_legacy))]
+                {
+                    let ns_app: ObjcId =
+                        msg_send![class!(NSRunningApplication), currentApplication];
+                    let options =
+                        NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps;
+                    msg_send_![ns_app, activateWithOptions: options];
+                }
             }
         }
     }
@@ -697,6 +707,19 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
         }
     }
 
+    // Last Route: the legacy build takes no file drops. NSPasteboardTypeFileURL (10.13) is a data symbol the old
+    // systems' AppKit does not have, and a program that asks for it does not start there.
+    #[cfg(lr_macos_legacy)]
+    extern "C" fn dragging_entered(_this: &Object, _sel: Sel, _sender: ObjcId) -> NSDragOperation {
+        NSDragOperation::None
+    }
+
+    #[cfg(lr_macos_legacy)]
+    extern "C" fn perform_drag_operation(_this: &Object, _sel: Sel, _sender: ObjcId) -> BOOL {
+        NO
+    }
+
+    #[cfg(not(lr_macos_legacy))]
     extern "C" fn dragging_entered(_this: &Object, _sel: Sel, sender: ObjcId) -> NSDragOperation {
         unsafe {
             let pasteboard: ObjcId = msg_send![sender, draggingPasteboard];
@@ -711,6 +734,7 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
         }
     }
 
+    #[cfg(not(lr_macos_legacy))]
     extern "C" fn perform_drag_operation(this: &Object, _sel: Sel, sender: ObjcId) -> BOOL {
         let payload = get_window_payload(this);
 
@@ -1254,10 +1278,18 @@ unsafe fn set_icon(ns_app: ObjcId, icon: &Icon) {
         width: width as f64,
         height: height as f64,
     };
-    let ns_image: ObjcId = msg_send![class!(NSImage), alloc];
-    let () = msg_send![ns_image, initWithCGImage: image size: size];
+    // Last Route: -[NSImage initWithCGImage:size:] arrived in 10.6. On an older system the Dock keeps the bundle's
+    // own icon.
+    let has_init: BOOL = msg_send![
+        class!(NSImage),
+        instancesRespondToSelector: sel!(initWithCGImage:size:)
+    ];
+    if has_init != NO {
+        let ns_image: ObjcId = msg_send![class!(NSImage), alloc];
+        let () = msg_send![ns_image, initWithCGImage: image size: size];
 
-    let () = msg_send![ns_app, setApplicationIconImage: ns_image];
+        let () = msg_send![ns_app, setApplicationIconImage: ns_image];
+    }
     CGDataProviderRelease(provider);
     CGColorSpaceRelease(rgb);
     CGImageRelease(image);
@@ -1283,7 +1315,15 @@ unsafe fn initialize_menu_bar(ns_app: ObjcId) {
     // It uses NSRunningApplication.localizedName, which will try to use the localized name,
     //  and will go through a chain of fallbacks based on what name strings are set in
     //  the Application bundle files, ending with the executable name.
+    // (Last Route: the legacy build asks NSProcessInfo, which every system has; NSRunningApplication is 10.6.)
+    #[cfg(lr_macos_legacy)]
+    let application_name = {
+        let info = msg_send_![class!(NSProcessInfo), processInfo];
+        msg_send_![info, processName]
+    };
+    #[cfg(not(lr_macos_legacy))]
     let running_application = msg_send_![class!(NSRunningApplication), currentApplication];
+    #[cfg(not(lr_macos_legacy))]
     let application_name = msg_send_![running_application, localizedName];
     let quit_item_title =
         str_to_nsstring(&format!("Quit {}", nsstring_to_string(application_name)));
@@ -1397,11 +1437,15 @@ where
 
     let ns_app: ObjcId = msg_send![class!(NSApplication), sharedApplication];
     let () = msg_send![ns_app, setDelegate: app_delegate_instance];
-    let () = msg_send![
-        ns_app,
-        setActivationPolicy: NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular
-            as i64
-    ];
+    // Last Route: setActivationPolicy: arrived in 10.6. On 10.5 an app started from its bundle is a regular app already.
+    let has_policy: BOOL = msg_send![ns_app, respondsToSelector: sel!(setActivationPolicy:)];
+    if has_policy != NO {
+        let () = msg_send![
+            ns_app,
+            setActivationPolicy: NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular
+                as i64
+        ];
+    }
 
     if let Some(icon) = &conf.icon {
         set_icon(ns_app, icon);
@@ -1456,9 +1500,12 @@ where
     (*view).set_ivar("display_ptr", &mut display as *mut _ as *mut c_void);
 
     // Tell the view to accept file drops. Without this, dragging files onto the window will do nothing.
-    let dragged_types: ObjcId =
-        msg_send![class!(NSArray), arrayWithObject: NSPasteboardTypeFileURL];
-    let () = msg_send![view, registerForDraggedTypes: dragged_types];
+    #[cfg(not(lr_macos_legacy))]
+    {
+        let dragged_types: ObjcId =
+            msg_send![class!(NSArray), arrayWithObject: NSPasteboardTypeFileURL];
+        let () = msg_send![view, registerForDraggedTypes: dragged_types];
+    }
 
     display.window = window;
     display.view = view;

@@ -95,6 +95,8 @@ extern "C" {
     pub fn NSLog(fmt: ObjcId, ...);
 }
 
+// Last Route: nothing here is called, and old systems have no top-level ImageIO framework to load.
+#[cfg(not(lr_macos_legacy))]
 #[link(name = "ImageIO", kind = "framework")]
 extern "C" {
     pub static kUTTypePNG: ObjcId;

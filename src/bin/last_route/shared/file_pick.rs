@@ -489,6 +489,7 @@ mod imp {
     /// is shown without a nested run loop, so nothing is drawn from inside the GL view's display (macOS: a sheet on the
     /// main window; Windows and Linux: the dialog runs on a thread of its own). A synchronous `pick_file` on macOS runs
     /// AppKit's modal loop inside the frame callback, which aborted the game in `CA::Transaction::commit`.
+    #[cfg(not(lr_macos_legacy))]
     fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
         use std::future::Future;
         use std::pin::Pin;
@@ -515,12 +516,20 @@ mod imp {
         }))
     }
 
+    #[cfg(not(lr_macos_legacy))]
     pub fn open(kind: &str, multiple: bool, directory: bool) -> Result<u32, String> {
         if !available() {
             return Err(NO_CHOOSER.to_string());
         }
         let kind = kind.to_string();
         Ok(REGISTRY.with(|r| r.borrow_mut().open_with(directory, Box::new(move || real_dialog(kind, multiple, directory)))))
+    }
+
+    /// The old-Mac build (OS X 10.6 and lower) has no chooser: the `rfd` crate needs system calls from 10.7 and is
+    /// left out of that build (packaging/macos/legacy/stage-dependencies.sh).
+    #[cfg(lr_macos_legacy)]
+    pub fn open(_kind: &str, _multiple: bool, _directory: bool) -> Result<u32, String> {
+        Err(NO_CHOOSER.to_string())
     }
 }
 
