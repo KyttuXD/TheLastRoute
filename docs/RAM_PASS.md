@@ -37,14 +37,51 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
 |---|---|---|---|
 | Baseline | 210 MB | 371 MB | 250 ms |
 | Prop models built on first use (`ModelStore`, `shared/assets.rs`) | 190 MB | 292 MB | 77 ms |
+| Fonts: each file loaded once, unused glyphs emptied, caption face on first use | 165 MB | 248 MB | |
+| Identical embedded model pictures share one texture; mesh tiles and model parts trimmed to size | 165 MB | 240 MB | |
 
 Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
 `Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.
 
+Numbers move by about 6 MB between runs; each row is the middle of two or three.
+
+About 75 MB of every figure is not the game's to save on this PC: the Mesa driver's libraries (libLLVM 46 MB,
+libgallium 14 MB) and the pages of the executable in use.
+
+### Fonts (the largest single find)
+
+fontdue builds every glyph's outline when a font loads, about 4 KB a glyph: a 2400-glyph face (Liberation, Courier
+New) is about 10 MB. The game loaded five (two for the boot card, three in `Assets`), four of them two files twice.
+Now `shared/assets.rs` loads each file once (`system_font`, used by the boot card too), `shared/font_subset.rs`
+empties the outlines outside Latin, punctuation, arrows, maths and box drawing before the font is parsed, and the
+italic caption face loads when a caption is first drawn. Metrics, kerning and glyph numbers are unchanged.
+`LR_FULL_FONTS=1` loads whole fonts (Greek, Cyrillic), at about 8 MB a face.
+
+### Textures
+
+Shrinking the pictures would save almost nothing: every standalone PNG decodes to 3.1 MB in total, and the pictures
+embedded in the models are 128x64 or smaller (two 512x512 spider skins and three 256x256 environment sheets aside).
+The waste was duplication: 1047 models embed a picture and only 207 differ (26.5 MB decoded against 5.3 MB), so
+equal pictures now share one texture (`PropModel::parse`, by content hash), which also joins their draw batches.
+
+### What the heap holds during play (allocation profile, 60 s into a `mixed` stress run, before the last row)
+
+| Owner | Live |
+|---|---|
+| World mesh tiles (`render/mesh_batch.rs::split_into_tiles`) | 51 MB |
+| Fonts (after the change above) | 22 MB |
+| Prop model geometry (`PropModel::parse`) | 18 MB |
+| One font's glyph atlas, 2048x2048 RGBA (macroquad keeps the CPU copy) | 16 MB |
+| The draw batch buffer (`geometry` in `submit`) | 10 MB |
+| Decoded sounds (quad-snd keeps f32 samples) | 9.5 MB |
+| Rig and model parse caches, chunk grids | about 10 MB |
+
+`tools/perf/alloc_prof.rs` is the profiler that made this table (how to use it is in the file).
+
 ## Next, in order of expected gain
 
-- [ ] `Assets::load` still adds about 60 MB (hunter models, the runner body, fonts): measure each and defer what the menu does not draw.
-- [ ] Break down the boot card's 45 to 90 MB (log `rss` around the two `load_font` calls and the bake) and free the boot fonts and bake when the card is gone.
-- [ ] Break down the 160 MB of play: `rss` at run start, after the first window build, and each minute; then the chunk mesh and collision buffers.
+- [ ] World mesh tiles (51 MB): the vertex is 40 bytes (position, UV, colour, a 16-byte normal+mode). Fewer chunks kept around the player, or a smaller vertex, are the two levers; both change rendering code and view distance.
+- [ ] The glyph atlas (16 MB, plus its GPU copy): macroquad stores one-channel glyphs as RGBA and keeps the CPU image. Needs a macroquad patch, or fewer distinct text sizes.
+- [ ] Decoded sounds (9.5 MB): quad-snd holds 32-bit float samples; 16-bit would halve it (a quad-snd patch).
 - [ ] Check that the 110 MB dev executable (32 MB resident) shrinks in the release build, and measure release numbers.
 - [ ] Repeat on the Intel Macs (no `/proc`; use `footprint` or Activity Monitor).

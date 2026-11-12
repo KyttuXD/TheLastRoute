@@ -38,7 +38,7 @@ pub struct Assets {
     pub font: Option<Font>,
     pub title_font: Option<Font>,
     /// Courier New italic: the death moment's caption lines.
-    pub caption_font: Option<Font>,
+    caption_font: std::cell::OnceCell<Option<Font>>,
     /// Runner skin textures by skin id, read from the skin folders when first needed (see [`Assets::skin_texture`] and
     /// `shared/skin_cache.rs`, which holds every decision about them).
     skin_textures: RefCell<SkinCache<Texture2D>>,
@@ -74,7 +74,38 @@ fn load_runner_body() -> Option<Model> {
     Model::parse(text, atlas, &find, Some(crate::config::PLAYER_HEIGHT))
 }
 
-fn system_font(names: &[&str]) -> Option<Font> {
+/// Loads a font from its bytes with the glyphs the game never draws emptied first (`shared/font_subset.rs`): a full
+/// 2400-glyph face costs about 10 MB once parsed. A file the subsetter refuses loads whole.
+fn font_from_bytes(bytes: &[u8]) -> Option<Font> {
+    use crate::shared::font_subset::{subset, wanted};
+    // LR_FULL_FONTS=1: keep every glyph (a mod pack with Greek or Cyrillic text), at about 8 MB a face
+    if std::env::var("LR_FULL_FONTS").as_deref() == Ok("1") {
+        return load_ttf_font_from_bytes(bytes).ok();
+    }
+    match subset(bytes, wanted) {
+        Some(small) => load_ttf_font_from_bytes(&small).ok().or_else(|| load_ttf_font_from_bytes(bytes).ok()),
+        None => load_ttf_font_from_bytes(bytes).ok(),
+    }
+}
+
+thread_local! {
+    /// Fonts already loaded, by file path or embedded name: the boot card and the game ask for the same faces.
+    /// Never dropped: a thread-local's destructor runs after the window and its graphics context are gone, and
+    /// freeing a font's atlas texture then crashes the exit.
+    static FONTS: std::mem::ManuallyDrop<RefCell<HashMap<String, Font>>> = std::mem::ManuallyDrop::new(RefCell::new(HashMap::new()));
+}
+
+fn cached_font(key: &str, bytes: impl FnOnce() -> Option<Vec<u8>>) -> Option<Font> {
+    if let Some(f) = FONTS.with(|c| c.borrow().get(key).cloned()) {
+        return Some(f);
+    }
+    let font = font_from_bytes(&bytes()?)?;
+    FONTS.with(|c| c.borrow_mut().insert(key.to_string(), font.clone()));
+    Some(font)
+}
+
+/// The first of `names` found in the system font folders. Each file is loaded once however often it is asked for.
+pub fn system_font(names: &[&str]) -> Option<Font> {
     let mut dirs: Vec<String> = [
         "C:/Windows/Fonts/",
         "/System/Library/Fonts/Supplemental/",
@@ -95,10 +126,9 @@ fn system_font(names: &[&str]) -> Option<Font> {
     }
     for d in &dirs {
         for n in names {
-            if let Ok(b) = std::fs::read(format!("{d}{n}")) {
-                if let Ok(f) = load_ttf_font_from_bytes(&b) {
-                    return Some(f);
-                }
+            let path = format!("{d}{n}");
+            if let Some(f) = cached_font(&path, || std::fs::read(&path).ok()) {
+                return Some(f);
             }
         }
     }
@@ -109,14 +139,11 @@ fn system_font(names: &[&str]) -> Option<Font> {
 /// asks for Courier New and Impact, which only Windows and macOS have; a platform without them (the browser) draws with
 /// these instead. None when the embedded bytes do not parse.
 fn embedded_font(file: &str) -> Option<Font> {
-    let bytes = embedded::asset(&format!("fonts/{file}"))?;
-    match load_ttf_font_from_bytes(bytes) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            eprintln!("assets: the embedded font {file} did not load ({e:?})");
-            None
-        }
+    let font = cached_font(&format!("embedded:{file}"), || embedded::asset(&format!("fonts/{file}")).map(|b| b.to_vec()));
+    if font.is_none() {
+        eprintln!("assets: the embedded font {file} did not load");
     }
+    font
 }
 
 /// Reads a text file out of a model's folder for a bbmodel that names its atlas by file: the folder itself, else the one
@@ -236,6 +263,17 @@ impl ModelStore {
 }
 
 impl Assets {
+    /// Courier New italic (or its stand-in), loaded the first time a caption is drawn: only the death moment uses it,
+    /// and a parsed face costs several MB.
+    pub fn caption_font(&self) -> Option<&Font> {
+        self.caption_font
+            .get_or_init(|| {
+                system_font(&["couri.ttf", "Courier New Italic.ttf", "Courier_New_Italic.ttf", "LiberationMono-Italic.ttf"])
+                    .or_else(|| embedded_font("LiberationMono-Italic.ttf"))
+            })
+            .as_ref()
+    }
+
     pub fn load(content: &Content) -> Assets {
         let mut walls = HashMap::new();
         let mut floors = HashMap::new();
@@ -323,13 +361,7 @@ impl Assets {
                 "LiberationSans-Bold.ttf",
             ])
             .or_else(|| embedded_font("Anton-Regular.ttf")),
-            caption_font: system_font(&[
-                "couri.ttf",
-                "Courier New Italic.ttf",
-                "Courier_New_Italic.ttf",
-                "LiberationMono-Italic.ttf",
-            ])
-            .or_else(|| embedded_font("LiberationMono-Italic.ttf")),
+            caption_font: std::cell::OnceCell::new(),
             skin_textures: RefCell::new(SkinCache::default()),
         }
     }
@@ -359,7 +391,7 @@ impl Assets {
             logo: None,
             font: None,
             title_font: None,
-            caption_font: None,
+            caption_font: std::cell::OnceCell::new(),
             skin_textures: RefCell::new(SkinCache::default()),
         }
     }

@@ -653,35 +653,9 @@ fn text_w(font: Option<&Font>, s: &str, size: f32, spacing: f32) -> f32 {
     }
 }
 
+/// A system face for the card; the game's own load asks for the same files and gets these (shared/assets.rs).
 fn load_font(names: &[&str]) -> Option<Font> {
-    let mut dirs: Vec<String> = [
-        "C:/Windows/Fonts/",
-        "/System/Library/Fonts/Supplemental/",
-        "/Library/Fonts/",
-        "/usr/share/fonts/truetype/msttcorefonts/",
-        "/usr/share/fonts/TTF/",
-        "/usr/share/fonts/msttcore/",
-        "/usr/share/fonts/truetype/liberation/",
-        "/usr/share/fonts/liberation/",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(format!("{home}/Library/Fonts/"));
-        dirs.push(format!("{home}/.local/share/fonts/"));
-        dirs.push(format!("{home}/.fonts/"));
-    }
-    for d in &dirs {
-        for n in names {
-            if let Ok(b) = std::fs::read(format!("{d}{n}")) {
-                if let Ok(f) = load_ttf_font_from_bytes(&b) {
-                    return Some(f);
-                }
-            }
-        }
-    }
-    None
+    crate::shared::assets::system_font(names)
 }
 
 // -- the loader -----------------------------------------------------------------------------

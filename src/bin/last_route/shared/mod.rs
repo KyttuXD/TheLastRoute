@@ -12,6 +12,7 @@ pub mod atomic64;
 pub mod checkpoint;
 pub mod clock;
 pub mod file_pick;
+pub mod font_subset;
 pub mod safe_room;
 pub mod skin_cache;
 pub mod skin_png;

@@ -528,7 +528,7 @@ fn font_of(a: &Assets, f: F) -> Option<&Font> {
     match f {
         F::Body => a.font.as_ref(),
         F::Title => a.title_font.as_ref().or(a.font.as_ref()),
-        F::Italic => a.caption_font.as_ref().or(a.font.as_ref()),
+        F::Italic => a.caption_font().or(a.font.as_ref()),
     }
 }
 

@@ -66,7 +66,12 @@ pub fn split_into_tiles(mesh: Mesh, tile: f32) -> Vec<Mesh> {
     }
     pieces
         .into_iter()
-        .map(|p| Mesh { vertices: p.vertices, indices: p.indices, texture: mesh.texture.clone() })
+        .map(|mut p| {
+            // the pieces live as long as the chunk: give back the spare capacity their growth left (about a quarter)
+            p.vertices.shrink_to_fit();
+            p.indices.shrink_to_fit();
+            Mesh { vertices: p.vertices, indices: p.indices, texture: mesh.texture.clone() }
+        })
         .collect()
 }
 

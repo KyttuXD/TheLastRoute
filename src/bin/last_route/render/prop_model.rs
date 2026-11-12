@@ -70,10 +70,13 @@ struct Geometry {
 }
 
 impl Geometry {
-    fn into_part(self, tex: &Texture2D, key: usize) -> Vec<Part> {
+    fn into_part(mut self, tex: &Texture2D, key: usize) -> Vec<Part> {
         if self.verts.is_empty() {
             return vec![];
         }
+        // a model stays loaded for the session: drop the spare capacity its growth left
+        self.verts.shrink_to_fit();
+        self.idx.shrink_to_fit();
         vec![Part {
             verts: self.verts,
             idx: self.idx,
@@ -292,7 +295,17 @@ impl PropModel {
     ) -> Option<PropModel> {
         let j: serde_json::Value = serde_json::from_str(text).ok()?;
         let (file, bytes) = bbmodel::texture_bytes(&j, find)?;
-        let shared = file.as_ref().map(|f| format!("{scope}/{f}"));
+        // A named atlas file is shared by its path. A picture embedded in the model is shared by its content: 1047
+        // of the built-in models embed a picture and only 207 of those differ, so equal ones become one texture
+        // (less memory, and one batch for every model that uses it).
+        let shared = Some(match file.as_ref() {
+            Some(f) => format!("{scope}/{f}"),
+            None => {
+                use sha2::{Digest, Sha256};
+                let digest = Sha256::digest(&bytes);
+                format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            }
+        });
         let (tex, key) = match shared.as_ref().and_then(|k| cache.0.get(k)) {
             Some((t, k)) => (t.clone(), *k),
             None => {
