@@ -5,9 +5,38 @@ The normal game artifact still requires macOS 10.12 or later.
 
 ## Download (2026-11-12)
 
+The target machine is KT's Mac Pro 3,1 (2008, two Xeon "Harpertown" processors, 64-bit). It shipped with OS X 10.5,
+so 10.5 is the lowest system it can run.
+
 The `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy) holds
-`last_route-macos-10.6-UNTESTED.zip`, the app the `runtime` job of the `macos-legacy` workflow builds. It has never
-been started on a Snow Leopard Mac. To rebuild it: `gh workflow run macos-legacy.yml` (from main).
+`last_route-macos-10.6-UNTESTED.zip` and `last_route-macos-10.5-UNTESTED.zip`, the apps the `runtime` job of the
+`macos-legacy` workflow builds. To rebuild them: `gh workflow run macos-legacy.yml` (from main).
+
+### First run on the Mac Pro (2026-11-12)
+
+The first 10.6 app died at once with "Illegal instruction". Two causes were found by reading the program, not on the
+machine (it was not reachable for a test):
+
+1. **The compatibility library was never used.** The build Mac's linker found `clock_gettime`,
+   `clock_gettime_nsec_np` and `getentropy` in its own libSystem and tied them to libSystem by name. OS X 10.6 has
+   none of them. Not one symbol was bound to `libMacportsLegacySystem`. The build now links with a flat namespace, so
+   the old system looks in every loaded library; `packaging/macos/legacy/machobind.py` prints where each imported
+   symbol is bound and the build fails if the namespace is not flat.
+2. **Calls newer than the system.** `NSPasteboardTypeFileURL` (10.13, a data symbol: the program does not start
+   without it), the `rfd` file chooser (blocks and Objective-C runtime calls from 10.7), `NSRunningApplication`,
+   `setActivationPolicy:` and `-[NSImage initWithCGImage:size:]` (all 10.6, which matters on 10.5), and an unused
+   ImageIO framework link. They are left out or asked for first (vendor/miniquad/LAST_ROUTE_PATCHES.md item 9). The
+   legacy build therefore has no file chooser and takes no file drops.
+
+Whether the app starts now is not known. To test on the Mac: unzip, then run
+`"KYTTU The Last Route (10.6 test).app/Contents/MacOS/last_route"` from Terminal, so that what it prints is kept.
+
+### The 10.5 build
+
+MacPorts publishes a Darwin 9 build of the Rust 1.77 standard library (no Grand Central Dispatch, which 10.5 lacks)
+but no 10.5 binary of legacy-support. `packaging/macos/legacy/bootstrap-leopard.sh` fetches the first and builds the
+second from source for a 10.5 target; `build-experiment.sh FOLDER 10.5` builds the game with them. It builds and
+links. It has not run.
 
 What there is no build for, and why:
 
@@ -15,7 +44,8 @@ What there is no build for, and why:
 |---|---|
 | OS X 10.6.8, Intel 64-bit (2008 Mac Pro) | built, untested |
 | OS X 10.6, 32-bit Intel (Core Duo Macs) | not built: the compiler used is the 64-bit Darwin 10 one |
-| OS X 10.5 and 10.4, Intel | not built. It needs a Rust compiler for Darwin 9 or 8 (MacPorts' bootstraps are the place to look), the legacy-support library for that system, and a pass over the window code for calls that arrived in 10.6. None of it is started |
+| OS X 10.5, Intel 64-bit | built, untested (see above) |
+| OS X 10.4, Intel | not built: MacPorts has no Darwin 8 Rust, and the Mac Pro 3,1 cannot run 10.4 |
 | Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X. A PowerPC Mac can run the PowerPC Linux build under Linux ([POWERPC.md](POWERPC.md)) |
 
 ## Implemented renderer foundation
