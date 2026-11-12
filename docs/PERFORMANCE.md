@@ -65,6 +65,9 @@ triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
   near 6 fps. Where the time goes there: a new window of chunks arriving costs 80 to 150 ms in one frame
   (`window residency` 55 ms, `window adopt` 25 ms, `window grid` 17 ms, `resident build` 16 ms), and drawing costs
   follow the number of draw calls, not the number of vertices (the HUD cost as much as the 3D pass).
+- **Done since:** every upload of a draw call's vertices now gives the driver new storage on macOS (miniquad patch
+  10). The Mac Pro's stress run went from 69 fps to 117 and 120 fps (two runs each way, same program, the switch
+  flipped with `LR_GL_ORPHAN`). The MacBook Airs use the same Apple OpenGL family and get it too; not measured there.
 - What that points to, in order: spread the window arrival over more frames on slow machines; fewer draw calls in
   the HUD; a release build of the legacy app (it is a dev-profile build today).
 

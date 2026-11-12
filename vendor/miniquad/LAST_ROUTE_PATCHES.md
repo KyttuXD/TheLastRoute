@@ -73,8 +73,10 @@ Old systems (legacy build only, `cfg(lr_macos_legacy)`; found by reading, then o
 10. `src/graphics/gl.rs` `buffer_update`: macroquad keeps one vertex and one index buffer per draw-call slot and
     refills the first few several times a frame (once per camera pass). `glBufferSubData` into a buffer the GPU has
     not drawn from yet makes old drivers wait for the GPU on each draw call. With the switch `orphan_on_update` the
-    upload is `glBufferData` with the data, which gives the driver new storage. On in the legacy Mac build; elsewhere
-    off unless `LR_GL_ORPHAN=1` (on KT's Linux PC it measured the same either way). Also in the legacy build:
+    upload is `glBufferData` with the data, which gives the driver new storage. On for every macOS build (OpenGL only; Metal does
+    not come here): on a Mac Pro 3,1 under OS X 10.6.8 the `mixed` stress run went from 69 fps to 117 and 120 fps,
+    two runs each way. Off elsewhere unless `LR_GL_ORPHAN=1` (on KT's Linux PC it measured the same either way);
+    `LR_GL_ORPHAN=0` turns it off on a Mac. Not measured on a current Mac. Also in the legacy build:
     `glClearDepth` for `glClearDepthf`, ARB/EXT names for four functions, the OpenGL context attached again after
     the window is shown, and autorelease pools (item 9's run on the Mac Pro found these).
 

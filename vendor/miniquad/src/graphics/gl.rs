@@ -21,8 +21,8 @@ pub mod raw_gl {
     }
 }
 
-/// Last Route: whether `buffer_update` gives the driver new storage on every upload. On in the legacy Mac build;
-/// `LR_GL_ORPHAN=1` or `0` in the environment overrides it on a native build (to measure it).
+/// Last Route: whether `buffer_update` gives the driver new storage on every upload. On for macOS (measured on a Mac
+/// Pro 3,1: 69 fps to 118 fps); `LR_GL_ORPHAN=1` or `0` in the environment overrides it on a native build.
 fn orphan_on_update() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -30,7 +30,7 @@ fn orphan_on_update() -> bool {
         *ON.get_or_init(|| match std::env::var("LR_GL_ORPHAN").ok().as_deref() {
             Some("1") => true,
             Some("0") => false,
-            _ => cfg!(lr_macos_legacy),
+            _ => cfg!(target_os = "macos"),
         })
     }
     #[cfg(target_arch = "wasm32")]
