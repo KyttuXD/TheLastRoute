@@ -26,6 +26,32 @@ Rules for any AI agent or tool working in this repository. KT's instructions her
 - On KT's PC, use `CARGO_BUILD_JOBS=4` and at most one cargo build at a time per agent. Do not leave builds or servers running.
 - Web deploys: `sh packaging/web/deploy-vps2.sh dist/web` after building the wasm and assembling the page files. See `docs/DEPLOY_VPS2_WEB.md`.
 
+## Performance goals and rules
+
+The goals (KT, 2026-11-12). Frame rates are for a run in play, not the menu:
+
+| Machine | Goal |
+|---|---|
+| Very low-end PCs | at least 30 fps |
+| KT's dual-core MacBook Airs | 60 to 300 fps |
+| KT's Framework Laptop 13 (the main PC) | 1000 fps or more, as it is today. Do not lose it. |
+
+The rules that follow from them (how to measure, and the current numbers, are in `docs/PERFORMANCE.md`):
+
+- **Frame time comes first.** A change may not make the stress run's average frame slower than run-to-run noise
+  (about 3%) on KT's PC, not even to save memory, without KT's go-ahead. Memory is saved on what is out of sight
+  (packed, dropped, built on first use), never by adding work to every frame.
+- **Measure both, before and after,** for any change to rendering, meshes, streaming, the frame loop, hunters or
+  NPCs: the average frame time and the peak memory of `--stress 40 --stress-scenario mixed`, old and new build run
+  back to back at least twice each. Put the four numbers in the commit message.
+- **Memory:** every MB counts. A new cache, table or buffer that holds more than about 1 MB needs a reason in the
+  commit message and a row in `docs/RAM_PASS.md`.
+- **No new work per frame without a number:** no allocation, sort or full pass over the world in the draw or update
+  loop unless it is measured and the first rule holds.
+- **Compile time and dependencies:** no new crate without KT's go-ahead. Shipped builds keep fat LTO (thin LTO built
+  twice as fast and ran 5% slower: `docs/COMPILE_SPEED.md`). A build must stay free of compiler warnings in the game,
+  the server, Night Watch, the tests and the web build.
+
 ## Agent passes in this repo
 
 The global agent build rules (KT's global CLAUDE.md: edit agents never compile, QA only reads, one build-and-fix agent, then one test-and-fix agent) apply here. This repo's specifics:

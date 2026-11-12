@@ -35,6 +35,25 @@ Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-server-
 | All | Separate cache key for the `--features server` crate graph: `test-server-<os>` in test.yml, `linux-server` in build.yml (its Linux packaging also builds `lr_server`); plain game builds keep `windows`, `macos-*` and the `nw-*` and `lrs-*` keys | A run no longer overwrites the cache of a different dependency graph |
 | All | Build steps stamp start and end (UTC) and append `step, os, cache-hit, elapsed seconds` to the run summary (`GITHUB_STEP_SUMMARY`), even when the step fails; build.yml, test.yml, nightly-lrs.yml and nightly-nw.yml | The "Measure first" table below can be filled from run summaries instead of `gh run view` |
 | All | One job per target (Windows, Linux, macOS Intel, macOS Apple Silicon in build.yml; a matrix or separate jobs in test.yml and the nightlies), the same pinned toolchain in every workflow, `Swatinem/rust-cache` in every job, and no new crate dependency | Targets build in parallel; wall time is the slowest target |
+| All | `actions/checkout@v6` and `actions/upload-artifact@v6` (2026-11-12) | Both run on Node 24; the "Node.js 20 is deprecated" warning on every job is gone |
+| Linux | The apt step installs `libasound2-dev` only and refreshes the package index only if the install fails (2026-11-12). The game loads X11 and OpenGL at run time, so their `-dev` packages, `pkg-config` and `xvfb` were never needed to build or test | The step was 22 to 24 s |
+| test | After the unit tests only the game is built for the headless suites; the server, Night Watch and the two LR Story programs are type-checked (`cargo check --bins`) in place of built and linked (2026-11-12) | The step was 95 s |
+| test | `timeout-minutes: 40` (2026-11-12) | Bounds a hung run |
+| Release | Thin LTO was measured and rejected (2026-11-12): the build is 2.2 times faster, the game 5% slower (COMPILE_SPEED.md) | The release builds stay as they are; they are the floor of build.yml |
+
+## Step timings on a push (run of 2026-11-12, commit 0b82938, warm caches)
+
+| Job | Whole job | Slowest steps |
+|---|---|---|
+| test (ubuntu-22.04) | 7 min 32 s | `cargo test` 301 s, `cargo build --bins` 95 s, apt 22 s |
+| build linux | 4 min 36 s | `packaging/linux/build.sh` 219 s (two fat-LTO release builds), apt 24 s |
+| build windows | 5 min 41 s | `cargo build --release` 294 s |
+| build macos-intel | 8 min 59 s | Build the Intel app 478 s |
+| build macos-arm64 | 4 min 35 s | Build the Apple Silicon app 241 s |
+| deploy-web | 3 min 07 s | Build the wasm 142 s |
+
+The release builds are almost all fat-LTO time on the game crate, which the cache cannot hold. The test job is the
+unit test compile and run (about half each).
 
 ## Next, per platform
 

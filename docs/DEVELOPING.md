@@ -38,7 +38,7 @@ default.
   directory, for example `cargo build --release --target-dir target/release-check`.
 - **macOS (Apple Silicon and Intel):** on a Mac, `sh packaging/macos/build_app.sh` →
   `dist/Kyttu's Lab.app`, one universal app for both chip types.
-- **Linux:** install `pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`, then
+- **Linux:** install `build-essential libasound2-dev` (X11 and OpenGL are loaded when the game runs), then
   `sh packaging/linux/build.sh` → `dist/last-route-linux-x86_64.tar.gz`.
 - **CI:** `.github/workflows/build.yml` builds the three platforms on a push (artifacts only, kept
   for 3 days); `.github/workflows/test.yml` runs the unit tests and the headless suites on
