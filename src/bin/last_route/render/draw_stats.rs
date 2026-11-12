@@ -104,13 +104,18 @@ pub fn begin_frame() {
 
 /// Counts one mesh handed to `draw_mesh`.
 pub fn note_mesh(m: &Mesh) {
+    note(&m.texture, m.vertices.len(), m.indices.len());
+}
+
+/// Counts one mesh of `vertices` vertices and `indices` indices with `texture`, as it goes to the batcher.
+pub fn note(texture: &Option<Texture2D>, vertices: usize, indices: usize) {
     if !active() {
         return;
     }
     MESHES.fetch_add(1, Ordering::Relaxed);
-    VERTICES.fetch_add(m.vertices.len() as u64, Ordering::Relaxed);
-    INDICES.fetch_add(m.indices.len() as u64, Ordering::Relaxed);
-    let new_call = BATCH.with(|b| b.borrow_mut().push(&m.texture, m.vertices.len(), m.indices.len()));
+    VERTICES.fetch_add(vertices as u64, Ordering::Relaxed);
+    INDICES.fetch_add(indices as u64, Ordering::Relaxed);
+    let new_call = BATCH.with(|b| b.borrow_mut().push(texture, vertices, indices));
     let s = (SECTION_NOW.load(Ordering::Relaxed) as usize).min(SECTION_COUNT - 1);
     SECTION_MESHES[s].fetch_add(1, Ordering::Relaxed);
     if new_call {

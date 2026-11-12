@@ -23,6 +23,7 @@ use crate::world::inferno_terrain::Terrain;
 use crate::world::infinite::{ChunkKey, CHUNK, INFERNO_LEVEL, WINDOW};
 use crate::world::route::sewer::core::{Grid, LEVEL as SEWER_LEVEL, LOWER_LEVEL as SEWER_LOWER_LEVEL, WATER};
 use crate::world::{region_texture, Facility, TEXTURE_SETS};
+use super::packed_mesh::PackedMesh;
 use macroquad::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -37,7 +38,7 @@ thread_local! {
 
 #[derive(Default)]
 pub struct WorldMeshes {
-    pub meshes: Vec<Mesh>,
+    pub meshes: Vec<PackedMesh>,
     /// Each of `meshes`' box over its vertices (min, max), kept in step with it, so the scene can skip a mesh that
     /// lies wholly in the fog.
     pub bounds: Vec<(Vec3, Vec3)>,
@@ -189,7 +190,7 @@ struct PartKey {
 }
 
 struct Part {
-    meshes: Vec<Mesh>,
+    meshes: Vec<PackedMesh>,
     /// The window origin the vertices are placed for.
     origin: (i32, i32),
     /// The height offset the vertices are placed for (see `WorldMeshes::dy`).
@@ -306,25 +307,21 @@ fn window_parts(f: &Facility, frame: ChunkFrame) -> Vec<(PartKey, Pick)> {
 }
 
 /// Moves a part's vertices from the window origin they were placed for to `to`.
-fn reframe(meshes: &mut [Mesh], from: (i32, i32), to: (i32, i32)) {
+fn reframe(meshes: &mut [PackedMesh], from: (i32, i32), to: (i32, i32)) {
     let (dx, dz) = ((from.0 - to.0) as f32, (from.1 - to.1) as f32);
     for m in meshes {
-        for v in &mut m.vertices {
-            v.position.x += dx;
-            v.position.z += dz;
-        }
+        m.origin.x += dx;
+        m.origin.z += dz;
     }
 }
 
 /// Moves every vertex of `meshes` up by `dy`.
-fn lift(meshes: &mut [Mesh], dy: f32) {
+fn lift(meshes: &mut [PackedMesh], dy: f32) {
     if dy == 0.0 {
         return;
     }
     for m in meshes {
-        for v in &mut m.vertices {
-            v.position.y += dy;
-        }
+        m.origin.y += dy;
     }
 }
 
@@ -457,7 +454,7 @@ impl WorldMeshes {
         self.lift_doors();
         // Phase 2: the drawn set goes back into the parts it came from, then every wanted part is drawn in order.
         self.return_drawn_to_parts();
-        let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
+        let mut out: Vec<(Option<PartKey>, PackedMesh)> = vec![];
         for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
             let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
             if part.origin != f.origin {
@@ -471,7 +468,7 @@ impl WorldMeshes {
             }
             out.extend(part.meshes.drain(..).map(|m| (Some(key), m)));
         }
-        out.extend(safe_pad(f, assets).into_iter().map(|mut m| {
+        out.extend(PackedMesh::pack_all(safe_pad(f, assets)).into_iter().map(|mut m| {
             lift(std::slice::from_mut(&mut m), self.dy);
             (None, m)
         }));
@@ -663,7 +660,7 @@ impl WorldMeshes {
         }
         self.builds = build_no;
         self.return_drawn_to_parts();
-        let mut out: Vec<(Option<PartKey>, Mesh)> = vec![];
+        let mut out: Vec<(Option<PartKey>, PackedMesh)> = vec![];
         for key in drawable_keys(&wanted, |k| self.parts.contains_key(k)) {
             let part = self.parts.get_mut(&key).expect("drawable_keys returns only built parts");
             if part.origin != f.origin {
@@ -696,8 +693,22 @@ fn neighbour_allows(table: &StreamBudget, per_frame: usize, built: usize, elapse
 
 /// The meshes with one texture's side by side (so the batcher joins them), and the part each came from. Blended meshes
 /// follow the opaque ones in the order they were built (render/mesh_batch.rs `draw_order`).
-fn group_by_texture(out: Vec<(Option<PartKey>, Mesh)>) -> (Vec<Option<PartKey>>, Vec<Mesh>) {
-    super::mesh_batch::group_for_batching(out).into_iter().unzip()
+fn group_by_texture(out: Vec<(Option<PartKey>, PackedMesh)>) -> (Vec<Option<PartKey>>, Vec<PackedMesh>) {
+    let mut textures: Vec<&Option<Texture2D>> = vec![];
+    let ids: Vec<usize> = out
+        .iter()
+        .map(|(_, m)| match textures.iter().position(|t| **t == m.texture) {
+            Some(i) => i,
+            None => {
+                textures.push(&m.texture);
+                textures.len() - 1
+            }
+        })
+        .collect();
+    let blended: Vec<bool> = out.iter().map(|(_, m)| m.blended).collect();
+    let order = super::mesh_batch::draw_order(&ids, &blended);
+    let mut slots: Vec<Option<(Option<PartKey>, PackedMesh)>> = out.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).unzip()
 }
 
 /// The distance from point `p` to the box (x0, z0, x1, z1); 0 inside it.
@@ -888,16 +899,8 @@ pub fn stream_table() -> &'static StreamBudget {
 }
 
 /// Each mesh's box over its vertices (min, max). An empty mesh gets an inverted box, which the scene's cull treats as far.
-fn mesh_bounds(meshes: &[Mesh]) -> Vec<(Vec3, Vec3)> {
-    meshes
-        .iter()
-        .map(|m| {
-            m.vertices.iter().fold(
-                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
-                |(lo, hi), v| (lo.min(v.position), hi.max(v.position)),
-            )
-        })
-        .collect()
+fn mesh_bounds(meshes: &[PackedMesh]) -> Vec<(Vec3, Vec3)> {
+    meshes.iter().map(PackedMesh::bounds).collect()
 }
 
 /// The safe-zone pad over the window's floor (the chunk parts draw the floor under it as it is without one).
@@ -1714,7 +1717,18 @@ fn edge_fill(f: &Facility, steps: &HashMap<(i32, i32), Stair>, c: Cell, (dx, dz)
     EdgeFill::None
 }
 
+/// The meshes of the picked slice of the floor, packed for keeping (render/packed_mesh.rs).
 fn build_meshes(
+    f: &Facility,
+    pick: &Pick,
+    choices: &mut HashMap<(String, String, bool), TextureChoice>,
+    assets: &Assets,
+    content: &Content,
+) -> Vec<PackedMesh> {
+    PackedMesh::pack_all(build_raw_meshes(f, pick, choices, assets, content))
+}
+
+fn build_raw_meshes(
     f: &Facility,
     pick: &Pick,
     choices: &mut HashMap<(String, String, bool), TextureChoice>,
@@ -2638,7 +2652,7 @@ mod stack_mesh_tests {
     use crate::world::facility::{Cell, Stair};
     use crate::world::flight::FlightShape;
 
-    fn mesh(ys: &[f32]) -> Mesh {
+    fn mesh(ys: &[f32]) -> PackedMesh {
         let vertices = ys
             .iter()
             .map(|&y| Vertex {
@@ -2649,7 +2663,11 @@ mod stack_mesh_tests {
             })
             .collect::<Vec<_>>();
         let n = vertices.len() as u16;
-        Mesh { vertices, indices: (0..n).collect(), texture: None }
+        PackedMesh::pack(Mesh { vertices, indices: (0..n).collect(), texture: None })
+    }
+
+    fn empty_mesh() -> PackedMesh {
+        PackedMesh::pack(Mesh { vertices: vec![], indices: vec![], texture: None })
     }
 
     fn lamp(y: f32) -> Lamp {
@@ -2657,7 +2675,7 @@ mod stack_mesh_tests {
     }
 
     fn min_y(m: &WorldMeshes) -> f32 {
-        m.meshes.iter().flat_map(|m| m.vertices.iter()).map(|v| v.position.y).fold(f32::MAX, f32::min)
+        m.meshes.iter().flat_map(|m| m.vertices()).map(|v| v.position.y).fold(f32::MAX, f32::min)
     }
 
     #[test]
@@ -2693,14 +2711,14 @@ mod stack_mesh_tests {
         w.shift_y(-5.0);
         let p = &w.parts[&key];
         assert_eq!(p.dy, -5.0);
-        assert_eq!(p.meshes[0].vertices[0].position.y, -5.0);
+        assert_eq!(p.meshes[0].vertex(0).position.y, -5.0);
         assert_eq!(w.held_parts(), 1);
     }
 
     /// A drawn set at window origin `at`: one mesh with a vertex at (1, y, 2), its box, and one door leaf.
     fn drawn_at(at: (i32, i32)) -> WorldMeshes {
         let mut w = WorldMeshes::default();
-        w.meshes = vec![mesh(&[0.0, 3.0]), Mesh { vertices: vec![], indices: vec![], texture: None }];
+        w.meshes = vec![mesh(&[0.0, 3.0]), empty_mesh()];
         w.drawn = vec![None, None];
         w.drawn_origin = at;
         w.bounds = mesh_bounds(&w.meshes);
@@ -2721,8 +2739,8 @@ mod stack_mesh_tests {
         w.follow_origin((CHUNK, 0));
         assert_eq!(w.drawn_origin, (CHUNK, 0));
         let c = CHUNK as f32;
-        assert_eq!(w.meshes[0].vertices[0].position.x, 1.0 - c);
-        assert_eq!(w.meshes[0].vertices[0].position.z, 2.0);
+        assert_eq!(w.meshes[0].vertex(0).position.x, 1.0 - c);
+        assert_eq!(w.meshes[0].vertex(0).position.z, 2.0);
         assert_eq!((w.bounds[0].0.x, w.bounds[0].1.x), (1.0 - c, 1.0 - c));
         assert_eq!((w.bounds[0].0.y, w.bounds[0].1.y), (0.0, 3.0), "height is untouched");
         assert!(w.bounds[1].0.x > w.bounds[1].1.x, "an empty mesh keeps its inverted box");
@@ -2737,10 +2755,10 @@ mod stack_mesh_tests {
     fn following_the_same_origin_changes_nothing_and_a_return_trip_restores_it() {
         let mut w = drawn_at((CHUNK, -CHUNK));
         w.follow_origin((CHUNK, -CHUNK));
-        assert_eq!(w.meshes[0].vertices[0].position, vec3(1.0, 0.0, 2.0));
+        assert_eq!(w.meshes[0].vertex(0).position, vec3(1.0, 0.0, 2.0));
         w.follow_origin((2 * CHUNK, CHUNK));
         w.follow_origin((CHUNK, -CHUNK));
-        assert_eq!(w.meshes[0].vertices[0].position, vec3(1.0, 0.0, 2.0));
+        assert_eq!(w.meshes[0].vertex(0).position, vec3(1.0, 0.0, 2.0));
         assert_eq!(w.doors[0].cell, Cell::new(10, 20));
         assert_eq!(w.doors[0].xf.w_axis.x, 10.5);
     }
@@ -2764,16 +2782,16 @@ mod stack_mesh_tests {
         // the finalize step reframes by (part.origin - target): the vertices are already at the target, so no move
         let origin = p.origin;
         reframe(&mut p.meshes, origin, (CHUNK, CHUNK));
-        assert_eq!(p.meshes[0].vertices[0].position, vec3(1.0 - CHUNK as f32, 0.0, 2.0 - CHUNK as f32));
+        assert_eq!(p.meshes[0].vertex(0).position, vec3(1.0 - CHUNK as f32, 0.0, 2.0 - CHUNK as f32));
         // and a further recentre of the finished window moves them on by one chunk, once
         reframe(&mut p.meshes, origin, (2 * CHUNK, CHUNK));
-        assert_eq!(p.meshes[0].vertices[0].position.x, 1.0 - 2.0 * CHUNK as f32);
+        assert_eq!(p.meshes[0].vertex(0).position.x, 1.0 - 2.0 * CHUNK as f32);
     }
 
     #[test]
     fn an_empty_mesh_keeps_its_inverted_box_through_a_shift() {
         let mut w = WorldMeshes::default();
-        w.meshes = vec![Mesh { vertices: vec![], indices: vec![], texture: None }];
+        w.meshes = vec![empty_mesh()];
         w.bounds = mesh_bounds(&w.meshes);
         w.shift_y(5.0);
         assert!(w.bounds[0].0.y > w.bounds[0].1.y);
@@ -2790,9 +2808,9 @@ mod stack_mesh_tests {
     fn lift_places_vertices_at_the_neighbour_height() {
         let mut ms = vec![mesh(&[0.0, 0.0])];
         lift(&mut ms, 5.0);
-        assert_eq!(ms[0].vertices[0].position.y, 5.0);
+        assert_eq!(ms[0].vertex(0).position.y, 5.0);
         lift(&mut ms, -5.0);
-        assert_eq!(ms[0].vertices[0].position.y, 0.0);
+        assert_eq!(ms[0].vertex(0).position.y, 0.0);
     }
 
     fn flight(dir: i32) -> Stair {
@@ -3673,7 +3691,7 @@ mod recentre_tests {
         let mut out: HashMap<PartKey, Vec<Vec3>> = HashMap::new();
         for (m, k) in w.meshes.iter().zip(&w.drawn) {
             if let Some(k) = k {
-                out.entry(*k).or_default().extend(m.vertices.iter().map(|v| v.position));
+                out.entry(*k).or_default().extend(m.vertices().map(|v| v.position));
             }
         }
         out

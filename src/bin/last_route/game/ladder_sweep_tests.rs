@@ -92,20 +92,20 @@ fn check_world(g: &Game) -> Result<bool, String> {
     // every mesh of the active level and of the neighbours must fit one macroquad draw call (65536 vertices, 98304
     // indices: `main.rs` window_conf) and index only its own vertices, whole triangles (a 16-bit wrap draws garbage)
     for (what, m) in w.meshes.iter().map(|m| ("active", m)).chain(g.world_nb.items.iter().flat_map(|i| i.meshes.iter()).map(|m| ("neighbour", m))) {
-        if m.vertices.len() >= 65536 || m.indices.len() >= 65536 * 3 / 2 {
-            return Err(format!("a {what} mesh of {} vertices and {} indices overruns one draw call", m.vertices.len(), m.indices.len()));
+        if m.vertex_count() >= 65536 || m.indices.len() >= 65536 * 3 / 2 {
+            return Err(format!("a {what} mesh of {} vertices and {} indices overruns one draw call", m.vertex_count(), m.indices.len()));
         }
         if m.indices.len() % 3 != 0 {
             return Err(format!("a {what} mesh has {} indices (not whole triangles)", m.indices.len()));
         }
-        if let Some(bad) = m.indices.iter().find(|i| **i as usize >= m.vertices.len()) {
-            return Err(format!("a {what} mesh indexes vertex {bad} of {}", m.vertices.len()));
+        if let Some(bad) = m.indices.iter().find(|i| **i as usize >= m.vertex_count()) {
+            return Err(format!("a {what} mesh indexes vertex {bad} of {}", m.vertex_count()));
         }
     }
     let (px, pz) = g.p.pos;
     let mut floor = false;
     for (m, (lo, hi)) in w.meshes.iter().zip(&w.bounds) {
-        for v in &m.vertices {
+        for v in m.vertices() {
             let p = v.position;
             if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
                 return Err(format!("a vertex at {p:?}"));
@@ -120,7 +120,7 @@ fn check_world(g: &Game) -> Result<bool, String> {
         }
     }
     if !floor && std::env::var("LR_LADDER_SWEEP_TRACE").is_ok() {
-        let verts: Vec<_> = w.meshes.iter().flat_map(|m| m.vertices.iter()).collect();
+        let verts: Vec<_> = w.meshes.iter().flat_map(|m| m.vertices()).collect();
         let ys: Vec<f32> = verts.iter().map(|v| v.position.y).collect();
         let up = verts.iter().filter(|v| v.normal.y > 0.5).count();
         let near: Vec<_> = verts.iter().filter(|v| (v.position.x - px).hypot(v.position.z - pz) < 3.0).map(|v| (v.position.y, v.normal.y)).take(8).collect();
