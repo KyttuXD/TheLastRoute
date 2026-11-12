@@ -79,9 +79,9 @@ impl TextureFormat {
             TextureFormat::RGBA16F => GL_RGBA16F,
             TextureFormat::Depth => GL_DEPTH_COMPONENT16,
             TextureFormat::Depth32 => GL_DEPTH_COMPONENT32,
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_arch = "wasm32", lr_macos_legacy))]
             TextureFormat::Alpha => GL_ALPHA,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", lr_macos_legacy)))]
             TextureFormat::Alpha => GL_R8,
         }
     }
@@ -96,9 +96,9 @@ impl From<TextureFormat> for (GLenum, GLenum, GLenum) {
             TextureFormat::RGBA16F => (GL_RGBA16F, GL_RGBA, GL_FLOAT),
             TextureFormat::Depth => (GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT),
             TextureFormat::Depth32 => (GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT, GL_FLOAT),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(any(target_arch = "wasm32", lr_macos_legacy))]
             TextureFormat::Alpha => (GL_ALPHA, GL_ALPHA, GL_UNSIGNED_BYTE),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(any(target_arch = "wasm32", lr_macos_legacy)))]
             TextureFormat::Alpha => (GL_R8, GL_RED, GL_UNSIGNED_BYTE), // texture updates will swizzle Red -> Alpha to match WASM
         }
     }
@@ -220,7 +220,7 @@ impl Texture {
             ctx.cache.bind_texture(0, params.kind.into(), texture);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // miniquad always uses row alignment of 1
 
-            if cfg!(not(target_arch = "wasm32")) {
+            if cfg!(not(any(target_arch = "wasm32", lr_macos_legacy))) {
                 // if not WASM
                 if params.format == TextureFormat::Alpha {
                     // if alpha miniquad texture, the value on non-WASM is stored in red channel
@@ -379,7 +379,7 @@ impl Texture {
         unsafe {
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // miniquad always uses row alignment of 1
 
-            if cfg!(not(target_arch = "wasm32")) {
+            if cfg!(not(any(target_arch = "wasm32", lr_macos_legacy))) {
                 // if not WASM
                 if self.params.format == TextureFormat::Alpha {
                     // if alpha miniquad texture, the value on non-WASM is stored in red channel
@@ -644,6 +644,10 @@ fn load_shader_internal(
 }
 
 pub fn load_shader(shader_type: GLenum, source: &str) -> Result<GLuint, ShaderError> {
+    #[cfg(lr_macos_legacy)]
+    let converted = crate::legacy_gl::desktop_shader(source);
+    #[cfg(lr_macos_legacy)]
+    let source = converted.as_str();
     unsafe {
         let shader = glCreateShader(shader_type);
         assert!(shader != 0);

@@ -282,7 +282,7 @@ pub fn web_rules() -> &'static WebRules {
 
 /// True when Metal can open a device here. Always false off macOS.
 pub fn metal_device_present() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(lr_macos_legacy)))]
     {
         use core::ffi::c_void;
         #[link(name = "Metal", kind = "framework")]
@@ -300,7 +300,7 @@ pub fn metal_device_present() -> bool {
         unsafe { objc_release(device) };
         true
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(not(target_os = "macos"), lr_macos_legacy))]
     {
         false
     }

@@ -760,7 +760,7 @@ mod tests {
     /// Compiles the MSL twin with the system's Metal compiler and looks up both entry points. This is the one Metal
     /// check that runs in `cargo test` (no window is needed): a typo in the twin otherwise only shows as a panic at
     /// the first Metal start. Skipped, with a line on stderr, where no Metal device exists (a CI VM).
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(lr_macos_legacy)))]
     #[test]
     fn msl_source_compiles_with_the_metal_compiler() {
         use core::ffi::{c_char, c_void};

@@ -103,9 +103,24 @@ impl MacosDisplay {
     }
     fn set_fullscreen(&mut self, fullscreen: bool) {
         if self.fullscreen != fullscreen {
-            self.fullscreen = fullscreen;
             unsafe {
-                let () = msg_send![self.window, toggleFullScreen: nil];
+                #[cfg(lr_macos_legacy)]
+                {
+                    // NSView fullscreen is available before Lion's NSWindow spaces API.
+                    if fullscreen {
+                        let screen: ObjcId = msg_send![self.window, screen];
+                        let entered: BOOL = msg_send![self.view, enterFullScreenMode:screen withOptions:nil];
+                        self.fullscreen = entered != NO;
+                    } else {
+                        let () = msg_send![self.view, exitFullScreenModeWithOptions:nil];
+                        self.fullscreen = false;
+                    }
+                }
+                #[cfg(not(lr_macos_legacy))]
+                {
+                    self.fullscreen = fullscreen;
+                    let () = msg_send![self.window, toggleFullScreen: nil];
+                }
             }
         }
     }
@@ -188,10 +203,16 @@ impl MacosDisplay {
                 },
             };
 
+            #[cfg(not(lr_macos_legacy))]
             let center_on_screen: NSRect = msg_send![
                 self.window,
                 convertRectToScreen: center_rect
             ];
+            #[cfg(lr_macos_legacy)]
+            let center_on_screen = NSRect {
+                origin: msg_send![self.window, convertBaseToScreen:center_rect.origin],
+                size: center_rect.size,
+            };
 
             // AppKit screen coordinates are bottom-left origin.
             // CoreGraphics cursor warp coordinates are top-left origin.
@@ -214,7 +235,10 @@ impl MacosDisplay {
                 msg_send_![self.gl_context, update];
             }
         }
-        if d.high_dpi {
+        if cfg!(lr_macos_legacy) {
+            // Snow Leopard has no Retina backing-scale API.
+            d.dpi_scale = 1.0;
+        } else if d.high_dpi {
             let dpi_scale: f64 = msg_send![self.window, backingScaleFactor];
             d.dpi_scale = dpi_scale as f32;
         } else {
@@ -383,9 +407,12 @@ pub fn define_cocoa_window_delegate() -> *const Class {
     extern "C" fn window_should_close(this: &Object, _: Sel, _: ObjcId) -> BOOL {
         let payload = get_window_payload(this);
 
+        #[cfg(not(lr_macos_legacy))]
         unsafe {
-            let capture_manager = msg_send_![class![MTLCaptureManager], sharedCaptureManager];
-            msg_send_![capture_manager, stopCapture];
+            if let Some(class) = Class::get("MTLCaptureManager") {
+                let capture_manager = msg_send_![class, sharedCaptureManager];
+                msg_send_![capture_manager, stopCapture];
+            }
         }
 
         if handle_quit(payload) {
@@ -527,6 +554,13 @@ unsafe fn get_proc_address(name: *const u8) -> Option<unsafe extern "C" fn()> {
 
     assert!(!OPENGL.is_null());
 
+    #[cfg(lr_macos_legacy)]
+    if let Some(alias) = crate::legacy_gl::symbol_alias(std::ffi::CStr::from_ptr(name as _).to_bytes()) {
+        let symbol = libc::dlsym(OPENGL, alias.as_ptr() as _);
+        if !symbol.is_null() {
+            return Some(std::mem::transmute_copy(&symbol));
+        }
+    }
     let symbol = libc::dlsym(OPENGL, name as _);
     if symbol.is_null() {
         return None;
@@ -592,13 +626,22 @@ unsafe fn view_base_decl(decl: &mut ClassDecl) {
     extern "C" fn scroll_wheel(this: &Object, _sel: Sel, event: ObjcId) {
         let payload = get_window_payload(this);
         unsafe {
-            let mut dx: f64 = msg_send![event, scrollingDeltaX];
-            let mut dy: f64 = msg_send![event, scrollingDeltaY];
-
-            if !msg_send![event, hasPreciseScrollingDeltas] {
-                dx *= 10.0;
-                dy *= 10.0;
-            }
+            #[cfg(lr_macos_legacy)]
+            let (dx, dy) = {
+                let x: f64 = msg_send![event, deltaX];
+                let y: f64 = msg_send![event, deltaY];
+                (x * 10.0, y * 10.0)
+            };
+            #[cfg(not(lr_macos_legacy))]
+            let (dx, dy) = {
+                let mut x: f64 = msg_send![event, scrollingDeltaX];
+                let mut y: f64 = msg_send![event, scrollingDeltaY];
+                if !msg_send![event, hasPreciseScrollingDeltas] {
+                    x *= 10.0;
+                    y *= 10.0;
+                }
+                (x, y)
+            };
             if let Some(event_handler) = payload.context() {
                 event_handler.mouse_wheel_event(dx as f32, dy as f32);
             }
@@ -1013,8 +1056,11 @@ unsafe fn create_opengl_view(
 
     attrs.push(NSOpenGLPFAAccelerated as _);
     attrs.push(NSOpenGLPFADoubleBuffer as _);
-    attrs.push(NSOpenGLPFAOpenGLProfile as _);
-    attrs.push(NSOpenGLPFAOpenGLProfiles::NSOpenGLProfileVersion3_2Core as _);
+    #[cfg(not(lr_macos_legacy))]
+    {
+        attrs.push(NSOpenGLPFAOpenGLProfile as _);
+        attrs.push(NSOpenGLPFAOpenGLProfiles::NSOpenGLProfileVersion3_2Core as _);
+    }
     attrs.push(NSOpenGLPFAColorSize as _);
     attrs.push(24);
     attrs.push(NSOpenGLPFAAlphaSize as _);
@@ -1054,11 +1100,16 @@ unsafe fn create_opengl_view(
                 setValues:&mut swap_interval
                 forParameter:NSOpenGLContextParameterSwapInterval];
 
-    if high_dpi {
-        let () = msg_send![view, setWantsBestResolutionOpenGLSurface: YES];
-    } else {
-        let () = msg_send![view, setWantsBestResolutionOpenGLSurface: NO];
+    #[cfg(not(lr_macos_legacy))]
+    {
+        if high_dpi {
+            let () = msg_send![view, setWantsBestResolutionOpenGLSurface: YES];
+        } else {
+            let () = msg_send![view, setWantsBestResolutionOpenGLSurface: NO];
+        }
     }
+    #[cfg(lr_macos_legacy)]
+    let _ = high_dpi;
 
     view
 }
@@ -1303,10 +1354,15 @@ unsafe fn perform_redraw(
     }
 }
 
-pub unsafe fn run<F>(conf: crate::conf::Conf, f: F)
+pub unsafe fn run<F>(mut conf: crate::conf::Conf, f: F)
 where
     F: 'static + FnOnce() -> Box<dyn EventHandler>,
 {
+    #[cfg(lr_macos_legacy)]
+    {
+        conf.platform.apple_gfx_api = AppleGfxApi::OpenGl;
+        conf.high_dpi = false;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let clipboard = Box::new(MacosClipboard);
     crate::set_display(NativeDisplayData {
@@ -1430,7 +1486,7 @@ where
     let () = msg_send![window, setAcceptsMouseMovedEvents: YES];
 
     if conf.fullscreen {
-        let () = msg_send![window, toggleFullScreen: nil];
+        display.set_fullscreen(true);
     }
 
     msg_send_![window, orderFront: nil];
@@ -1508,5 +1564,52 @@ where
             perform_redraw(&mut display, conf.platform.apple_gfx_api, false);
         }
 
+    }
+}
+
+#[cfg(all(test, lr_macos_legacy))]
+mod legacy_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_context_compiles_and_links_glsl120_shaders() {
+        // No game window or audio device: test the actual Apple compatibility
+        // context and shader driver on the Intel CI runner.
+        unsafe {
+            let pool: ObjcId = msg_send![class!(NSAutoreleasePool), new];
+            let attrs = [
+                NSOpenGLPixelFormatAttribute::NSOpenGLPFAAccelerated as u32,
+                NSOpenGLPixelFormatAttribute::NSOpenGLPFAColorSize as u32, 24,
+                0,
+            ];
+            let format: ObjcId = msg_send![class!(NSOpenGLPixelFormat), alloc];
+            let format: ObjcId = msg_send![format, initWithAttributes:attrs.as_ptr()];
+            assert!(!format.is_null(), "No legacy OpenGL pixel format");
+            let context: ObjcId = msg_send![class!(NSOpenGLContext), alloc];
+            let context: ObjcId = msg_send![context, initWithFormat:format shareContext:nil];
+            assert!(!context.is_null(), "No legacy OpenGL context");
+            let () = msg_send![context, makeCurrentContext];
+            gl::load_gl_funcs(|name| {
+                let name = std::ffi::CString::new(name).unwrap();
+                get_proc_address(name.as_ptr() as _)
+            });
+            let version = std::ffi::CStr::from_ptr(gl::glGetString(gl::GL_VERSION) as _);
+            eprintln!("Legacy context version: {}", version.to_string_lossy());
+            let source = crate::ShaderSource::Glsl {
+                vertex: "#version 100\nattribute vec3 position;\nvarying highp vec2 uv;\nvoid main(){uv=position.xy;gl_Position=vec4(position,1.0);}",
+                fragment: "#version 100\nprecision mediump float;\nvarying highp vec2 uv;\nvoid main(){gl_FragColor=vec4(uv,0.0,1.0);}",
+            };
+            use crate::RenderingBackend;
+            let mut backend = crate::GlContext::new();
+            let shader = backend.new_shader(source, crate::ShaderMeta {
+                images: vec![],
+                uniforms: crate::UniformBlockLayout { uniforms: vec![] },
+            }).expect("Legacy GLSL translation must compile and link");
+            backend.delete_shader(shader);
+            let () = msg_send![class!(NSOpenGLContext), clearCurrentContext];
+            let () = msg_send![context, release];
+            let () = msg_send![format, release];
+            let () = msg_send![pool, drain];
+        }
     }
 }

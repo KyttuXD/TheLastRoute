@@ -148,6 +148,7 @@ extern "C" {
     );
 }
 
+#[cfg(not(lr_macos_legacy))]
 #[link(name = "Vision", kind = "framework")]
 extern "C" {
     pub static VNImageRequestHandler: ObjcId;
@@ -161,7 +162,8 @@ pub const kCGMouseEventClickState: u32 = 1;
 
 type DataReleaseCallback = unsafe extern "C" fn(*mut c_void, *const c_void, usize);
 
-#[link(name = "CoreGraphics", kind = "framework")]
+#[cfg_attr(lr_macos_legacy, link(name = "ApplicationServices", kind = "framework"))]
+#[cfg_attr(not(lr_macos_legacy), link(name = "CoreGraphics", kind = "framework"))]
 extern "C" {
     pub fn CGEventSourceCreate(state_id: u32) -> ObjcId;
     pub fn CGEventSetIntegerValueField(event: ObjcId, field: u32, value: u64);
@@ -221,7 +223,8 @@ extern "C" {
 
 // Some CoreGraphics functions are only available on macOS
 #[cfg(target_os = "macos")]
-#[link(name = "CoreGraphics", kind = "framework")]
+#[cfg_attr(lr_macos_legacy, link(name = "ApplicationServices", kind = "framework"))]
+#[cfg_attr(not(lr_macos_legacy), link(name = "CoreGraphics", kind = "framework"))]
 extern "C" {
     pub fn CGMainDisplayID() -> u32;
     pub fn CGDisplayPixelsHigh(display: u32) -> u64;
@@ -231,11 +234,18 @@ pub const kCGBitmapByteOrderDefault: u32 = 0 << 12;
 pub const kCGImageAlphaLast: u32 = 3;
 pub const kCGRenderingIntentDefault: u32 = 0;
 
+#[cfg(not(lr_macos_legacy))]
 #[link(name = "Metal", kind = "framework")]
 extern "C" {
     pub fn MTLCreateSystemDefaultDevice() -> ObjcId;
     #[cfg(not(target_os = "ios"))]
     pub fn MTLCopyAllDevices() -> ObjcId; //TODO: Array
+}
+
+// The experimental Intel legacy build must not require Metal at dyld load time.
+#[cfg(lr_macos_legacy)]
+pub unsafe fn MTLCreateSystemDefaultDevice() -> ObjcId {
+    nil
 }
 
 #[cfg(target_os = "macos")]

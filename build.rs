@@ -70,6 +70,13 @@ fn revision() -> String {
 }
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(lr_macos_legacy)");
+    println!("cargo:rerun-if-env-changed=LR_MACOS_LEGACY");
+    if std::env::var("TARGET").as_deref() == Ok("x86_64-apple-darwin")
+        && std::env::var("LR_MACOS_LEGACY").as_deref() == Ok("1")
+    {
+        println!("cargo:rustc-cfg=lr_macos_legacy");
+    }
     println!("cargo:rerun-if-changed=src/bin/last_route/assets");
     // the CI run number is this build's number for the update check; a local build has 0 and never updates
     println!("cargo:rerun-if-env-changed=GITHUB_RUN_NUMBER");

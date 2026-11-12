@@ -41,6 +41,9 @@ impl<T> Default for ResourceManager<T> {
     }
 }
 
+#[cfg(any(lr_macos_legacy, test))]
+mod legacy_gl;
+
 impl<T> ResourceManager<T> {
     pub fn add(&mut self, resource: T) -> usize {
         self.resources.insert(self.id, resource);
