@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-snow-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   patched-runtime:
     runs-on: macos-15-intel

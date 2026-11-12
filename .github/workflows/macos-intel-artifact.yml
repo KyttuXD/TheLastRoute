@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-intel-artifact-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   RUST_TOOLCHAIN: "1.99.1"
   CARGO_BUILD_JOBS: "4"
@@ -33,9 +37,11 @@ jobs:
         run: |
           app="dist/intel/KYTTU The Last Route.app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$app/Contents/Info.plist")" = 10.12
-          lipo -verify_arch x86_64 "$app/Contents/MacOS/last_route"
+          lipo "$app/Contents/MacOS/last_route" -verify_arch x86_64
           xcrun vtool -show-build "$app/Contents/MacOS/last_route" | tee /tmp/last-route-build-version.txt
           grep -Eq '(minos|version)[[:space:]]+10\.12(\.0)?([[:space:]]|$)' /tmp/last-route-build-version.txt
+      - name: Package Intel app
+        run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
       - name: Compile native unit tests
         run: cargo test --locked --no-run --lib --bin last_route --target x86_64-apple-darwin --message-format=json > test-executables.jsonl
       - name: Run native unit test executables
@@ -56,9 +62,8 @@ jobs:
       - name: Run headless gameplay suites on Intel macOS
         run: |
           target/x86_64-apple-darwin/release/last_route --headless --test-suite "tests/*.json" --out target/test-reports/macos-intel-suite.json
-      - name: Package Intel app
-        run: (cd dist/intel && zip -qry ../last_route-macos-x86_64.zip "KYTTU The Last Route.app")
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: last-route-macos-x86_64-10.12
           path: dist/last_route-macos-x86_64.zip
