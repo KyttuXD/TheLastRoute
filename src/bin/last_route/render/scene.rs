@@ -106,11 +106,19 @@ fn mesh_cull(bounds: Option<&(Vec3, Vec3)>, eye: Vec3, reach: f32, frustum: Opti
 /// Draws the meshes the fog and the frustum leave; returns (meshes seen, dropped by the fog, dropped by the frustum).
 fn draw_culled(meshes: &[super::packed_mesh::PackedMesh], bounds: &[(Vec3, Vec3)], eye: Vec3, reach: f32, frustum: Option<&Frustum>) -> (usize, usize, usize) {
     let (mut fogged, mut off_view) = (0, 0);
+    // a mesh the cull drops gives its unpacked vertices back once it has been out of the picture a while
+    let now = get_time();
     for (i, m) in meshes.iter().enumerate() {
         match mesh_cull(bounds.get(i), eye, reach, frustum) {
-            MeshCull::Draw => super::packed_mesh::draw_counted(m),
-            MeshCull::Fogged => fogged += 1,
-            MeshCull::OffView => off_view += 1,
+            MeshCull::Draw => super::packed_mesh::draw_counted(m, now),
+            MeshCull::Fogged => {
+                fogged += 1;
+                m.cool(now);
+            }
+            MeshCull::OffView => {
+                off_view += 1;
+                m.cool(now);
+            }
         }
     }
     (meshes.len(), fogged, off_view)

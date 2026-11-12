@@ -883,18 +883,6 @@ impl QuadGl {
         let vertices = &vertices[0..self.max_vertices.min(vertices.len())];
         let indices = &indices[0..self.max_indices.min(indices.len())];
 
-        self.geometry_with(vertices.len(), indices, |buffer| buffer.extend(vertices));
-    }
-
-    /// Last Route patch: `geometry` for a caller that writes its vertices straight into the batch buffer (see
-    /// LAST_ROUTE_PATCHES.md). `write` must append exactly `vertex_count` vertices; `vertex_count` and
-    /// `indices.len()` must not pass the draw call limits (`geometry` clamps before it calls this).
-    pub fn geometry_with(
-        &mut self,
-        vertex_count: usize,
-        indices: &[u16],
-        write: impl FnOnce(&mut Vec<Vertex>),
-    ) {
         let pip = self.state.pipeline.unwrap_or(
             self.pipelines
                 .get(self.state.draw_mode, self.state.depth_test_enable),
@@ -915,7 +903,7 @@ impl QuadGl {
                 || draw_call.pipeline != pip
                 || draw_call.render_pass != self.state.render_pass
                 || draw_call.draw_mode != self.state.draw_mode
-                || draw_call.vertices_count >= self.max_vertices - vertex_count
+                || draw_call.vertices_count >= self.max_vertices - vertices.len()
                 || draw_call.indices_count >= self.max_indices - indices.len()
                 || draw_call.capture != self.state.capture
                 || self.state.break_batching
@@ -957,13 +945,11 @@ impl QuadGl {
         };
         let dc = &mut self.draw_calls[self.draw_calls_count - 1];
 
-        let before = self.batch_vertex_buffer.len();
-        write(&mut self.batch_vertex_buffer);
-        debug_assert_eq!(self.batch_vertex_buffer.len(), before + vertex_count);
+        self.batch_vertex_buffer.extend(vertices);
         self.batch_index_buffer
             .extend(indices.iter().map(|x| *x + dc.vertices_count as u16));
 
-        dc.vertices_count += vertex_count;
+        dc.vertices_count += vertices.len();
         dc.indices_count += indices.len();
 
         dc.texture = self.state.texture;

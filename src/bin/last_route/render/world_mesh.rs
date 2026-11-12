@@ -29,8 +29,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use crate::shared::clock::Instant;
 
-/// Test only: every frame behaves as a slow one (a web build on a slow machine), so a part build overruns the frame budget
-/// and each rebuild makes just the one part it always may.
+// Test only: every frame behaves as a slow one (a web build on a slow machine), so a part build overruns the frame budget
+// and each rebuild makes just the one part it always may.
 #[cfg(test)]
 thread_local! {
     pub(crate) static SLOW_FRAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -481,6 +481,16 @@ impl WorldMeshes {
         self.meshes = meshes;
         self.drawn_origin = f.origin;
         self.bounds = mesh_bounds(&self.meshes);
+        self.chill_held_parts();
+    }
+
+    /// The parts kept but not drawn (the last window's, for a step back) hold the packed form only.
+    fn chill_held_parts(&mut self) {
+        for p in self.parts.values_mut() {
+            for m in &mut p.meshes {
+                m.chill();
+            }
+        }
     }
 
     /// Puts the drawn meshes back into the parts they were taken from. A part whose meshes were drained into the drawn
@@ -678,6 +688,7 @@ impl WorldMeshes {
         self.meshes = meshes;
         self.drawn_origin = f.origin;
         self.bounds = mesh_bounds(&self.meshes);
+        self.chill_held_parts();
     }
 }
 

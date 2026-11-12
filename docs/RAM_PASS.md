@@ -41,7 +41,7 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
 | Identical embedded model pictures share one texture; mesh tiles and model parts trimmed to size | 165 MB | 240 MB | |
 | Loaded sounds held as 16-bit samples instead of f32 (quad-snd patch) | 160 MB | 240 MB | |
 | Glyph atlas row-wrap fix (vendored macroquad) | 144 MB | 217 MB | |
-| World mesh tiles kept in an 18-byte vertex (`render/packed_mesh.rs`) | 144 MB | 201 MB | |
+| World mesh tiles kept in an 18-byte vertex while out of sight (`render/packed_mesh.rs`) | 144 MB | 210 MB | |
 
 Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
 `Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.
@@ -84,8 +84,10 @@ equal pictures now share one texture (`PropModel::parse`, by content hash), whic
 ### World mesh tiles (2026-11-12)
 
 The floor's meshes (about two million vertices in a stress run) were kept as macroquad's 40-byte vertex. They are now
-kept as `PackedMesh` (`render/packed_mesh.rs`), 18 bytes a vertex, and unpacked into macroquad's batch buffer when
-drawn (macroquad copied every drawn vertex there each frame already).
+kept as `PackedMesh` (`render/packed_mesh.rs`), 18 bytes a vertex. A tile that is being drawn keeps its unpacked
+vertices as well and is drawn from them as before; a tile the cull has dropped for 1.5 s gives them back. So the
+saving is on what is out of sight: the tiles behind the fog and the camera, the kept parts of the last window, the
+neighbour levels.
 
 | Field | Before | Now | Cost |
 |---|---|---|---|
@@ -97,13 +99,15 @@ drawn (macroquad copied every drawn vertex there each frame already).
 Measured before choosing: every mode is a whole number (0, 1, 2), every normal is unit length, the widest mesh is
 17.3 m (the grid holds 32 m), the UV span of 99% of meshes is 3 or less (the widest, 187, takes a coarser step).
 
-- Peak in the stress run: 217 MB to about 201 MB. A window recentre or a level's height shift now moves one origin
-  per mesh in place of every vertex.
+- Peak in the stress run: 213 to 222 MB before, 210 to 211 MB now (three runs each, back to back). A window recentre
+  or a level's height shift now moves one origin per mesh in place of every vertex.
 - Picture: two in-game screenshots (a corridor, a spiral stair well) against the build before match to within what
   two runs of one build differ by, once the run's start fade (which follows the clock) is taken out.
-- Frame time: the stress run's average went from 1.01 ms to 1.31 ms (unpacking costs about 1.6 ns a vertex against
-  0.7 ns for the plain copy). That is the price of the 16 MB. A lookup table for the normals was slower than the
-  division (the compiler's vector code handles the division; 2.0 ns against 1.6).
+- Frame time: unchanged (1.00 to 1.04 ms against 1.00 to 1.01 ms).
+- The first version unpacked every drawn tile each frame. It saved more (217 MB to 201 MB) but unpacking costs
+  1.6 ns a vertex against 0.7 ns for a plain copy, and the average frame went from 1.01 ms to 1.31 ms. That broke
+  the frame-time rule ([PERFORMANCE.md](PERFORMANCE.md)), so drawn tiles keep their unpacked form. A lookup table
+  for the normals was slower than the division (2.0 ns against 1.6: the compiler's vector code handles the division).
 
 ### Tried, no gain (2026-11-12)
 
@@ -117,7 +121,7 @@ Measured before choosing: every mode is a whole number (0, 1, 2), every normal i
 ## Next, in order of expected gain
 
 - [ ] World mesh tiles: the vertex is done (see above). What is left is fewer chunks kept around the player, which changes view distance.
-- [ ] The packed tiles cost frame time (0.3 ms on this PC). Unpacking only the tiles that pass the cull is already done; keeping the nearest tiles unpacked would buy the time back for a few MB.
+- [ ] The time a drawn tile keeps its unpacked form (`HOT_SECONDS`, 1.5 s) is a guess; a shorter time saves more while moving fast.
 - [ ] The glyph atlas still stores one-channel glyphs as RGBA and keeps a CPU copy. Small now that it no longer over-grows (see `vendor/macroquad/LAST_ROUTE_PATCHES.md`); a one-channel atlas would need shader changes.
 - [ ] Check that the 110 MB dev executable (32 MB resident) shrinks in the release build, and measure release numbers.
 - [ ] Repeat on the Intel Macs (no `/proc`; use `footprint` or Activity Monitor).

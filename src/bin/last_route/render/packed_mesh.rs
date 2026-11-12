@@ -1,6 +1,10 @@
 //! The floor's meshes as they are kept between frames: 18 bytes a vertex in place of macroquad's 40. A window holds
-//! about two million of these vertices (docs/RAM_PASS.md), and macroquad copies every drawn vertex into its batch
-//! buffer each frame anyway, so the kept copy is unpacked straight into that copy.
+//! about two million of these vertices (docs/RAM_PASS.md) and draws a fraction of them in any one frame.
+//!
+//! Unpacking costs more than twice a plain copy (1.6 ns a vertex against 0.7), so a mesh that is being drawn keeps its
+//! unpacked vertices too (`Hot`) and is drawn from them exactly as before; a mesh the cull has dropped for
+//! `HOT_SECONDS` gives them back. The memory saved is on everything out of sight: the tiles behind the fog and the
+//! camera, the kept parts of other windows, the neighbour levels.
 //!
 //! What is stored, and what it costs the picture:
 //! - position: 16 bits an axis on a fixed grid of 1/2048 m (under half a millimetre; at most a quarter of one off).
@@ -18,6 +22,9 @@ use macroquad::prelude::*;
 pub const POS_STEP: f32 = 1.0 / 2048.0;
 /// The finest UV step: 2^-15.
 const UV_STEP_MIN: f32 = 1.0 / 32768.0;
+/// Seconds a mesh keeps its unpacked vertices after it was last drawn. Long enough that looking round a room does not
+/// unpack the same tiles again and again; short enough that what is left behind is given back within a few steps.
+pub const HOT_SECONDS: f64 = 1.5;
 /// The largest stored offset. One below the 16-bit limit, since the origin is rounded down to the grid.
 const SPAN_MAX: f32 = 65534.0;
 
@@ -43,6 +50,17 @@ pub struct PackedMesh {
     pub texture: Option<Texture2D>,
     /// Whether any vertex is in a blending shader mode (`mesh_batch::is_blended`).
     pub blended: bool,
+    /// The unpacked vertices while the mesh is being drawn.
+    hot: std::cell::RefCell<Option<Hot>>,
+}
+
+#[derive(Clone, Debug)]
+struct Hot {
+    vertices: Vec<Vertex>,
+    /// The mesh's origin the vertices were unpacked for; a moved mesh is unpacked again.
+    origin: Vec3,
+    /// The draw clock at the last draw.
+    drawn: f64,
 }
 
 /// The smallest power-of-two multiple of `min_step` that fits `span` into 16 bits.
@@ -109,7 +127,7 @@ impl PackedMesh {
                 normal_mode: pack_normal_mode(v.normal),
             })
             .collect();
-        PackedMesh { origin, step, uv_origin, uv_step, vertices: packed, indices, texture, blended }
+        PackedMesh { origin, step, uv_origin, uv_step, vertices: packed, indices, texture, blended, hot: Default::default() }
     }
 
     pub fn pack_all(meshes: Vec<Mesh>) -> Vec<PackedMesh> {
@@ -154,9 +172,33 @@ impl PackedMesh {
         (at(lo), at(hi))
     }
 
-    /// Appends the unpacked vertices to `out`.
-    pub fn unpack_into(&self, out: &mut Vec<Vertex>) {
-        out.extend(self.vertices());
+    /// Drops the unpacked copy if the mesh has not been drawn for `HOT_SECONDS` (`now` in seconds, the draw clock).
+    pub fn cool(&self, now: f64) {
+        let mut hot = self.hot.borrow_mut();
+        if hot.as_ref().is_some_and(|h| now - h.drawn > HOT_SECONDS) {
+            *hot = None;
+        }
+    }
+
+    /// Drops the unpacked copy now (a mesh that left the drawn set).
+    pub fn chill(&mut self) {
+        *self.hot.get_mut() = None;
+    }
+
+    /// Whether the mesh holds an unpacked copy.
+    pub fn is_hot(&self) -> bool {
+        self.hot.borrow().is_some()
+    }
+
+    /// The unpacked vertices as they are drawn at `now`: the kept copy, unpacked first when there is none or the
+    /// mesh has moved since.
+    fn with_hot<R>(&self, now: f64, f: impl FnOnce(&[Vertex]) -> R) -> R {
+        let mut hot = self.hot.borrow_mut();
+        match hot.as_mut() {
+            Some(h) if h.origin == self.origin => h.drawn = now,
+            _ => *hot = Some(Hot { vertices: self.vertices().collect(), origin: self.origin, drawn: now }),
+        }
+        f(&hot.as_ref().expect("set above").vertices)
     }
 
     /// The mesh as macroquad's own type (tests, tools).
@@ -166,33 +208,15 @@ impl PackedMesh {
     }
 }
 
-/// Draws a packed mesh as `draw_mesh` draws its unpacked form, and counts it. The vertices are unpacked straight into
-/// macroquad's batch buffer (`geometry_with`, a Last Route patch in vendor/macroquad).
-#[cfg(not(lr_macos_legacy))]
-pub fn draw_counted(m: &PackedMesh) {
+/// Draws a packed mesh as `draw_mesh` draws its unpacked form, and counts it. `now` is the draw clock in seconds
+/// (`get_time()`): the mesh keeps its unpacked vertices from this draw on, until `cool` finds it idle.
+pub fn draw_counted(m: &PackedMesh, now: f64) {
     super::draw_stats::note(&m.texture, m.vertices.len(), m.indices.len());
-    let gl = unsafe { get_internal_gl() }.quad_gl;
-    gl.texture(m.texture.as_ref());
-    gl.draw_mode(DrawMode::Triangles);
-    gl.geometry_with(m.vertices.len(), &m.indices, |buffer| m.unpack_into(buffer));
-}
-
-/// The Snow Leopard build's form: its older macroquad (packaging/macos/legacy/stage-dependencies.sh) has no
-/// `geometry_with`, so the vertices are unpacked into a kept buffer and copied from there.
-#[cfg(lr_macos_legacy)]
-pub fn draw_counted(m: &PackedMesh) {
-    thread_local! {
-        static SCRATCH: std::cell::RefCell<Vec<Vertex>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    super::draw_stats::note(&m.texture, m.vertices.len(), m.indices.len());
-    SCRATCH.with(|s| {
-        let mut verts = s.borrow_mut();
-        verts.clear();
-        m.unpack_into(&mut verts);
+    m.with_hot(now, |vertices| {
         let gl = unsafe { get_internal_gl() }.quad_gl;
         gl.texture(m.texture.as_ref());
         gl.draw_mode(DrawMode::Triangles);
-        gl.geometry(&verts, &m.indices);
+        gl.geometry(vertices, &m.indices);
     });
 }
 
@@ -302,5 +326,27 @@ mod tests {
         ]));
         assert_eq!(m.vertex(0).normal, vec4(1.0, 0.0, 0.0, 2.0));
         assert_eq!(m.vertex(1).normal, vec4(0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_drawn_mesh_keeps_its_unpacked_vertices_until_it_has_been_idle() {
+        let n = vec4(0.0, 1.0, 0.0, 0.0);
+        let mut m = PackedMesh::pack(mesh(vec![vert(vec3(1.0, 0.0, 2.0), Vec2::ZERO, n), vert(vec3(4.0, 3.0, 2.0), Vec2::ZERO, n)]));
+        assert!(!m.is_hot(), "a mesh that was never drawn holds the packed form only");
+        assert_eq!(m.with_hot(10.0, |v| v[1].position), vec3(4.0, 3.0, 2.0));
+        assert!(m.is_hot());
+        m.cool(10.0 + HOT_SECONDS * 0.5);
+        assert!(m.is_hot(), "culled for a moment: kept");
+        m.with_hot(11.0, |_| ());
+        m.cool(10.0 + HOT_SECONDS + 0.5);
+        assert!(m.is_hot(), "drawn again since: the clock started over");
+        m.cool(11.0 + HOT_SECONDS + 0.1);
+        assert!(!m.is_hot(), "idle past the limit: given back");
+        // a moved mesh is unpacked again for its new place
+        m.with_hot(20.0, |_| ());
+        m.origin += vec3(-45.0, 0.0, 0.0);
+        assert_eq!(m.with_hot(20.1, |v| v[0].position), vec3(-44.0, 0.0, 2.0));
+        m.chill();
+        assert!(!m.is_hot());
     }
 }
