@@ -31,7 +31,7 @@ pub struct Assets {
     pub portraits: HashMap<String, Texture2D>,
     /// Every prop, fixture and hand-tool model by the path the prop data names it under: props/<set>/<name>.bbmodel
     /// and interactables/<name>.bbmodel (and "pack:<id>:<path>" for pack props).
-    pub models: HashMap<String, PropModel>,
+    pub models: ModelStore,
     /// flashlight, taser, crowbar, axe, battery, stim
     pub icons: Vec<Texture2D>,
     pub logo: Option<Texture2D>,
@@ -130,64 +130,109 @@ fn embedded_sibling(dir: &str) -> impl Fn(&str) -> Option<Vec<u8>> + '_ {
     }
 }
 
-/// The prop, fixture and hand-tool models: every interactable, every model the prop data names, and the models
-/// mod packs bring (a pack's `.bbmodel`, or its `.glb`, the one format still read besides bbmodel).
-fn load_models(content: &Content) -> HashMap<String, PropModel> {
-    let mut models = HashMap::new();
-    let mut cache = AtlasCache::default();
-    let embedded_models = embedded::assets_under("interactables/")
-        .chain(embedded::assets_under("props/hunter_items/"))
-        .map(|(p, _)| p)
-        .filter(|p| p.ends_with(".bbmodel"))
-        .chain(
-            content
-                .props
-                .values()
-                .flat_map(|d| d.models.iter())
-                .map(|m| m.as_str())
-                .filter(|m| !m.starts_with("pack:")),
-        );
-    for path in embedded_models {
-        if models.contains_key(path) {
-            continue;
-        }
-        let Some(text) = embedded::asset(path).and_then(|b| std::str::from_utf8(b).ok()) else {
-            continue;
-        };
-        let dir = path.rsplit_once('/').map(|x| x.0).unwrap_or("");
-        let soft = path.starts_with("props/blocky/");
-        if let Some(m) = PropModel::parse(text, &embedded_sibling(dir), dir, &mut cache, soft) {
-            models.insert(path.to_string(), m);
-        }
+/// Where one model comes from: an embedded file, or a file in a mod pack's folder.
+enum ModelSource {
+    Embedded,
+    Pack { dir: std::path::PathBuf, id: String, rel: String },
+}
+
+/// The prop, fixture and hand-tool models, by the path the prop data names them under. The paths are known from the
+/// start; a model is read and built the first time it is asked for, so a session only pays (time and memory) for the
+/// models its route shows. A model that does not parse stays `None` and is not tried again.
+#[derive(Default)]
+pub struct ModelStore {
+    cells: HashMap<String, (ModelSource, std::cell::OnceCell<Option<PropModel>>)>,
+    atlases: RefCell<AtlasCache>,
+    white: Option<Texture2D>,
+}
+
+impl Default for ModelSource {
+    fn default() -> Self {
+        ModelSource::Embedded
     }
-    let white = white_texture();
-    for def in content.props.values() {
-        for m in def.models.iter().filter(|m| m.starts_with("pack:")) {
-            let mut it = m.splitn(3, ':');
-            let (_, pid, rel) = (it.next(), it.next().unwrap_or(""), it.next().unwrap_or(""));
-            let Some(pack) = content.packs.iter().find(|p| p.id == pid) else {
-                continue;
-            };
-            let dir = rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
-            let sibling = |file: &str| packs::read_pack_file(&pack.dir, &format!("{dir}/{file}"));
-            let Some(bytes) = packs::read_pack_file(&pack.dir, rel) else {
-                continue;
-            };
-            let model = if rel.ends_with(".bbmodel") {
-                String::from_utf8(bytes)
-                    .ok()
-                    .and_then(|t| PropModel::parse(&t, &sibling, &format!("pack:{pid}/{dir}"), &mut cache, false))
-            } else if rel.ends_with(".glb") {
-                PropModel::parse_glb(&bytes, &sibling, &white)
-            } else {
-                None
-            };
-            if let Some(model) = model {
-                models.insert(m.clone(), model);
+}
+
+impl ModelStore {
+    /// Every interactable, every model the prop data names, and the models mod packs bring (a pack's `.bbmodel`, or
+    /// its `.glb`, the one format still read besides bbmodel). Nothing is parsed here.
+    fn index(content: &Content) -> ModelStore {
+        let mut cells = HashMap::new();
+        let embedded_models = embedded::assets_under("interactables/")
+            .chain(embedded::assets_under("props/hunter_items/"))
+            .map(|(p, _)| p)
+            .filter(|p| p.ends_with(".bbmodel"))
+            .chain(
+                content
+                    .props
+                    .values()
+                    .flat_map(|d| d.models.iter())
+                    .map(|m| m.as_str())
+                    .filter(|m| !m.starts_with("pack:")),
+            );
+        for path in embedded_models {
+            if embedded::asset(path).is_some() {
+                cells.entry(path.to_string()).or_insert((ModelSource::Embedded, std::cell::OnceCell::new()));
+            }
+        }
+        for def in content.props.values() {
+            for m in def.models.iter().filter(|m| m.starts_with("pack:")) {
+                let mut it = m.splitn(3, ':');
+                let (_, pid, rel) = (it.next(), it.next().unwrap_or(""), it.next().unwrap_or(""));
+                let Some(pack) = content.packs.iter().find(|p| p.id == pid) else {
+                    continue;
+                };
+                let source = ModelSource::Pack { dir: pack.dir.clone(), id: pid.to_string(), rel: rel.to_string() };
+                cells.insert(m.clone(), (source, std::cell::OnceCell::new()));
+            }
+        }
+        ModelStore { cells, atlases: RefCell::new(AtlasCache::default()), white: Some(white_texture()) }
+    }
+
+    fn build(&self, path: &str, source: &ModelSource) -> Option<PropModel> {
+        let mut cache = self.atlases.borrow_mut();
+        match source {
+            ModelSource::Embedded => {
+                let text = embedded::asset(path).and_then(|b| std::str::from_utf8(b).ok())?;
+                let dir = path.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                let soft = path.starts_with("props/blocky/");
+                PropModel::parse(text, &embedded_sibling(dir), dir, &mut cache, soft)
+            }
+            ModelSource::Pack { dir: pack_dir, id, rel } => {
+                let dir = rel.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                let sibling = |file: &str| packs::read_pack_file(pack_dir, &format!("{dir}/{file}"));
+                let bytes = packs::read_pack_file(pack_dir, rel)?;
+                if rel.ends_with(".bbmodel") {
+                    let text = String::from_utf8(bytes).ok()?;
+                    PropModel::parse(&text, &sibling, &format!("pack:{id}/{dir}"), &mut cache, false)
+                } else if rel.ends_with(".glb") {
+                    PropModel::parse_glb(&bytes, &sibling, self.white.as_ref()?)
+                } else {
+                    None
+                }
             }
         }
     }
-    models
+
+    /// The model, built on first use. `None` for an unknown path or a file that does not parse.
+    pub fn get(&self, path: &str) -> Option<&PropModel> {
+        let (source, cell) = self.cells.get(path)?;
+        cell.get_or_init(|| self.build(path, source)).as_ref()
+    }
+
+    /// True when the model exists and parses (this builds it).
+    pub fn contains_key(&self, path: &str) -> bool {
+        self.get(path).is_some()
+    }
+
+    /// Every known path, built or not.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.cells.keys()
+    }
+
+    /// How many models have been built so far.
+    pub fn len(&self) -> usize {
+        self.cells.values().filter(|(_, c)| matches!(c.get(), Some(Some(_)))).count()
+    }
 }
 
 impl Assets {
@@ -235,7 +280,7 @@ impl Assets {
                 portraits.insert(h.id.clone(), tex(&p));
             }
         }
-        let models = load_models(content);
+        let models = ModelStore::index(content);
         let icons = [
             "flashlight_item",
             "taser_item",
@@ -309,7 +354,7 @@ impl Assets {
             hunters: HashMap::new(),
             npc_body: None,
             portraits: HashMap::new(),
-            models: HashMap::new(),
+            models: ModelStore::default(),
             icons: Vec::new(),
             logo: None,
             font: None,

@@ -31,9 +31,19 @@ Set `LR_PROFILE_DIR` to a scratch folder so the real profile is not touched.
    about 6 MB. It is in, because it is free, but the memory above is live data.
 4. Play adds about 160 MB over the menu. Not yet broken down (chunk meshes, hunters, the streaming window).
 
+## Done
+
+| Change | Menu | 40 s `mixed` stress peak | `Assets::load` |
+|---|---|---|---|
+| Baseline | 210 MB | 371 MB | 250 ms |
+| Prop models built on first use (`ModelStore`, `shared/assets.rs`) | 190 MB | 292 MB | 77 ms |
+
+Average frame time in the stress run did not change (1.24 ms before, 1.17 ms after). A model is built the first time
+`Assets::models.get` or `contains_key` asks for it; picking a prop's variant builds that prop type's variants only.
+
 ## Next, in order of expected gain
 
-- [ ] Load prop models on first use instead of all at startup (16 call sites read `Assets::models`). Expected: most of 83 MB at the menu; during play, only the regions visited.
+- [ ] `Assets::load` still adds about 60 MB (hunter models, the runner body, fonts): measure each and defer what the menu does not draw.
 - [ ] Break down the boot card's 45 to 90 MB (log `rss` around the two `load_font` calls and the bake) and free the boot fonts and bake when the card is gone.
 - [ ] Break down the 160 MB of play: `rss` at run start, after the first window build, and each minute; then the chunk mesh and collision buffers.
 - [ ] Check that the 110 MB dev executable (32 MB resident) shrinks in the release build, and measure release numbers.
