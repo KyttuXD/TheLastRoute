@@ -31,16 +31,17 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-22.04"]' || '["ubuntu-22.04","windows-latest"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Linux packages
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev xvfb
+        run: sudo apt-get install -y libasound2-dev || (sudo apt-get update && sudo apt-get install -y libasound2-dev)
 
       # The Rust version is pinned in rust-toolchain.toml; this installs the same version (keep both in step).
       - uses: dtolnay/rust-toolchain@master
@@ -73,6 +74,8 @@ jobs:
 
       # The ci profile is the test profile without full debug info, and it reuses the test build's
       # dependency artifacts. A separate release build was a second full compile of the crate.
+      # Only the game is built (the headless suites below run it). The other programs are type-checked, which is
+      # enough to catch a break in them and costs a fraction of building and linking four more programs.
       - name: cargo build --profile ci --bins
         shell: bash
         env:
@@ -80,7 +83,8 @@ jobs:
         run: |
           t0=$(date +%s); date -u +"start %FT%TZ"
           trap 'echo "| cargo build --profile ci --bins | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
-          cargo build --locked --profile ci --bins --features server
+          cargo build --locked --profile ci --bin last_route --features server
+          cargo check --locked --profile ci --bins --features server
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites
@@ -89,7 +93,7 @@ jobs:
       # The self-test is not run here: it needs a real OpenGL context and an audio device, which
       # hosted runners do not have (Windows fails on the pixel format and hangs). Run it locally.
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         continue-on-error: true
         with:

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the Linux version and a folder you can unpack anywhere, with a desktop entry and icon.
 # Run on Linux from the app/ folder:  sh packaging/linux/build.sh
-# Needs (Debian/Ubuntu names): build-essential pkg-config libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev
+# Needs (Debian/Ubuntu names): build-essential libasound2-dev (X11 and OpenGL are loaded when the game runs)
 # Fonts: the original uses Courier New Bold and Impact; install ttf-mscorefonts-installer for them,
 # otherwise Liberation Mono/Sans Bold are used.
 set -e

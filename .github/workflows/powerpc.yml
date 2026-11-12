@@ -30,14 +30,14 @@ jobs:
             gcc: gcc-powerpc-linux-gnu
             strip: powerpc-linux-gnu-strip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: powerpc-${{ matrix.bits }}
-      - run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }} qemu-user
+      - run: sudo apt-get install -y ${{ matrix.gcc }} qemu-user || (sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }} qemu-user)
       - name: Build, then the headless suites under qemu
         run: sh packaging/powerpc/build.sh ${{ matrix.bits }} suites
       - name: Collect the program
@@ -45,7 +45,7 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.triple }}/ci/last_route dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
           ${{ matrix.strip }} dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
           path: dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
