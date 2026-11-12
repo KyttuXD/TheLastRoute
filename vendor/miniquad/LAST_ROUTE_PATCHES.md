@@ -70,6 +70,14 @@ Old systems (legacy build only, `cfg(lr_macos_legacy)`; found by reading, then o
    to them (this check is in every build; it is always true on a current system). The unused `ImageIO` framework link
    is dropped.
 
+10. `src/graphics/gl.rs` `buffer_update`: macroquad keeps one vertex and one index buffer per draw-call slot and
+    refills the first few several times a frame (once per camera pass). `glBufferSubData` into a buffer the GPU has
+    not drawn from yet makes old drivers wait for the GPU on each draw call. With the switch `orphan_on_update` the
+    upload is `glBufferData` with the data, which gives the driver new storage. On in the legacy Mac build; elsewhere
+    off unless `LR_GL_ORPHAN=1` (on KT's Linux PC it measured the same either way). Also in the legacy build:
+    `glClearDepth` for `glClearDepthf`, ARB/EXT names for four functions, the OpenGL context attached again after
+    the window is shown, and autorelease pools (item 9's run on the Mac Pro found these).
+
 Not implemented in the Metal backend: `texture_read_pixels` (macroquad's `grab_screen` is OpenGL only too), so
 screenshots need OpenGL. A Metal window is also held to the refresh rate by the compositor (docs/GRAPHICS_API.md). When
 miniquad or macroquad is upgraded, check whether upstream fixed 1 to 5 and drop the ones it did.

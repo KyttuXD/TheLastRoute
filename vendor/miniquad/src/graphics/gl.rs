@@ -21,6 +21,24 @@ pub mod raw_gl {
     }
 }
 
+/// Last Route: whether `buffer_update` gives the driver new storage on every upload. On in the legacy Mac build;
+/// `LR_GL_ORPHAN=1` or `0` in the environment overrides it on a native build (to measure it).
+fn orphan_on_update() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| match std::env::var("LR_GL_ORPHAN").ok().as_deref() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => cfg!(lr_macos_legacy),
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Buffer {
     gl_buf: GLuint,
@@ -1410,7 +1428,15 @@ impl RenderingBackend for GlContext {
         self.cache.store_buffer_binding(gl_target);
         self.cache
             .bind_buffer(gl_target, buffer.gl_buf, buffer.index_type);
-        unsafe { glBufferSubData(gl_target, 0, size as _, data.ptr as _) };
+        // Last Route: macroquad refills the same few buffers several times a frame (once per camera pass). Writing
+        // into a buffer the GPU has not drawn from yet makes old OpenGL drivers wait for the GPU on every draw call
+        // (LAST_ROUTE_PATCHES.md item 10). With the switch on, the upload hands the driver new storage instead
+        // ("orphaning"): the old storage is dropped when the GPU is done with it and nothing waits.
+        if orphan_on_update() {
+            unsafe { glBufferData(gl_target, size as _, data.ptr as _, GL_STREAM_DRAW) };
+        } else {
+            unsafe { glBufferSubData(gl_target, 0, size as _, data.ptr as _) };
+        }
         self.cache.restore_buffer_binding(gl_target);
     }
 
