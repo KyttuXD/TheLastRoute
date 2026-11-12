@@ -2,7 +2,7 @@ name: macOS Intel test artifact
 
 on:
   push:
-    branches: [ci/macos-intel-artifact]
+    branches: [main, ci/macos-intel-artifact]
   workflow_dispatch:
 
 permissions:
