@@ -31,6 +31,10 @@ def walk(o,n,kind):
         elif op==0x70: _,i=uleb(b,i)
         elif op==0xc0: _,i=uleb(b,i); _,i=uleb(b,i)
     return out
+if info is None:
+    # a program linked for 10.5 has no bind tables (they arrived with 10.6); its imports are in the symbol table
+    print("(no bind tables: linked for a system older than 10.6; use nm -u for the import list)")
+    sys.exit(0)
 syms=walk(info[2],info[3],'bind')+walk(info[6],info[7],'lazy')
 want=sys.argv[2:]
 for name,lib,kind in sorted(set(syms)):
