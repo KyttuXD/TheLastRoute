@@ -41,6 +41,13 @@ isolation, files and local TCP, and prints OS/compiler/dynamic-library informati
 It creates and removes only its own temporary files. It does not install software.
 Passing this probe does not establish game or graphics compatibility.
 
+The `Intel Snow Leopard runtime bootstrap` CI workflow now fetches the actual
+MacPorts Darwin 10 bootstrap (Rust 1.77.0, published under its 1.78.0 release),
+its matching standard library and the legacy-support compatibility library.
+Downloads are SHA-256 checked and extracted into a private runner directory;
+there is no system installation. It compiles and executes the standalone probe
+automatically. Modern-host success still does not establish 10.6.8 execution.
+
 The standalone runtime probe is also available for developer investigation; it
 is not a prerequisite imposed on players. The deliverable must be a self-contained
 game, not a requirement for players to install Rust or MacPorts.

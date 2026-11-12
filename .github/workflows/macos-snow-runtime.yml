@@ -1,0 +1,40 @@
+name: Intel Snow Leopard runtime bootstrap
+
+on:
+  push:
+    branches: [main, ci/macos-intel-artifact]
+    paths:
+      - packaging/macos/legacy/**
+      - .github/workflows/macos-snow-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patched-runtime:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch checked Darwin 10 compiler and compatibility library
+        run: sh packaging/macos/legacy/bootstrap-runtime.sh "$RUNNER_TEMP/lr-snow-runtime"
+      - name: Compile and exercise patched runtime
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/lr-snow-runtime"
+          export DYLD_LIBRARY_PATH="$root/support/opt/local/lib:$root/compiler/lib:/usr/lib"
+          export MACOSX_DEPLOYMENT_TARGET=10.6
+          "$root/compiler/bin/rustc" -Vv
+          "$root/compiler/bin/rustc" --edition=2021 --target x86_64-apple-darwin \
+            packaging/macos/legacy/probe.rs -L "native=$root/support/opt/local/lib" \
+            -C link-arg=-lMacportsLegacySystem.B -o "$root/runtime-probe"
+          otool -L "$root/runtime-probe" | tee runtime-probe-libraries.txt
+          otool -l "$root/runtime-probe" | tee runtime-probe-load-commands.txt
+          "$root/runtime-probe" | tee runtime-probe-result.txt
+          echo 'This validates a patched runtime on the CI host, not execution of the game on 10.6.8.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snow-leopard-runtime-investigation-reports
+          path: runtime-probe-*.txt
+          if-no-files-found: warn
