@@ -40,8 +40,15 @@ unsafe fn setup_pcm_device() -> *mut sys::snd_pcm_t {
         panic!("Can't set interleaved mode");
     }
 
-    if sys::snd_pcm_hw_params_set_format(pcm_handle, hw_params, sys::SND_PCM_FORMAT_FLOAT_LE) < 0 {
-        panic!("Can't set SND_PCM_FORMAT_FLOAT_LE format");
+    // Last Route: the mixer writes f32 in the machine's byte order, so a big-endian machine (PowerPC) asks for the
+    // big-endian float format; FLOAT_LE there would play noise.
+    let format = if cfg!(target_endian = "big") {
+        sys::SND_PCM_FORMAT_FLOAT_BE
+    } else {
+        sys::SND_PCM_FORMAT_FLOAT_LE
+    };
+    if sys::snd_pcm_hw_params_set_format(pcm_handle, hw_params, format) < 0 {
+        panic!("Can't set the float sample format");
     }
     if sys::snd_pcm_hw_params_set_buffer_size(pcm_handle, hw_params, consts::PCM_BUFFER_SIZE) < 0 {
         panic!("Cant's set buffer size");

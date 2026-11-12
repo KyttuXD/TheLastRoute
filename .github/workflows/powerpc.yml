@@ -1,0 +1,53 @@
+# Experimental big-endian PowerPC Linux build (G3/G4/G5 Macs and POWER machines under Linux): docs/POWERPC.md.
+# Manual only (Actions > powerpc > Run workflow), so it adds no check to pushes and pull requests.
+# Nothing is published. The artifact holds an UNTESTED program for a real PowerPC machine to try: it has run its
+# headless suites in the qemu user emulator here, never on PowerPC hardware and never with a window.
+name: powerpc
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  CARGO_BUILD_JOBS: "4"
+
+jobs:
+  build:
+    name: build (${{ matrix.bits }}-bit)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bits: "64"
+            triple: powerpc64-unknown-linux-gnu
+            gcc: gcc-powerpc64-linux-gnu
+            strip: powerpc64-linux-gnu-strip
+          - bits: "32"
+            triple: powerpc-unknown-linux-gnu
+            gcc: gcc-powerpc-linux-gnu
+            strip: powerpc-linux-gnu-strip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: powerpc-${{ matrix.bits }}
+      - run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }} qemu-user
+      - name: Build, then the headless suites under qemu
+        run: sh packaging/powerpc/build.sh ${{ matrix.bits }} suites
+      - name: Collect the program
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.triple }}/ci/last_route dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
+          ${{ matrix.strip }} dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
+      - uses: actions/upload-artifact@v4
+        with:
+          name: last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
+          path: dist/last_route-linux-powerpc${{ matrix.bits }}-UNTESTED
+          retention-days: 3
+          if-no-files-found: error
