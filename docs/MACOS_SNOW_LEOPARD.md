@@ -16,7 +16,7 @@ the game and vendored miniquad. Normal builds do not enable it. It:
 - replaces Lion/Retina fullscreen, mouse-coordinate, DPI and scroll calls;
 - forces OpenGL even if Metal was previously selected in saved settings.
 
-`.github/workflows/macos-legacy-renderer.yml` builds this configuration, audits
+The `renderer` job of `.github/workflows/macos-legacy.yml` builds this configuration, audits
 linked frameworks, tests shader conversion and legacy Apple shader compilation,
 and runs headless gameplay suites. It intentionally uses the supported 10.12
 compiler runtime until the runtime/dependency backport is ready. Its reports
@@ -41,7 +41,7 @@ isolation, files and local TCP, and prints OS/compiler/dynamic-library informati
 It creates and removes only its own temporary files. It does not install software.
 Passing this probe does not establish game or graphics compatibility.
 
-The `Intel Snow Leopard runtime bootstrap` CI workflow now fetches the actual
+The `runtime` job of the same workflow fetches the actual
 MacPorts Darwin 10 bootstrap (Rust 1.77.0, published under its 1.78.0 release),
 its matching standard library and the legacy-support compatibility library.
 Downloads are SHA-256 checked and extracted into a private runner directory;
@@ -59,11 +59,39 @@ The standalone runtime probe is also available for developer investigation; it
 is not a prerequisite imposed on players. The deliverable must be a self-contained
 game, not a requirement for players to install Rust or MacPorts.
 
+## CI
+
+One workflow, `macos-legacy` (`.github/workflows/macos-legacy.yml`), holds both jobs. It runs by hand only
+(Actions > macos-legacy > Run workflow, or `gh workflow run macos-legacy`), so pushes and pull requests get no
+extra check. The normal Intel build stays in `build.yml` (`macos-intel`, deployment target 10.12 from
+`packaging/macos/build_app.sh`). The OpenGL 2.1 smoke test prints `SKIPPED` on a machine with no accelerated
+pixel format (hosted runners); run it on a real Mac.
+
+## Legacy dependency graph (2026-11-12)
+
+Found by building the staged copy with Rust 1.77 (`cargo check`, Linux host and `--target x86_64-apple-darwin`).
+`packaging/macos/legacy/build-experiment.sh` applies these to the staged copy only; the release `Cargo.toml`
+and `Cargo.lock` are not touched.
+
+| Crate | Problem with 1.77 | Staged fix |
+|---|---|---|
+| `winresource` (build) | pulls `toml` 1.x, edition 2024, unreadable by Cargo 1.77 | line removed (Windows-only icon step) |
+| `fontdue` 0.9.5 | `cast_signed` | pinned to 0.9.3 |
+| `macroquad` 0.4.16 | `size_of` from the 1.80 prelude | pinned to 0.4.13 |
+| `indexmap`, `zeroize`, `wasm-bindgen`, `web-sys` | declare a newer rust-version | lowered by Cargo's MSRV-aware resolver |
+
+With these, every dependency that needs no C compiler checks for `x86_64-apple-darwin` under 1.77, including
+`macroquad`, vendored `miniquad` (legacy cfg) and the `objc2` crates behind `rfd`. Not checked on Linux: `ring`
+(needs Apple clang), and so `rustls` and the game crate itself. The `runtime` job is the check for those.
+
+Open risk: `rfd` 0.17 (the SKIN tab file panel) uses `objc2-app-kit`, which is written for 10.12+. It compiles;
+whether it runs on 10.6.8 is unknown. If it does not, the legacy build needs its own `NSOpenPanel` call.
+
 ## Remaining work
 
 - Verify the patched runtime on real 10.6.8; modern GitHub macOS runners cannot do this.
-- Isolate and pin legacy dependencies: the current locked graph includes crates
-  requiring Rust 1.85. Do not downgrade the normal release dependency graph.
+- Get the `runtime` job's game build green (the pins above are in; `ring` and the game crate are next).
+- Package that build as its own `.app` (LSMinimumSystemVersion 10.6) once it links.
 - Verify the legacy renderer and remaining platform calls on Snow Leopard.
 - Audit linked Apple frameworks, audio, file dialogs and TLS dependencies.
 - Build and test the actual game, retaining gameplay and other OS behavior.

@@ -19,7 +19,13 @@ echo "Legacy build source copy: $STAGE"
 # Modern Cargo understands newer lockfiles/manifests and can select dependency
 # versions compatible with the active legacy rustc. Build with matching old
 # Cargo afterward, which does not inject newer rustc command-line switches.
+# winresource is the Windows icon step (build.rs, cfg(windows)); its toml crates are edition 2024, which Cargo 1.77 cannot read.
+sed -i.bak '/^winresource = /d' "$STAGE/Cargo.toml" && rm "$STAGE/Cargo.toml.bak"
 cargo +1.99.1 update --manifest-path "$STAGE/Cargo.toml"
+# Crates that declare no rust-version but need a newer compiler: the newest releases that build with 1.77
+# (found with `cargo check` under 1.77; fontdue 0.9.4+ uses cast_signed, macroquad 0.4.14+ uses the 1.80 prelude).
+cargo +1.99.1 update --manifest-path "$STAGE/Cargo.toml" -p fontdue --precise 0.9.3
+cargo +1.99.1 update --manifest-path "$STAGE/Cargo.toml" -p macroquad --precise 0.4.13
 python3 - "$STAGE/Cargo.lock" <<'PY'
 import pathlib
 import sys

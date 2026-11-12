@@ -1,0 +1,91 @@
+# Experimental Intel OS X 10.6.8 (Snow Leopard) port: docs/MACOS_SNOW_LEOPARD.md.
+# Manual only (Actions > macos-legacy > Run workflow), so it adds no check to pushes and pull requests.
+# Nothing is published: the reports are private run artifacts, not a game download.
+name: macos-legacy
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+  CARGO_BUILD_JOBS: "4"
+
+jobs:
+  # The legacy renderer (LR_MACOS_LEGACY=1) built with the normal compiler and its 10.12 runtime.
+  renderer:
+    runs-on: macos-15-intel
+    env:
+      LR_MACOS_LEGACY: "1"
+      MACOSX_DEPLOYMENT_TARGET: "10.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-legacy-renderer
+      - name: Build the game with the legacy renderer
+        run: cargo build --locked --profile ci --target x86_64-apple-darwin --bin last_route
+      - name: No Metal, MetalKit or Vision linked
+        run: |
+          otool -L target/x86_64-apple-darwin/ci/last_route | tee renderer-libraries.txt
+          ! grep -E '/(Metal|MetalKit|Vision)\.framework/' renderer-libraries.txt
+      # The OpenGL 2.1 smoke test skips itself when the runner has no accelerated pixel format.
+      - name: Renderer unit tests
+        run: |
+          cp -R vendor/miniquad "$RUNNER_TEMP/lr-miniquad"
+          cargo test --manifest-path "$RUNNER_TEMP/lr-miniquad/Cargo.toml" --lib --target x86_64-apple-darwin -- --test-threads=1 --nocapture
+      - name: Headless test suites
+        run: target/x86_64-apple-darwin/ci/last_route --headless --test-suite "tests/*.json" --out target/test-reports/legacy-renderer.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-legacy-renderer-reports
+          path: |
+            renderer-libraries.txt
+            target/test-reports/legacy-renderer.json
+          retention-days: 3
+          if-no-files-found: warn
+
+  # The MacPorts Darwin 10 compiler (Rust 1.77, emulated TLS): a runtime probe, then the game build.
+  runtime:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Fetch the Darwin 10 compiler (sha256 checked, private folder)
+        run: sh packaging/macos/legacy/bootstrap-runtime.sh "$RUNNER_TEMP/lr-snow-runtime"
+      - name: Runtime probe
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/lr-snow-runtime"
+          export DYLD_LIBRARY_PATH="$root/support/opt/local/lib:$root/compiler/lib:/usr/lib"
+          export MACOSX_DEPLOYMENT_TARGET=10.6
+          "$root/compiler/bin/rustc" -Vv
+          "$root/compiler/bin/rustc" --edition=2021 --target x86_64-apple-darwin \
+            packaging/macos/legacy/probe.rs -L "native=$root/support/opt/local/lib" \
+            -C link-arg=-lMacportsLegacySystem.B -o "$root/runtime-probe"
+          otool -L "$root/runtime-probe" | tee runtime-probe-libraries.txt
+          otool -l "$root/runtime-probe" > runtime-probe-load-commands.txt
+          "$root/runtime-probe" | tee runtime-probe-result.txt
+      - name: Game build with the Darwin 10 compiler
+        shell: bash
+        run: |
+          set -o pipefail
+          rustup toolchain install 1.77.0 --profile minimal --no-self-update
+          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee legacy-game-build.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-legacy-runtime-reports
+          path: |
+            runtime-probe-*.txt
+            legacy-game-build.txt
+            target/test-reports/snow-leopard-*
+          retention-days: 3
+          if-no-files-found: warn
