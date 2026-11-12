@@ -22,7 +22,11 @@ export CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback
 export MACOSX_DEPLOYMENT_TARGET=$OSVER
 # Keep experiment objects separate from the modern-compiler pass artifacts.
 export CARGO_TARGET_DIR="$ROOT/target/pass/legacy-$OSVER"
-export RUSTFLAGS="-L native=$SUPPORT -C link-arg=-lMacportsLegacySystem.B"
+# Flat namespace: the linker on a current Mac finds clock_gettime, getentropy and the like in its own libSystem and
+# would tie each one to libSystem by name. The old system's libSystem does not have them, and the program would die at
+# the first call (the 10.6 test app did, on a Mac Pro 3,1). With a flat namespace the old system looks in every loaded
+# library and finds them in libMacportsLegacySystem.
+export RUSTFLAGS="-L native=$SUPPORT -C link-arg=-lMacportsLegacySystem.B -C link-arg=-Wl,-flat_namespace"
 STAGE=$(mktemp -d "${RUNNER_TEMP:-/tmp}/lr-snow-source.XXXXXX")
 git -C "$ROOT" archive HEAD | tar -xf - -C "$STAGE"
 echo "Legacy build source copy: $STAGE"
@@ -40,7 +44,12 @@ BIN="$CARGO_TARGET_DIR/x86_64-apple-darwin/ci/last_route"
 otool -L "$BIN" | tee "$ROOT/target/test-reports/legacy-$OSVER-libraries.txt"
 otool -l "$BIN" | grep -A4 -E 'LC_VERSION_MIN_MACOSX|LC_BUILD_VERSION' | tee "$ROOT/target/test-reports/legacy-$OSVER-min-os.txt"
 # every symbol the program asks the system for, for checking against what that system has (docs/MACOS_SNOW_LEOPARD.md)
-nm -u "$BIN" | sort > "$ROOT/target/test-reports/legacy-$OSVER-imports.txt"
+python3 "$ROOT/packaging/macos/legacy/machobind.py" "$BIN" > "$ROOT/target/test-reports/legacy-$OSVER-imports.txt"
+head -n 1 "$ROOT/target/test-reports/legacy-$OSVER-imports.txt"
+if ! head -n 1 "$ROOT/target/test-reports/legacy-$OSVER-imports.txt" | grep -q FLAT; then
+    echo "the program is not linked with a flat namespace: it would not find the compatibility library's functions" >&2
+    exit 1
+fi
 APP="$ROOT/dist/legacy-$OSVER/KYTTU The Last Route ($OSVER test).app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
