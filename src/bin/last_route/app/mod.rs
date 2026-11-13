@@ -33,6 +33,8 @@
 
 pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod gfx;
+#[cfg(target_os = "android")]
+mod android_shim;
 pub mod bindings;
 pub mod touch;
 pub mod frame_cap;

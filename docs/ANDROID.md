@@ -1,8 +1,8 @@
 # Android
 
 What it takes to ship The Last Route as an Android app, what is already done, and what is still open. Checked on
-2026-11-13 on a Linux machine with no phone or emulator, so everything under "Verified" is a build or a test, never a run
-on a device. iOS is on hold (it needs full Xcode, which only runs on a Mac).
+2026-11-13 on a Linux machine and on a Samsung SM-S721U1 (Android 17, arm64, GLES 3.2) over USB. iOS is on hold (it needs
+full Xcode, which only runs on a Mac).
 
 ## Verified
 
@@ -13,6 +13,7 @@ on a device. iOS is on hold (it needs full Xcode, which only runs on a Mac).
 | Assets ship inside the binary | `src/bin/last_route/assets` (about 39 MB) is embedded with `include_bytes!`, like the wasm build. The APK needs no assets folder. Fonts fall back to embedded ones when the system has none. |
 | Audio has an Android path | `quad-snd` has an OpenSLES backend. |
 | The production directory is HTTPS | `PRIMARY_BASE_URL` is `https://lastrouterust.games.kyttuslab.org`; the gameplay relay is UDP. No cleartext-traffic exception is needed. The dev-only test instance is plain HTTP and stays a debug-build feature. |
+| An APK builds, installs and runs | `sh packaging/android/build-apk.sh` makes `dist/android/last_route-debug.apk` (25 MB packed, a 107 MB debug library). On the phone it starts, shows the title menu in landscape, takes taps in the menus, starts an offline solo run at **60 FPS**, and the D-pad walks the runner. See "Build" below. |
 | Touch controls exist | `src/bin/last_route/app/touch.rs`: D-pad with double-tap sprint, drag to look, the action buttons, the hotbar arrows, menus owning touches, 16 tests. Turned on by itself on Android and iOS, and by `--touch` on a desktop (the left mouse button stands in for a finger). |
 
 ## Build requirements
@@ -32,18 +33,33 @@ CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$BIN/aarch64-linux-android24-clang \
 cargo check --target aarch64-linux-android --bin last_route --target-dir target/android
 ```
 
-The Java side (`MainActivity`, `QuadNative`) is in `vendor/miniquad/java`. An APK needs the game built as a shared
-library that exports `quad_main`, wrapped by that activity. miniquad's own answer is `cargo quad-apk` (a fork of
-`cargo-apk`; its README recommends the `notfl3/cargo-apk` Docker image) and says no code changes are needed. **Not tried
-here yet.** A spike with that tool is the first thing to do for the APK.
+## Build
+
+```bash
+cargo install --git https://github.com/not-fl3/cargo-quad-apk --locked     # once
+JAVA_HOME=/path/to/a/full/jdk sh packaging/android/build-apk.sh          # add --release for a release build
+adb install -r dist/android/last_route-debug.apk
+adb shell am start -n org.kyttuslab.last_route/org.kyttuslab.last_route.MainActivity
+```
+
+The script builds in a copy of the tree (`target/android-apk-src`), because `cargo quad-apk` writes into what it builds. The
+Android settings are the `[package.metadata.android]` table in `Cargo.toml`. Things the spike found, all handled:
+
+- **The package name must end in `last_route`.** The tool names the Java library after the last part of `package_name`, so
+  `org.kyttuslab.lastroute` fails at start with `library "liblastroute.so" not found`.
+- **`android:exported = "true"`** on the activity (set in `activity_attributes`): target API 31 and up refuses to install an
+  activity with an intent filter without it.
+- **`atexit` is missing.** The tool links with a bare `ld`, and NDK r23 and newer no longer export `atexit` from the system
+  libc (clang's startup objects define it), so the library failed to load with `cannot locate symbol "atexit"`.
+  `app/android_shim.rs` (Android only) defines it through bionic's `__cxa_atexit`.
+- **The tool needs NDK r23 or newer** (r21e fails to find libunwind), and a full JDK: a JRE has no `javac`.
+- The phone must be unlocked to see the app: a locked screen stops the activity at once, and `adb` shows a black picture.
 
 ## Open work
 
 Needed before a phone build is playable or installable:
 
-1. **The packaging spike.** Build an APK with `cargo quad-apk` (Docker or installed), install it with `adb`, see whether it
-   starts. Adds a `[package.metadata.android]` table to `Cargo.toml` (package name, label, version code, the `INTERNET`
-   permission, landscape, fullscreen); that is a `Cargo.toml` change, so it needs KT's go-ahead.
+1. **Release build and signing.** Only the debug APK is proven. A release APK (fat LTO) is untested, and a real keystore is needed.
 2. **Saves and settings do not persist.** `shared/paths.rs` `root_user_dir` reads `XDG_DATA_HOME` or `HOME`, and neither exists
    on Android, so `user_dir()` is `None`. It needs an Android branch returning the app's private files folder
    (`/data/data/<package>/files`, or `Context.getFilesDir()` through JNI).

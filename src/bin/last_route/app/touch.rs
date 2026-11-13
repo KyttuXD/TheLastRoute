@@ -29,6 +29,9 @@ const MIN_TARGET_DP: f32 = 48.0;
 const UNIT_SHARE: f32 = 0.13;
 /// The gap between buttons, as a share of the unit (Godot: 0.16).
 const GAP_SHARE: f32 = 0.16;
+/// The strip along the bottom the HUD's hotbar and specialty slots use, as a share of the screen height: the action
+/// cluster and the hotbar arrows sit above it, so no button covers a slot (checked on a 2340 x 1080 phone).
+const HUD_STRIP_SHARE: f32 = 0.15;
 /// A second press on the same arrow within this many seconds of letting go sprints.
 const DOUBLE_TAP_SECONDS: f32 = 0.3;
 /// A drag across the screen's short side turns this far at look speed 1 (degrees; Godot LOOK_DEGREES_PER_SHORT_SIDE).
@@ -129,13 +132,14 @@ impl Layout {
             (Button::Light, 2, 1),
         ] {
             let x = view.x - (col as f32 + 1.0) * (unit + gap);
-            let y = view.y - (row as f32 + 1.0) * (unit + gap);
+            let y = view.y - view.y * HUD_STRIP_SHARE - (row as f32 + 1.0) * (unit + gap);
             buttons.push((button, Rect::new(x, y, unit, unit)));
         }
         let cell = unit;
         let pad = Rect::new(gap * 2.0, view.y - cell * 3.0 - gap, cell * 3.0, cell * 3.0);
         let hotbar = Rect::new(view.x * 0.5 - view.x * 0.19, view.y - min * 1.6, view.x * 0.38, min * 1.6);
-        let arrow_y = hotbar.y + hotbar.h - min;
+        // above the slots, not beside them: the HUD's row of slots is wider than the hotbar the controls know about
+        let arrow_y = view.y - view.y * HUD_STRIP_SHARE - min - gap;
         buttons.push((Button::Prev, Rect::new(hotbar.x - min - gap * 0.5, arrow_y, min, min)));
         buttons.push((Button::Next, Rect::new(hotbar.x + hotbar.w + gap * 0.5, arrow_y, min, min)));
         // the menu buttons along the top-left
@@ -805,6 +809,21 @@ mod tests {
         g.update(0.4, &[touch(3, TouchPhase::Ended, map.0, map.1)], &l, Focus::Map);
         g.update(0.5, &[touch(4, TouchPhase::Started, pause.0, pause.1)], &l, Focus::Map);
         assert!(g.tapped.contains("pause"), "PAUSE answers on the map");
+    }
+
+    #[test]
+    fn no_button_covers_the_hud_strip_along_the_bottom() {
+        for (w, h) in [(2340.0, 1080.0), (1920.0, 1080.0), (1280.0, 720.0)] {
+            let l = Layout::new(vec2(w, h), 1.0);
+            let strip_top = h * (1.0 - HUD_STRIP_SHARE);
+            for (b, r) in l.buttons.iter().chain(std::iter::once(&(Button::Pause, l.pad))) {
+                if *b == Button::Pause && r.y > h * 0.5 {
+                    continue; // the D-pad (bottom-left, clear of the slots by width), not a button
+                }
+                assert!(r.y + r.h <= strip_top + 0.5 || r.y >= strip_top, "{b:?} at {w}x{h} straddles the HUD strip");
+                assert!(r.y + r.h <= strip_top + 0.5 || *b == Button::Pause, "{b:?} at {w}x{h} sits in the HUD strip: bottom {}", r.y + r.h);
+            }
+        }
     }
 
     #[test]
