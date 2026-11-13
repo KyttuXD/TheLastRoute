@@ -25,7 +25,8 @@ pub const FILE: &str = "render/hunter_activity_poses.json";
 pub const SCHEMA: &str = "lr.hunter_activity_poses/1";
 
 /// Every activity name the brain may raise (a name with no data row does nothing).
-pub const ACTIVITIES: [&str; 10] = [
+pub const ACTIVITIES: [&str; 11] = [
+    "nap",
     "locker_inspect",
     "sniff",
     "look_around",
@@ -219,6 +220,24 @@ pub fn apply(locals: &mut [Local], rig: &Rig, def: &Def, t: f32, w: f32) -> bool
     any
 }
 
+/// The body's half length (metres) and the height of its feet point above the floor while a hunter lies asleep on a
+/// bed (`nap`): the body is centred on the mattress centre, the head toward the pillow end.
+pub const NAP_HALF_BODY: f32 = 0.8;
+pub const NAP_HEIGHT: f32 = 0.7;
+
+/// The root of a hunter lying asleep on its back on a bed (activity "nap"). Model space is +Y up, -Z forward, feet at the
+/// origin. A quarter turn about +X lays it flat with its face up (up goes to +Z), and the yaw turns +Z onto the bed's
+/// axis, so the head is at +`spot.axis`. The feet sit `NAP_HALF_BODY` before the mattress centre.
+pub fn nap_root(spot: crate::hunters::activities::NapSpot, draw_scale: f32) -> Mat4 {
+    let (ax, az) = spot.axis;
+    let yaw = ax.atan2(az);
+    let feet = vec3(spot.at.0 - ax * NAP_HALF_BODY, NAP_HEIGHT, spot.at.1 - az * NAP_HALF_BODY);
+    Mat4::from_translation(feet)
+        * Mat4::from_rotation_y(yaw)
+        * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2)
+        * Mat4::from_scale(Vec3::splat(draw_scale))
+}
+
 /// The way a corner peeker leans, as an activity name: right when the lean direction is on the right of her heading
 /// (she faces -Z at yaw 0, right is +X), left otherwise.
 pub fn peek_activity(yaw: f32, lean: (f32, f32)) -> &'static str {
@@ -259,6 +278,7 @@ impl ActivityRead for Brain {
             A::Listen => "listen",
             A::Knock => "door_knock",
             A::Push => "door_push",
+            A::Nap => "nap",
         })
     }
 }
@@ -279,6 +299,8 @@ pub struct Extras {
     pub activity: Option<&'static str>,
     /// The emote playing (index into the emote catalogue, the wire's `emote`).
     pub emote: Option<usize>,
+    /// Where a napping hunter lies (the bed's mattress and axis); None when awake or not known.
+    pub nap: Option<crate::hunters::activities::NapSpot>,
 }
 
 /// The voice cue of a hunter emote that just began (`hunters/emotes.rs` `noise` is its audible radius, 0 = silent).
@@ -432,7 +454,7 @@ mod tests {
             let mut v = HunterView::new("aki", rig("aki").unwrap());
             let mut at = 0;
             go(&mut v, &mut at, 20, Extras::default(), &still);
-            let posed = go(&mut v, &mut at, 30, Extras { activity: Some(name), emote: None }, &still);
+            let posed = go(&mut v, &mut at, 30, Extras { activity: Some(name), emote: None, nap: None }, &still);
             let named: Vec<usize> = table()
                 .find(name)
                 .unwrap()
@@ -457,7 +479,7 @@ mod tests {
         let mut stunned = input(0.0, State::Idle);
         stunned.stun = 3.0;
         let mut w = HunterView::new("aki", rig("aki").unwrap());
-        let a = run(&mut v, 40, Extras { activity: Some("attack_lunge"), emote: None }, &stunned);
+        let a = run(&mut v, 40, Extras { activity: Some("attack_lunge"), emote: None, nap: None }, &stunned);
         let b = run(&mut w, 40, Extras::default(), &stunned);
         for i in 0..a.len() {
             assert!(!differs(&a, &b, i), "stunned: bone {i}");
@@ -515,11 +537,32 @@ mod tests {
         assert_eq!(up.clip(), "scythe_stun_recover");
         let mut a = HunterView::new("kathy", rig("kathy").unwrap());
         run(&mut a, 10, Extras::default(), &input(0.0, State::Idle));
-        run(&mut a, 5, Extras { activity: Some("attack_lunge"), emote: None }, &input(0.0, State::Chase));
+        run(&mut a, 5, Extras { activity: Some("attack_lunge"), emote: None, nap: None }, &input(0.0, State::Chase));
         assert_eq!(a.clip(), "scythe_swing", "the lunge swings the scythe");
         let mut other = HunterView::new("aki", rig("aki").unwrap());
         run(&mut other, 30, Extras::default(), &input(0.0, State::Idle));
         assert_eq!(other.clip(), "idle", "a hunter without the scythe keeps the plain clips");
+    }
+
+    #[test]
+    fn a_napper_lies_on_its_mattress_with_its_head_toward_the_pillow_end() {
+        use crate::hunters::activities::NapSpot;
+        for axis in [(1.0f32, 0.0f32), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+            let spot = NapSpot { at: (10.0, 20.0), axis };
+            let root = nap_root(spot, 1.0);
+            // the body's up (its head's way) lies flat along the bed's long axis
+            let up = root.transform_vector3(Vec3::Y);
+            assert!(up.y.abs() < 1e-4, "{axis:?}: the body is flat, up {up:?}");
+            assert!((up.x - axis.0).abs() < 1e-4 && (up.z - axis.1).abs() < 1e-4, "{axis:?}: the head toward +axis, up {up:?}");
+            // lying on its back: the face (-Z) points at the ceiling, not the mattress
+            let face = root.transform_vector3(-Vec3::Z);
+            assert!(face.y > 0.999, "{axis:?}: the face is up, face {face:?}");
+            // the feet sit at the lying height, half a body before the mattress centre
+            let feet = root.transform_point3(Vec3::ZERO);
+            assert!((feet.y - NAP_HEIGHT).abs() < 1e-4, "{axis:?}: the feet at {}", feet.y);
+            let along = (feet.x - 10.0) * axis.0 + (feet.z - 20.0) * axis.1;
+            assert!((along + NAP_HALF_BODY).abs() < 1e-4, "{axis:?}: the feet {along} along the bed");
+        }
     }
 
     #[test]
@@ -566,9 +609,9 @@ mod tests {
         let i = input(0.0, State::Idle);
         let (_, none) = v.update(&i, 1.0 / 30.0, 0.0);
         assert_eq!(none.face_cell, 0);
-        v.set_extras(Extras { activity: None, emote: Some(idx) });
+        v.set_extras(Extras { activity: None, emote: Some(idx), nap: None });
         for n in 1..20 {
-            v.set_extras(Extras { activity: None, emote: Some(idx) });
+            v.set_extras(Extras { activity: None, emote: Some(idx), nap: None });
             v.update(&i, 1.0 / 30.0, n as f32 / 30.0);
         }
         let (_, out) = v.update(&i, 1.0 / 30.0, 1.0);

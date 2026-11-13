@@ -48,10 +48,33 @@ The runner can lie down on a bed and sleep in it. Port of the Godot runner sleep
 
 `data/seating.json` gives the bed kinds their label (`LIE DOWN`), mattress `height` and the `default_reach`.
 
+## Hunter naps
+
+Port of Godot `game/hunters/ai/hunter_naps.gd`. A nap is a wander activity, not a separate system: a `bed`
+point of interest (any prop the bed rules call a bed) is one of the goals a wandering hunter picks, weighted in
+`data/hunters/activities.json` (`kinds.bed`, weight 0.25; the activity `nap`, 25 to 45 seconds).
+
+- **Walk and lie:** the hunter walks to the open cell nearest the bed, then naps on the mattress. The body lies on its
+  back along the bed's long axis with the head toward the pillow end (`render/anim/hunter_activity_pose.rs`
+  `nap_root`). The nap pose (`nap` in `data/render/hunter_activity_poses.json`) folds the arms and tilts the head.
+- **Asleep:** the brain runs no perception, no movement and no catch while it naps. Only the nap clock runs
+  (`hunters/brain.rs` `update`, the `napping` block).
+- **Waking:** a runner within `nap_wake_distance` (3 m), a noisy runner (`noise` at least `nap_wake_noise`) within
+  `nap_wake_noise_distance` (10 m), or a torch in the hunter's face within `nap_wake_torch_distance` (7 m) wakes it
+  with a startle: a stun of `nap_startle_stun` seconds, then it investigates where the runner was (`hunters/naps.rs`).
+  A hidden runner does not wake it. A stun wakes it too. When the duration runs out it wakes on its own and idles.
+- **Guests:** a guest sees the nap through the activity the host sends (`act` index 10). The wire has no bed spot,
+  so a guest draws a napping hunter standing, with the nap pose, not lying on the mattress.
+
+**Not done:** Godot's per-difficulty chance (no naps on nightmare, a chance per second) is not wired: naps are plain
+weights on the bed goal. The startle does not play a flinch emote. The meter (a runner in the room waking it slowly)
+is not ported; the wake is the distance, noise and torch rules only.
+
 ## Not done
 
 - Co-op: the others see a sleeper standing by the bed. The net sample has no lying or asleep pose besides `Down`,
   which means downed, so nothing is sent (Godot replicates `asleep` and draws "z Z").
 - Passing out at full drowsiness and the tired slow-down (`pass_out`, `slow_below` in the data) are not wired.
 - Accidental sleep (Godot solo: 50 s idle in a bed, then 8 s drowsy) and the getting-up glide.
-- Sitting on chairs and sofas, hunter naps, and a drowsiness bar on the HUD.
+- Player NPC teammates lying in beds (they walk past beds, sleep is not wired for them yet).
+- A drowsiness bar on the HUD.

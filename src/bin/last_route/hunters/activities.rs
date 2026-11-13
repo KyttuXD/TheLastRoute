@@ -27,10 +27,12 @@ pub enum PoiKind {
     NoiseSpot,
     /// A corridor cell with three or more open sides (hunters/idle_life.rs builds these near a hunter).
     Junction,
+    /// A bed (data/sleep.json `bed.prop_rules`): the hunter walks to it and naps (Godot hunter_naps.gd).
+    Bed,
 }
 
 impl PoiKind {
-    pub const ALL: [PoiKind; 9] = [
+    pub const ALL: [PoiKind; 10] = [
         PoiKind::RoomCentre,
         PoiKind::Locker,
         PoiKind::Relay,
@@ -40,6 +42,7 @@ impl PoiKind {
         PoiKind::LitProp,
         PoiKind::NoiseSpot,
         PoiKind::Junction,
+        PoiKind::Bed,
     ];
 
     pub fn id(self) -> &'static str {
@@ -53,6 +56,7 @@ impl PoiKind {
             PoiKind::LitProp => "lit_prop",
             PoiKind::NoiseSpot => "noise_spot",
             PoiKind::Junction => "junction",
+            PoiKind::Bed => "bed",
         }
     }
 
@@ -75,10 +79,12 @@ pub enum Activity {
     Fidget,
     Pace,
     CornerPeek,
+    /// Asleep in a bed (hunters/naps.rs): the brain is not run except the wake rule. Appended last (wire index 10).
+    Nap,
 }
 
 impl Activity {
-    pub const ALL: [Activity; 10] = [
+    pub const ALL: [Activity; 11] = [
         Activity::InspectLocker,
         Activity::LookAround,
         Activity::Sniff,
@@ -89,6 +95,7 @@ impl Activity {
         Activity::Fidget,
         Activity::Pace,
         Activity::CornerPeek,
+        Activity::Nap,
     ];
 
     /// The wire / data name (upper case, as the other state names are).
@@ -104,6 +111,7 @@ impl Activity {
             Activity::Fidget => "FIDGET",
             Activity::Pace => "PACE",
             Activity::CornerPeek => "CORNER_PEEK",
+            Activity::Nap => "NAP",
         }
     }
 
@@ -136,6 +144,8 @@ pub struct Poi {
     pub locker: Option<usize>,
     /// The threshold cell of a room door.
     pub door: Option<Cell>,
+    /// A bed's long axis (unit, along the mattress): the way a napper lies. (0, 0) for every other point.
+    pub axis: (f32, f32),
 }
 
 impl Poi {
@@ -171,6 +181,16 @@ pub struct Rules {
     pub sniff_creep_speed: f32,
     pub check_room_inset: f32,
     pub check_room_speed_scale: f32,
+    /// A runner this close wakes a napping hunter (metres).
+    pub nap_wake_distance: f32,
+    /// A runner this loud (noise) wakes a napping hunter within `nap_wake_noise_distance`.
+    pub nap_wake_noise: f32,
+    pub nap_wake_noise_distance: f32,
+    /// A torch in the napper's face (cone: the dot of the beam with the way to the hunter) wakes it within the distance.
+    pub nap_wake_torch_distance: f32,
+    pub nap_wake_torch_cone: f32,
+    /// Seconds of stun after a startled wake (it flinches, then looks where the runner was).
+    pub nap_startle_stun: f32,
     pub default_personality: String,
     pub by_tier: Vec<String>,
     pub by_hunter: HashMap<String, String>,
@@ -203,6 +223,12 @@ impl Default for Rules {
             sniff_creep_speed: 0.3,
             check_room_inset: 1.5,
             check_room_speed_scale: 0.7,
+            nap_wake_distance: 3.0,
+            nap_wake_noise: 3.0,
+            nap_wake_noise_distance: 10.0,
+            nap_wake_torch_distance: 7.0,
+            nap_wake_torch_cone: 0.85,
+            nap_startle_stun: 0.5,
             default_personality: "steady".into(),
             by_tier: vec![],
             by_hunter: HashMap::new(),
@@ -297,6 +323,12 @@ impl Rules {
             sniff_creep_speed: num("sniff_creep_speed", d.sniff_creep_speed).max(0.0),
             check_room_inset: num("check_room_inset", d.check_room_inset).max(0.0),
             check_room_speed_scale: num("check_room_speed_scale", d.check_room_speed_scale).max(0.1),
+            nap_wake_distance: num("nap_wake_distance", d.nap_wake_distance).max(0.0),
+            nap_wake_noise: num("nap_wake_noise", d.nap_wake_noise).max(0.0),
+            nap_wake_noise_distance: num("nap_wake_noise_distance", d.nap_wake_noise_distance).max(0.0),
+            nap_wake_torch_distance: num("nap_wake_torch_distance", d.nap_wake_torch_distance).max(0.0),
+            nap_wake_torch_cone: num("nap_wake_torch_cone", d.nap_wake_torch_cone),
+            nap_startle_stun: num("nap_startle_stun", d.nap_startle_stun).max(0.0),
             default_personality: v["default_personality"].as_str().map_or(d.default_personality, String::from),
             by_tier: strings(&v["by_tier"]),
             by_hunter: v["by_hunter"]
@@ -440,6 +472,15 @@ pub(super) fn region_of(fac: &Facility, p: (f32, f32), room: Option<usize>) -> S
 }
 
 /// Every point of interest the facility offers. Stands are open cells a hunter's body fits.
+/// The way a napper lies on a bed: along its long axis (the larger half-extent, as game/bed.rs lie_down picks it), with
+/// the head at the end away from the stand the hunter comes to, so the body lies on the far side of the mattress. The
+/// data does not name the pillow end; this is the rule until it does.
+fn nap_axis(p: &crate::world::facility::Prop, at: (f32, f32), stand: (f32, f32)) -> (f32, f32) {
+    let base = if p.half.0 >= p.half.1 { (1.0, 0.0) } else { (0.0, 1.0) };
+    let away = (at.0 - stand.0) * base.0 + (at.1 - stand.1) * base.1;
+    if away >= 0.0 { base } else { (-base.0, -base.1) }
+}
+
 pub fn points_of_interest(fac: &Facility, rules: &Rules) -> Vec<Poi> {
     let mut out = Vec::new();
     let mut add = |kind: PoiKind, near: (f32, f32), focus: Option<(f32, f32)>, room: Option<usize>, locker: Option<usize>, door: Option<Cell>| {
@@ -454,6 +495,7 @@ pub fn points_of_interest(fac: &Facility, rules: &Rules) -> Vec<Poi> {
             region: region_of(fac, stand, room),
             locker,
             door,
+            axis: (0.0, 0.0),
         });
     };
     let safe_room = fac.safe_zone.and_then(|c| fac.room_at(c.x as f64 + 0.5, c.y as f64 + 0.5));
@@ -488,6 +530,28 @@ pub fn points_of_interest(fac: &Facility, rules: &Rules) -> Vec<Poi> {
     }
     for l in &fac.room_lights {
         add(PoiKind::LitProp, l.center.center(), Some(l.center.center()), Some(l.room), None, None);
+    }
+    // beds (hunters/naps.rs): the stand is the open cell nearest the bed; the nap looks at the mattress and lies along
+    // the bed's long axis (the larger half-extent, as game/bed.rs lie_down picks it). Added after the others so the
+    // order of every other point is unchanged.
+    for p in &fac.props {
+        if crate::game::bed::rules().kind_of(&p.ptype).is_none() {
+            continue;
+        }
+        let at = (p.cell.center().0 + p.offset.0, p.cell.center().1 + p.offset.1);
+        let Some(stand) = fac.nearest_open(at.0, at.1, HUNTER_RADIUS) else { continue };
+        let room = Some(p.room);
+        out.push(Poi {
+            kind: PoiKind::Bed,
+            stand,
+            focus: at,
+            room,
+            rtype: room.and_then(|i| fac.rooms.get(i)).map(|r| r.rtype.clone()).unwrap_or_default(),
+            region: region_of(fac, stand, room),
+            locker: None,
+            door: None,
+            axis: nap_axis(p, at, stand),
+        });
     }
     out
 }
@@ -543,6 +607,15 @@ pub struct ActivityRun {
     pub loop_points: Vec<(f32, f32)>,
     /// The hearing multiplier this run applied (undone when it ends); 1.0 when none.
     pub hearing_applied: f32,
+    /// A nap's bed axis (see [`Poi::axis`]); (0, 0) for every other activity.
+    pub axis: (f32, f32),
+}
+
+/// A hunter asleep in a bed: the mattress centre it lies on and the bed's long axis (for the lying pose).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NapSpot {
+    pub at: (f32, f32),
+    pub axis: (f32, f32),
 }
 
 impl ActivityRun {
@@ -571,7 +644,31 @@ mod tests {
             region: "maze".into(),
             locker: None,
             door: None,
+            axis: (0.0, 0.0),
         }
+    }
+
+    #[test]
+    fn a_napper_lies_with_its_head_at_the_end_of_the_bed_away_from_the_stand() {
+        let bed = crate::world::facility::Prop {
+            id: "TEST:BED".to_string(),
+            cell: Cell::new(5, 5),
+            ptype: "singleBed".to_string(),
+            room: 0,
+            rotation: 0,
+            mount_y: None,
+            solid: false,
+            half: (1.0, 0.5),
+            offset: (0.0, 0.0),
+            door: None,
+            sewer: None,
+            crawl_under: false,
+        };
+        let centre = (5.5, 5.5);
+        // a stand west of the bed: the head goes east, along +x
+        assert_eq!(nap_axis(&bed, centre, (4.5, 5.5)), (1.0, 0.0));
+        // a stand east of it: the head goes west
+        assert_eq!(nap_axis(&bed, centre, (6.5, 5.5)), (-1.0, 0.0));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "schema": "lr.hunter_activities/1",
-  "_note": "Where a wandering hunter goes and what it does there (hunters/activities.rs). A wander goal is a point of interest built from the facility; weight = kind weight x personality x region x room type. Durations are seconds [min, max]. Everything here is tunable.",
+  "_note": "Where a wandering hunter goes and what it does there (hunters/activities.rs; naps in hunters/naps.rs, Godot hunter_naps.gd). A wander goal is a point of interest built from the facility; weight = kind weight x personality x region x room type. Durations are seconds [min, max]. Everything here is tunable.",
   "memory": 4,
   "min_distance": 4.0,
   "pause": [0.8, 2.4],
@@ -17,7 +17,8 @@
     "safe_zone": { "weight": 0.15, "activities": { "look_around": 2, "listen": 1, "fidget": 1, "pace": 1 } },
     "lit_prop": { "weight": 0.35, "activities": { "look_around": 2, "sniff": 1, "fidget": 1 } },
     "noise_spot": { "weight": 0.5, "activities": { "listen": 3, "look_around": 1 } },
-    "junction": { "weight": 0.45, "activities": { "corner_peek": 3, "look_around": 2, "listen": 1, "sniff": 1, "fidget": 1 } }
+    "junction": { "weight": 0.45, "activities": { "corner_peek": 3, "look_around": 2, "listen": 1, "sniff": 1, "fidget": 1 } },
+    "bed": { "weight": 0.25, "activities": { "nap": 1 } }
   },
   "activities": {
     "inspect_locker": { "duration": [2.2, 3.6] },
@@ -29,7 +30,8 @@
     "push": { "duration": [1.6, 2.6] },
     "fidget": { "duration": [2.0, 3.4] },
     "pace": { "duration": [3.0, 5.5] },
-    "corner_peek": { "duration": [2.5, 4.0] }
+    "corner_peek": { "duration": [2.5, 4.0] },
+    "nap": { "duration": [25.0, 45.0] }
   },
   "params": {
     "sweep_degrees": 100.0,
@@ -39,7 +41,13 @@
     "listen_hearing_scale": 1.5,
     "sniff_creep_speed": 0.3,
     "check_room_inset": 1.5,
-    "check_room_speed_scale": 0.7
+    "check_room_speed_scale": 0.7,
+    "nap_wake_distance": 3.0,
+    "nap_wake_noise": 3.0,
+    "nap_wake_noise_distance": 10.0,
+    "nap_wake_torch_distance": 7.0,
+    "nap_wake_torch_cone": 0.85,
+    "nap_startle_stun": 0.5
   },
   "default_personality": "steady",
   "by_tier": ["curious", "steady", "prowler"],

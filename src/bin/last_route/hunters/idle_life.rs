@@ -190,6 +190,7 @@ pub fn junction_pois(fac: &Facility, rules: &Rules, idle: &IdleRules, from: (f32
                     region: region_of(fac, c, room),
                     locker: None,
                     door: None,
+                    axis: (0.0, 0.0),
                 },
             ));
         }
@@ -346,6 +347,7 @@ mod tests {
             region: "maze".into(),
             locker: None,
             door: None,
+            axis: (0.0, 0.0),
         }
     }
 
@@ -362,6 +364,7 @@ mod tests {
             leg: 0,
             loop_points: vec![],
             hearing_applied: 1.0,
+            axis: (0.0, 0.0),
         }
     }
 
