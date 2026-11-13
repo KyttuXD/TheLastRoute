@@ -126,6 +126,28 @@ incremental = true
 [profile.fast.package."*"]
 opt-level = 2
 
+# The Android app (cargo quad-apk, packaging/android/build-apk.sh; docs/ANDROID.md). The package name must end in the
+# cargo target name (last_route): the tool names the Java library after its last segment. The activity needs `exported`
+# for target API 31 and up.
+[package.metadata.android]
+android_version = 36
+target_sdk_version = 36
+min_sdk_version = 26
+build_targets = ["aarch64-linux-android"]
+package_name = "org.kyttuslab.last_route"
+label = "The Last Route"
+version_code = 1
+fullscreen = true
+opengles_version_major = 3
+opengles_version_minor = 0
+
+[package.metadata.android.activity_attributes]
+"android:screenOrientation" = "sensorLandscape"
+"android:exported" = "true"
+
+[[package.metadata.android.permission]]
+name = "android.permission.INTERNET"
+
 [patch.crates-io]
 quad-snd = { path = "src/bin/last_route/audio/quad-snd" }
 # miniquad 0.4.11 with Metal fixes and a live frame-pacer switch (vendor/miniquad/LAST_ROUTE_PATCHES.md).
