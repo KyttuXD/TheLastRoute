@@ -3078,7 +3078,10 @@ use std::time::Duration;
         assert!(!w2.slim);
         let gone = worn_skin_in(Some(&skins), Some(&cache), "MISSING", true, ArmsSetting::Auto);
         assert_eq!(gone.hash, SKIN_DEFAULT, "an unknown or deleted skin falls back to the default");
-        assert_eq!(worn_skin_in(None, None, "CUSTOM", false, ArmsSetting::Auto).hash, SKIN_DEFAULT);
+        // (not asked for CUSTOM here: with no skins folder that id reads the custom skin kept in memory, which is one
+        // value for the whole process and another test running beside this one may have set it. That was this test's
+        // now-and-then failure in CI.)
+        assert_eq!(worn_skin_in(None, None, "SOMEONE_ELSE", false, ArmsSetting::Auto).hash, SKIN_DEFAULT);
         let _ = std::fs::remove_dir_all(&skins);
         let _ = std::fs::remove_dir_all(&cache);
     }
