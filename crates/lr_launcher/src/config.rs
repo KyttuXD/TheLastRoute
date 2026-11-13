@@ -44,6 +44,9 @@ pub struct Config {
     pub force: bool,
     /// Check and install before starting instead of in the background (so the first start after a publish is the new build).
     pub update_first: bool,
+    /// Never look for an update while a build is installed (`--no-update`): the installed build starts as it is. A first
+    /// start with nothing installed still installs one.
+    pub no_update: bool,
     /// Install, then stop without starting the game.
     pub no_launch: bool,
     /// Machine-readable and quiet: no browser, no console tricks, and a final `LAUNCHER_RESULT {json}` line.
@@ -87,6 +90,7 @@ impl Config {
             mode: Mode::Run,
             force: false,
             update_first: false,
+            no_update: false,
             no_launch: false,
             test_mode: false,
             verify_deep: false,
