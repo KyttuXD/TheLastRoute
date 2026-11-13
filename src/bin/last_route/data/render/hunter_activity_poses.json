@@ -16,6 +16,7 @@
     "scale": 1.0
   },
   "activities": {
+    "nap": { "blend_in": 0.8, "blend_out": 0.5, "loop": false, "period": 1.0, "keys": [ { "t": 0.0, "bones": { "Chest": [4, 0, 0], "Head": [0, 0, 12], "R-Arm": [60, 0, 10], "R-Forearm": [80, 0, 0], "L-Arm": [60, 0, -10] } } ] },
     "locker_inspect": {
       "blend_in": 0.3, "blend_out": 0.35, "loop": true, "period": 2.0,
       "keys": [

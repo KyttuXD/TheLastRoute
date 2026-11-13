@@ -132,6 +132,20 @@ fn move_toward(a: f32, b: f32, d: f32) -> f32 {
     }
 }
 
+/// `a` eased into `b` by `w` (0..1): the scale, turn and place are blended apart, so a root between two poses is a
+/// whole pose (matrices do not blend linearly).
+fn blend_roots(a: Mat4, b: Mat4, w: f32) -> Mat4 {
+    if w <= 0.0 {
+        return a;
+    }
+    if w >= 1.0 {
+        return b;
+    }
+    let (sa, ra, ta) = a.to_scale_rotation_translation();
+    let (sb, rb, tb) = b.to_scale_rotation_translation();
+    Mat4::from_scale_rotation_translation(sa.lerp(sb, w), ra.slerp(rb, w), ta.lerp(tb, w))
+}
+
 fn smoothstep01(w: f32) -> f32 {
     w * w * (3.0 - 2.0 * w)
 }
@@ -594,6 +608,8 @@ pub struct HunterView {
     act_w: f32,
     act_t: f32,
     act_name: Option<&'static str>,
+    /// The nap spot last seen while the nap pose is on or easing out: the body keeps lying through the blend.
+    nap_held: Option<crate::hunters::activities::NapSpot>,
     /// The emote playing (index), its resolved body clip (None = face only), its face, and whether the clip may play on the move.
     emote_seen: Option<usize>,
     emote_clip: Option<String>,
@@ -658,6 +674,7 @@ impl HunterView {
             act_w: 0.0,
             act_t: 0.0,
             act_name: None,
+            nap_held: None,
             emote_seen: None,
             emote_clip: None,
             emote_face: String::new(),
@@ -711,6 +728,11 @@ impl HunterView {
             self.swing_left = self.rig.length(&table.scythe.swing_clip);
         }
         self.act_name = name;
+        if name == Some("nap") {
+            if let Some(spot) = self.extras.nap {
+                self.nap_held = Some(spot);
+            }
+        }
         // a new emote index resolves its clip and face once and queues its voice cue
         let want = if live { self.extras.emote } else { None };
         if want != self.emote_seen {
@@ -1358,11 +1380,19 @@ impl HunterView {
         } else {
             Mat4::IDENTITY
         };
-        let root = Mat4::from_translation(at)
+        let stand = Mat4::from_translation(at)
             * lean
             * Mat4::from_rotation_y(self.yaw)
             * Mat4::from_rotation_x(self.heavy_lean)
             * Mat4::from_scale(Vec3::splat(self.rig.draw_scale()));
+        // asleep in a bed (hunter_activity_pose.rs `nap_root`): the root eases from the standing one onto the mattress with
+        // the nap pose's weight, and back, so the body does not jump when it lies down or gets up
+        let root = match self.nap_held {
+            Some(spot) if self.act.is_some_and(|d| d.name == "nap") => {
+                blend_roots(stand, act::nap_root(spot, self.rig.draw_scale()), smoothstep01(self.act_w))
+            }
+            _ => stand,
+        };
         self.finish_with_root(pose, root, clock, &[])
     }
 

@@ -937,6 +937,11 @@ pub(super) fn frame_entry(index: usize, h: &Brain) -> Value {
         entry["act"] = json!(act.index());
         entry["actp"] = json!(progress);
     }
+    // a napping hunter's bed (hunters/naps.rs): the mattress centre and its axis, in the frame's cells like `position`,
+    // so a guest lies the body on it. Absent while awake; an older guest ignores the key.
+    if let Some(spot) = h.nap_spot() {
+        entry["nap"] = json!([spot.at.0, spot.at.1, spot.axis.0, spot.axis.1]);
+    }
     entry
 }
 

@@ -1030,6 +1030,59 @@ mod tests {
         assert!(!g.rest.lying());
     }
 
+    /// A bed the generator placed on a real floor, not one the test put down: from a floor cell a metre from it, facing
+    /// its mattress, the bed is the focus and the lying prompt is offered.
+    #[test]
+    fn a_generated_bed_is_in_focus_from_the_floor_beside_it() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut checked = 0;
+        for (seed, room) in [(7u32, "ROOM-BED-7"), (8, "ROOM-BED-8"), (9, "ROOM-BED-9")] {
+            let mut g = Game::new_infinite_sim(Difficulty::Standard, seed, room, 0, &content, &catalog);
+            g.ensure_hunters(&content);
+            for h in g.hunters.iter_mut() {
+                h.active = false;
+            }
+            let beds: Vec<usize> = (0..g.fac.props.len()).filter(|&i| seat_of(&g.fac.props[i].ptype).is_some()).collect();
+            for i in beds {
+                let (cx, cz) = g.bed_centre(i);
+                let (_, k) = seat_of(&g.fac.props[i].ptype).unwrap();
+                let spot = (0..8).map(|n| {
+                    let a = n as f32 * std::f32::consts::FRAC_PI_4;
+                    (cx + a.cos(), cz + a.sin())
+                });
+                let Some(at) = spot.clone().find(|p| g.fac.is_floor(p.0 as f64, p.1 as f64) && g.fac.has_line_of_sight(*p, (cx, cz))) else {
+                    continue;
+                };
+                g.p.pos = at;
+                // the yaw that looks at the bed most directly
+                let (dx, dz) = (cx - at.0, cz - at.1);
+                let n = (dx * dx + dz * dz).sqrt().max(1e-6);
+                let best = (0..64)
+                    .map(|s| s as f32 * std::f32::consts::TAU / 64.0)
+                    .max_by(|a, b| {
+                        g.p.yaw = *a;
+                        let fa = g.p.forward2();
+                        g.p.yaw = *b;
+                        let fb = g.p.forward2();
+                        ((fa.0 * dx + fa.1 * dz) / n).total_cmp(&((fb.0 * dx + fb.1 * dz) / n))
+                    })
+                    .unwrap();
+                g.p.yaw = best;
+                let horizontal = (dx * dx + dz * dz).sqrt();
+                g.p.pitch = (k.height - g.p.eye().y).atan2(horizontal);
+                g.p.stun = 0.0;
+                g.focus = g.find_focus();
+                let ptype = g.fac.props[i].ptype.clone();
+                assert_eq!(g.focus, Some(Focus::Bed(i)), "{ptype} (seed {seed}): focus {:?} from {at:?}, bed at ({cx}, {cz})", g.focus);
+                assert_eq!(g.focus_prompt().as_deref(), Some("[E] LIE DOWN"), "{ptype}");
+                assert!(g.lie_down(i), "{ptype} (seed {seed}): the lie-down is refused from the floor");
+                checked += 1;
+                g.get_up();
+            }
+        }
+        assert!(checked > 0, "no generated bed to test: the seeds need a bedroom");
+    }
+
     #[test]
     fn hiding_still_works_and_a_hidden_runner_cannot_lie_down() {
         let (mut g, i, content, catalog) = bed_game("ROOM-TEST-7");
@@ -1051,3 +1104,4 @@ mod tests {
         g.p.hidden = None;
     }
 }
+

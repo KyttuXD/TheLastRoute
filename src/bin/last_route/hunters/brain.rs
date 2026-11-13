@@ -4,6 +4,7 @@
 //! Positions are grid cells (1 cell = 1 m).
 
 use super::activities::{self, Activity, ActivityRun, Poi};
+use super::naps;
 use super::idle_life::{self, IdleRules, IdleState};
 use super::flight_edges::{self, EdgeWalk, Hop, Node, StackNav};
 use super::gimmicks::{Ctx, Event, Gimmick};
@@ -539,6 +540,8 @@ pub struct Brain {
     idle_life: IdleState,
     /// A guest's copy of the host's activity (kind, progress); shown, never run.
     net_activity: Option<(Activity, f32)>,
+    /// A guest's copy of the host's nap spot (see `nap_spot`).
+    net_nap: Option<activities::NapSpot>,
     /// A chaser's shortcut through the ducts (hunters/vent_nav.rs). Read the crawl height with `vent_trip.crawl.height()`.
     pub vent_trip: super::vent_nav::Trip,
     /// The entry grate a planned trip walks to instead of the ordinary goal, this frame.
@@ -751,6 +754,7 @@ impl Brain {
             activity: None,
             idle_life: IdleState::default(),
             net_activity: None,
+            net_nap: None,
             vent_trip: Default::default(),
             vent_walk: None,
             vent_timer: 0.0,
@@ -1194,6 +1198,25 @@ impl Brain {
             g.before_perception(self, dt, ctx, target, &mut events);
         }
         if !self.active {
+            self.gimmick = g;
+            return (false, events);
+        }
+        // a hunter asleep in a bed (Activity::Nap, hunters/naps.rs): no perception, no movement, no catch; only the nap
+        // clock and the wake rule. A stun wakes it as well. Anything that moved it off its wander (an alert, a chase, a
+        // noise it goes to investigate) ends the nap first, so the hunter carries on with the state it was given.
+        if self.napping() && self.state != State::Wander {
+            self.end_activity();
+            self.poi = None;
+        }
+        if self.napping() {
+            if self.stun > 0.0 || naps::wakes_for(activities::Rules::get(), self.pos, self.level, target) {
+                self.wake_from_nap(target);
+            } else {
+                self.tick_activity(dt, ctx.fac, 0.0, prof);
+            }
+            // the gimmick's after-hook and the stamina still run while it sleeps (Briselle counts the relays it sees)
+            g.after_perception(self, dt, ctx, target, &mut events);
+            self.update_stamina(dt, prof);
             self.gimmick = g;
             return (false, events);
         }
@@ -2736,6 +2759,7 @@ impl Brain {
             leg: 0,
             loop_points: vec![],
             hearing_applied: 1.0,
+            axis: poi.axis,
         };
         match kind {
             Activity::CheckRoom => {
@@ -2758,6 +2782,37 @@ impl Brain {
         self.clear_path();
         self.path_goal = None;
         self.activity = Some(run);
+    }
+
+    /// Whether the hunter is asleep in a bed (Activity::Nap).
+    pub fn napping(&self) -> bool {
+        self.activity.as_ref().is_some_and(|a| a.kind == Activity::Nap)
+    }
+
+    /// Where a napping hunter lies: the bed's mattress centre and its long axis (for the lying pose). None when awake.
+    /// A guest reads the spot the host sent with the frame (`set_net_nap`) while the wire says it naps.
+    pub fn nap_spot(&self) -> Option<activities::NapSpot> {
+        match self.activity.as_ref().filter(|a| a.kind == Activity::Nap) {
+            Some(run) => Some(activities::NapSpot { at: run.focus, axis: run.axis }),
+            None => self.net_nap.filter(|_| self.net_activity.is_some_and(|(k, _)| k == Activity::Nap)),
+        }
+    }
+
+    /// A guest's copy of the host's nap spot (wire key `nap`, already moved into this window); None clears it.
+    pub fn set_net_nap(&mut self, n: Option<activities::NapSpot>) {
+        self.net_nap = n;
+    }
+
+    /// A startled wake from a nap: it flinches (a short stun) and investigates where the runner was (Godot
+    /// `HunterNaps.wake`, the startled branch). The runner's level is the one it was seen on.
+    fn wake_from_nap(&mut self, target: &Target) {
+        self.end_activity();
+        self.wander_target = None;
+        self.poi = None;
+        self.path_goal = None;
+        self.investigate(target.pos);
+        self.set_known_level(target.pos, target.level);
+        self.apply_stun(activities::Rules::get().nap_startle_stun, false);
     }
 
     /// Drop the running activity (a chase, a give-up or a peek takes over) and undo what it changed.
@@ -2786,6 +2841,10 @@ impl Brain {
                     run.fired = true;
                     self.locker_check = run.locker;
                 }
+            }
+            Activity::Nap => {
+                // asleep: it faces the mattress and does nothing else (the wake rule is in `update`)
+                self.facing = run.base;
             }
             Activity::LookAround => {
                 self.facing = activities::sweep_facing(run.base, p, rules.sweep_degrees, rules.sweeps);
@@ -5467,6 +5526,97 @@ mod activity_tests {
     fn far() -> Target {
         Target { pos: (-900.0, -900.0), facing: (1.0, 0.0), ..Default::default() }
     }
+
+    /// A bed point of interest at the stand of a room centre, its mattress a metre along +x (the long axis).
+    fn bed_poi(f: &Facility) -> Poi {
+        let stand = points_of_interest(f, Rules::get()).into_iter().find(|p| p.kind == PoiKind::RoomCentre).unwrap().stand;
+        Poi {
+            kind: PoiKind::Bed,
+            stand,
+            focus: (stand.0 + 1.0, stand.1),
+            room: None,
+            rtype: String::new(),
+            region: "maze".into(),
+            locker: None,
+            door: None,
+            axis: (1.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn a_hunter_naps_in_its_bed_for_the_duration_and_then_idles() {
+        let f = fac();
+        let rules = Rules::get();
+        let bed = bed_poi(&f);
+        let mut b = wanderer(&f, bed.stand);
+        b.start_activity(Activity::Nap, &bed, &f);
+        assert!(b.napping(), "asleep");
+        let spot = b.nap_spot().expect("a napper has a spot");
+        assert_eq!((spot.at, spot.axis), (bed.focus, (1.0, 0.0)), "it lies on the mattress along the bed");
+        let (lo, hi) = rules.durations[&Activity::Nap];
+        run(&mut b, &f, &far(), lo * 0.5);
+        assert!(b.napping(), "a far runner does not wake it");
+        assert_eq!(b.state, State::Wander);
+        // the duration is drawn in [lo, hi]: run until the nap is over (it can end at any point of that range)
+        let mut slept = lo * 0.5;
+        while b.napping() && slept < hi + 1.0 {
+            run(&mut b, &f, &far(), 0.1);
+            slept += 0.1;
+        }
+        assert!(!b.napping() && b.nap_spot().is_none(), "the nap is over after {slept} s");
+        assert!(slept >= lo - 0.2 && slept <= hi + 0.2, "a nap lasts its drawn duration: {slept} s");
+        assert_eq!(b.state, State::Idle, "it wakes rested and idles");
+    }
+
+    #[test]
+    fn a_runner_close_by_or_a_loud_one_wakes_a_napper_with_a_startle_and_it_goes_to_look() {
+        let f = fac();
+        let rules = Rules::get();
+        let bed = bed_poi(&f);
+        let mut b = wanderer(&f, bed.stand);
+        b.start_activity(Activity::Nap, &bed, &f);
+        let mut t = far();
+        t.pos = (b.pos.0 + rules.nap_wake_distance * 0.5, b.pos.1);
+        run(&mut b, &f, &t, 0.1);
+        assert!(!b.napping(), "a runner close by wakes it");
+        assert_eq!(b.state, State::Investigate, "it goes to where the runner was");
+        assert_eq!(b.last_known, Some(t.pos));
+        assert!(b.stun > 0.0, "the flinch stuns it for a moment");
+        // a loud runner a little further off wakes a napper too
+        let mut b = wanderer(&f, bed.stand);
+        b.start_activity(Activity::Nap, &bed, &f);
+        let mut t = far();
+        t.pos = (b.pos.0 + rules.nap_wake_noise_distance * 0.5, b.pos.1);
+        t.noise = rules.nap_wake_noise;
+        run(&mut b, &f, &t, 0.1);
+        assert!(!b.napping(), "a loud runner wakes it");
+    }
+
+    #[test]
+    fn an_alert_ends_a_nap_and_the_hunter_goes_to_the_alert() {
+        let f = fac();
+        let bed = bed_poi(&f);
+        let mut b = wanderer(&f, bed.stand);
+        b.start_activity(Activity::Nap, &bed, &f);
+        b.alert_on((bed.stand.0 + 4.0, bed.stand.1), 0);
+        run(&mut b, &f, &far(), 0.1);
+        assert!(!b.napping(), "an alert wakes a napper");
+        assert_eq!(b.state, State::Investigate, "and it goes to the alert, it does not sleep on");
+    }
+
+    #[test]
+    fn a_hidden_runner_close_by_does_not_wake_a_napper() {
+        let f = fac();
+        let bed = bed_poi(&f);
+        let mut b = wanderer(&f, bed.stand);
+        b.start_activity(Activity::Nap, &bed, &f);
+        let mut t = far();
+        t.pos = (b.pos.0 + 0.5, b.pos.1);
+        t.hidden = true;
+        run(&mut b, &f, &t, 0.5);
+        assert!(b.napping(), "a hidden runner is not heard");
+    }
+
 
     fn run(b: &mut Brain, fac: &Facility, t: &Target, seconds: f32) {
         let prof = Difficulty::Standard.profile();

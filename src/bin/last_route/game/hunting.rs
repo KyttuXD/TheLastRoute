@@ -225,6 +225,11 @@ impl Game {
             };
             let Some(h) = self.hunter_at_mut(spot) else { continue };
             let mut placed = false;
+            let nap_cells = match (finite(&entry["nap"][0]), finite(&entry["nap"][1]), finite(&entry["nap"][2]), finite(&entry["nap"][3])) {
+                (Some(x), Some(y), Some(ax), Some(az)) => Some((x, y, ax, az)),
+                _ => None,
+            };
+            let mut net_nap = None;
             if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
                 // a frame from a room with its own window: the cells are that window's, moved into this one
                 let shift = match (entry["origin"][0].as_i64(), entry["origin"][1].as_i64()) {
@@ -240,8 +245,11 @@ impl Game {
                 if let Some(shift) = shift {
                     h.pos = (x + shift.0, y + shift.1);
                     placed = true;
+                    net_nap = nap_cells.map(|(nx, ny, ax, az)| crate::hunters::activities::NapSpot { at: (nx + shift.0, ny + shift.1), axis: (ax, az) });
                 }
             }
+            // the bed of a napping hunter, moved by the same shift as its position (None while it is awake)
+            h.set_net_nap(net_nap);
             if let (Some(x), Some(y)) = (finite(&entry["facing"][0]), finite(&entry["facing"][1])) {
                 h.facing = (x, y);
             }

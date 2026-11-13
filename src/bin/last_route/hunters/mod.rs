@@ -11,6 +11,7 @@ pub mod gimmicks;
 pub mod hard_abilities;
 pub mod light_field;
 pub mod mechanics;
+pub mod naps;
 pub mod navigation;
 pub mod locker_inspect;
 pub mod patrol_anchor;

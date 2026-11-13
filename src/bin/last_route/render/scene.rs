@@ -902,7 +902,7 @@ pub fn draw_scene(
                 mechanic: anim::profile::mechanic_of(h),
             };
             // the brain's activity pose and emote (face, clip, voice cue), next to the Input
-            view.set_extras(hunter_act::Extras { activity: h.activity_name(), emote: h.emote });
+            view.set_extras(hunter_act::Extras { activity: h.activity_name(), emote: h.emote, nap: h.nap_spot() });
             // a far hunter re-poses every few frames (data/render/hunters.json lod_bands) and shows its last mesh between;
             // near ones have interval 1 and are always due. A held, stunned, mechanic or beam hunter is always posed.
             // A far frame with a mesh to show skips the pose sample; its state (clocks, blends) still advances. The mesh is
