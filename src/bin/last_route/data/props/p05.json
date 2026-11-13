@@ -42,7 +42,19 @@
 			"id": "mansionFireplace",
 			"models": [
 				"res://assets/props/mansion/mansion_fireplace.bbmodel"
-			]
+			],
+			"light": {
+				"color": "ff9a4a",
+				"energy": 0.5,
+				"range": 4.2,
+				"flicker_hz": 3.0,
+				"flicker_depth": 0.2,
+				"offset": [
+					0,
+					0.4,
+					0.2
+				]
+			}
 		},
 		{
 			"id": "magazineRack",

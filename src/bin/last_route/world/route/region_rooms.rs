@@ -386,6 +386,24 @@ pub fn all() -> &'static BTreeMap<String, RegionRooms> {
     })
 }
 
+/// The authored size of a prop type from the tables' `props` lists (the first table, by region id, that lists it).
+/// `furnished.rs` reads it for the types that have no row in the generated Godot tables.
+pub fn data_prop_size(prop_type: &str) -> Option<[f32; 3]> {
+    static SIZES: OnceLock<BTreeMap<String, [f32; 3]>> = OnceLock::new();
+    SIZES
+        .get_or_init(|| {
+            let mut out = BTreeMap::new();
+            for t in all().values() {
+                for p in &t.props {
+                    out.entry(p.prop_type.clone()).or_insert(p.size);
+                }
+            }
+            out
+        })
+        .get(prop_type)
+        .copied()
+}
+
 /// The table of a region.
 pub fn table(region: &str) -> Option<&'static RegionRooms> {
     all().get(region)

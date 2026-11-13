@@ -26,7 +26,7 @@ pub const MAX_ROOM_SIZE: i32 = 26;
 
 /// The built-in region files, `(file name, text)`. The game embeds the same files from src/bin/last_route/data/regions/ at
 /// build time; a test in `content::regions` keeps the two lists equal.
-pub const BUILTIN_FILES: [(&str, &str); 22] = [
+pub const BUILTIN_FILES: [(&str, &str); 25] = [
     ("regions/apartment.json", include_str!("../bin/last_route/data/regions/apartment.json")),
     ("regions/beach.json", include_str!("../bin/last_route/data/regions/beach.json")),
     ("regions/carnival.json", include_str!("../bin/last_route/data/regions/carnival.json")),
@@ -49,6 +49,10 @@ pub const BUILTIN_FILES: [(&str, &str); 22] = [
     ("regions/tunnels.json", include_str!("../bin/last_route/data/regions/tunnels.json")),
     ("regions/offices.json", include_str!("../bin/last_route/data/regions/offices.json")),
     ("regions/utility.json", include_str!("../bin/last_route/data/regions/utility.json")),
+    // the seasonal regions of the regions pass (docs/REGIONS_PASS.md): Rust only, never in Godot's draw
+    ("regions/festive.json", include_str!("../bin/last_route/data/regions/festive.json")),
+    ("regions/halloween.json", include_str!("../bin/last_route/data/regions/halloween.json")),
+    ("regions/harvest.json", include_str!("../bin/last_route/data/regions/harvest.json")),
 ];
 
 /// The only region schema this build reads. A new shape is `lr.region/2`, added in both engines.
@@ -57,9 +61,9 @@ pub const SCHEMA: &str = "lr.region/1";
 pub const BUILTIN: &str = "builtin";
 
 /// Every top-level key of `lr.region/1` (Godot REGION_FIELDS). Any other key is an error. `geometry`,
-/// `safe_light` and `accent` are optional: they were added to /1 before the first full release, so /1 stays the
-/// schema name.
-const KEYS: [&str; 14] = [
+/// `safe_light`, `accent`, `extra_prop_set` and `palettes` are optional: they were added to /1 before the first full
+/// release, so /1 stays the schema name.
+const KEYS: [&str; 16] = [
     "schema",
     "id",
     "hall_floor",
@@ -75,7 +79,16 @@ const KEYS: [&str; 14] = [
     "accent",
     // the sewer level generator's layout rules (world/route/sewer/core.rs `Rules`); not read here
     "layout",
+    // Rust only (docs/REGIONS_PASS.md): props the game adds to `prop_set` (never on the Godot parity layout), and the
+    // region's colour variants
+    "extra_prop_set",
+    "palettes",
 ];
+/// The keys of one `palettes` item. `name` is required; every other key is optional.
+const PALETTE_KEYS: [&str; 8] = ["name", "weight", "textures", "wall", "trim", "floor", "lamp", "ambient"];
+/// The most palettes one region may list, and the largest `weight` of one.
+pub const MAX_PALETTES: usize = 8;
+pub const MAX_PALETTE_WEIGHT: u32 = 16;
 /// The keys of the optional `geometry` block.
 const GEOMETRY_KEYS: [&str; 3] = ["wall_height", "room_min", "room_max"];
 /// The allowed range of `geometry.wall_height`, in metres.
@@ -161,6 +174,38 @@ pub struct RegionAccent {
     pub metal: bool,
 }
 
+/// One colour variant of a region (`palettes` item): the tints one patch of the region is drawn with. A tint is sRGB
+/// bytes that multiply the surface's own colour, so `[255, 255, 255]` (the default of a missing key) changes nothing.
+/// Which palette a patch takes is `RegionDef::palette_for` (a hash, never the clock or a random stream).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionPalette {
+    pub name: String,
+    /// How often the palette is picked against the region's others (1 to `MAX_PALETTE_WEIGHT`, default 1).
+    pub weight: u32,
+    /// The texture set the patch is painted with (a `world::TEXTURE_SETS` name); `None` keeps the region's own.
+    pub textures: Option<String>,
+    pub wall: [u8; 3],
+    pub trim: [u8; 3],
+    pub floor: [u8; 3],
+    /// Multiplies the colour of every lamp in the patch (a temperature shift, like `lamps.json` `room_tint`).
+    pub lamp: [u8; 3],
+    /// The ambient light colour of the patch; `None` keeps the region's row of `render/ambient.json`.
+    pub ambient: Option<[u8; 3]>,
+}
+
+/// A stable hash of a text (FNV-1a with a splitmix64 finish): the same on every machine and build, so the host and
+/// its guests pick the same palette from the same seed.
+pub fn stable_hash(text: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in text.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
+    h ^ (h >> 31)
+}
+
 /// One region's facts, as `lr.region/1` states them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionDef {
@@ -180,6 +225,11 @@ pub struct RegionDef {
     pub safe_light: Option<RegionSafeLight>,
     /// Arch and pilaster trim, when the file has an `accent` block. `None` takes the maze's (`RegionTable::accent`).
     pub accent: Option<RegionAccent>,
+    /// Props the game draws from as well as `prop_set` (appended after it, in file order). The Godot parity layout
+    /// never reads them, so a region shared with Godot keeps its `prop_set` and its goldens.
+    pub extra_prop_set: Vec<PropChoice>,
+    /// The region's colour variants; empty for a region with one look.
+    pub palettes: Vec<RegionPalette>,
     /// `BUILTIN`, or the id of the pack that added or replaced the region.
     pub source: String,
 }
@@ -354,14 +404,90 @@ fn optional_string(file: &str, obj: &Map<String, Value>, key: &str) -> Result<Op
     }
 }
 
-fn prop_set(file: &str, obj: &Map<String, Value>) -> Result<Vec<PropChoice>, String> {
+/// A colour written "#rrggbb" (the `#` is optional).
+fn hex_colour(file: &str, key: &str, value: &Value) -> Result<[u8; 3], String> {
+    let text = value.as_str().unwrap_or("");
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    u32::from_str_radix(hex, 16)
+        .ok()
+        .filter(|_| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|n| [(n >> 16) as u8, (n >> 8) as u8, n as u8])
+        .ok_or_else(|| wrong(file, key, "a colour written #rrggbb"))
+}
+
+/// The optional `palettes` list: at most `MAX_PALETTES` items with unique names.
+fn palettes(file: &str, obj: &Map<String, Value>) -> Result<Vec<RegionPalette>, String> {
+    let Some(value) = obj.get("palettes") else {
+        return Ok(vec![]);
+    };
+    let items = value
+        .as_array()
+        .filter(|a| a.len() <= MAX_PALETTES)
+        .ok_or_else(|| wrong(file, "palettes", &format!("an array of at most {MAX_PALETTES} objects")))?;
+    let mut out: Vec<RegionPalette> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let at = format!("palettes[{i}]");
+        let item = item.as_object().ok_or_else(|| wrong(file, &at, "an object"))?;
+        if let Some(key) = item.keys().find(|k| !PALETTE_KEYS.contains(&k.as_str())) {
+            return Err(format!("{file}: \"{at}\" has unknown key \"{key}\""));
+        }
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .ok_or_else(|| wrong(file, &format!("{at}.name"), "a non-empty string of letters, digits and _"))?;
+        if out.iter().any(|p| p.name == name) {
+            return Err(format!("{file}: \"{at}.name\" repeats the palette name \"{name}\""));
+        }
+        let weight = match item.get("weight") {
+            None => 1,
+            Some(v) => v
+                .as_u64()
+                .filter(|n| (1..=MAX_PALETTE_WEIGHT as u64).contains(n))
+                .ok_or_else(|| wrong(file, &format!("{at}.weight"), &format!("a whole number from 1 to {MAX_PALETTE_WEIGHT}")))? as u32,
+        };
+        let tint = |key: &str| -> Result<Option<[u8; 3]>, String> {
+            match item.get(key) {
+                None => Ok(None),
+                Some(v) => hex_colour(file, &format!("{at}.{key}"), v).map(Some),
+            }
+        };
+        let textures = match item.get("textures") {
+            None => None,
+            Some(v) => Some(
+                v.as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| wrong(file, &format!("{at}.textures"), "a non-empty string"))?,
+            ),
+        };
+        const WHITE: [u8; 3] = [255, 255, 255];
+        out.push(RegionPalette {
+            name: name.to_string(),
+            weight,
+            textures,
+            wall: tint("wall")?.unwrap_or(WHITE),
+            trim: tint("trim")?.unwrap_or(WHITE),
+            floor: tint("floor")?.unwrap_or(WHITE),
+            lamp: tint("lamp")?.unwrap_or(WHITE),
+            ambient: tint("ambient")?,
+        });
+    }
+    Ok(out)
+}
+
+/// The required `prop_set` list, or the optional `extra_prop_set` (`required` false: a missing key is an empty list).
+fn prop_set(file: &str, obj: &Map<String, Value>, list: &str, required: bool) -> Result<Vec<PropChoice>, String> {
+    if !required && !obj.contains_key(list) {
+        return Ok(vec![]);
+    }
     let items = obj
-        .get("prop_set")
+        .get(list)
         .and_then(Value::as_array)
-        .ok_or_else(|| wrong(file, "prop_set", "an array of objects"))?;
+        .ok_or_else(|| wrong(file, list, "an array of objects"))?;
     let mut out = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
-        let at = format!("prop_set[{i}]");
+        let at = format!("{list}[{i}]");
         let item = item
             .as_object()
             .ok_or_else(|| wrong(file, &at, "an object"))?;
@@ -438,12 +564,34 @@ pub fn parse_file(file: &str, text: &str) -> Result<RegionDef, String> {
         shop_names: shop_names(file, obj)?,
         room_door: optional_string(file, obj, "room_door")?,
         double_room_door: optional_string(file, obj, "double_room_door")?,
-        prop_set: prop_set(file, obj)?,
+        prop_set: prop_set(file, obj, "prop_set", true)?,
         geometry: geometry(file, obj)?,
         safe_light: safe_light(file, obj)?,
         accent: accent(file, obj)?,
+        extra_prop_set: prop_set(file, obj, "extra_prop_set", false)?,
+        palettes: palettes(file, obj)?,
         source: String::new(),
     })
+}
+
+impl RegionDef {
+    /// The palette of the patch named by `patch_key` (the caller's text for one patch of the region: the world seed
+    /// and the region block), by `stable_hash` over the palettes' weights. `None` for a region with no palettes.
+    /// The same key gives the same palette on every machine.
+    pub fn palette_for(&self, patch_key: &str) -> Option<&RegionPalette> {
+        let total: u64 = self.palettes.iter().map(|p| p.weight as u64).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut roll = stable_hash(&format!("{}:PALETTE:{patch_key}", self.id)) % total;
+        for p in &self.palettes {
+            if roll < p.weight as u64 {
+                return Some(p);
+            }
+            roll -= p.weight as u64;
+        }
+        self.palettes.last()
+    }
 }
 
 impl RegionTable {
@@ -827,6 +975,92 @@ mod tests {
             let e = fails(&with_accent(block));
             assert!(e.contains(key), "{e}");
         }
+    }
+
+    fn with_palettes(list: &str) -> String {
+        MIN.replacen("\"id\":\"t\"", &format!("\"id\":\"t\",\"palettes\":{list}"), 1)
+    }
+
+    #[test]
+    fn a_palette_list_is_read_and_a_missing_tint_is_white() {
+        let d = parse_file(
+            "t.json",
+            &with_palettes(r##"[{"name":"grey_blue","weight":2,"textures":"lab","wall":"#a8b4c8","lamp":"e4ecff","ambient":"#4c5666"},{"name":"plain"}]"##),
+        )
+        .unwrap();
+        assert_eq!(d.palettes.len(), 2);
+        let p = &d.palettes[0];
+        assert_eq!((p.name.as_str(), p.weight, p.textures.as_deref()), ("grey_blue", 2, Some("lab")));
+        assert_eq!((p.wall, p.trim, p.floor, p.lamp), ([0xa8, 0xb4, 0xc8], [255; 3], [255; 3], [0xe4, 0xec, 0xff]));
+        assert_eq!(p.ambient, Some([0x4c, 0x56, 0x66]));
+        let plain = &d.palettes[1];
+        assert_eq!((plain.weight, plain.textures.as_deref(), plain.wall, plain.ambient), (1, None, [255; 3], None));
+        assert!(parse_file("t.json", MIN).unwrap().palettes.is_empty());
+    }
+
+    #[test]
+    fn a_bad_palette_names_the_key() {
+        for (list, key) in [
+            (r##"[{"wall":"#ffffff"}]"##, "palettes[0].name"),
+            (r##"[{"name":"a","wall":"blue"}]"##, "palettes[0].wall"),
+            (r##"[{"name":"a","weight":0}]"##, "palettes[0].weight"),
+            (r##"[{"name":"a","gloss":1}]"##, "unknown key \"gloss\""),
+            (r##"[{"name":"a"},{"name":"a"}]"##, "repeats the palette name"),
+            (r##"{"name":"a"}"##, "\"palettes\" must be"),
+        ] {
+            let e = fails(&with_palettes(list));
+            assert!(e.contains(key), "wanted {key:?} in {e:?}");
+        }
+    }
+
+    #[test]
+    fn the_palette_of_a_patch_is_the_same_every_time_and_every_palette_is_reached() {
+        let d = parse_file("t.json", &with_palettes(r##"[{"name":"a","weight":3},{"name":"b"},{"name":"c","weight":2}]"##)).unwrap();
+        let mut seen = std::collections::BTreeMap::new();
+        for i in 0..600 {
+            let key = format!("seed:{i}:{}", i * 7);
+            let first = d.palette_for(&key).unwrap().name.clone();
+            assert_eq!(d.palette_for(&key).unwrap().name, first);
+            *seen.entry(first).or_insert(0) += 1;
+        }
+        // weights 3, 1, 2 of 6: about 300, 100, 200 of 600
+        assert!(seen["a"] > 240 && seen["a"] < 360, "{seen:?}");
+        assert!(seen["b"] > 60 && seen["b"] < 140, "{seen:?}");
+        assert!(seen["c"] > 150 && seen["c"] < 250, "{seen:?}");
+        assert!(parse_file("t.json", MIN).unwrap().palette_for("x").is_none());
+        // the hash is fixed: a change to it would change every shipped world's colours
+        assert_eq!(stable_hash(""), stable_hash(""));
+        assert_ne!(stable_hash("a"), stable_hash("b"));
+    }
+
+    #[test]
+    fn every_built_in_palette_parses_and_names_are_unique() {
+        let mut warnings = vec![];
+        let t = RegionTable::builtin(&mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let with: Vec<&RegionDef> = t.defs.iter().filter(|d| !d.palettes.is_empty()).collect();
+        assert!(with.len() >= 5, "regions with palettes: {:?}", with.iter().map(|d| &d.id).collect::<Vec<_>>());
+        for d in with {
+            assert!(d.palettes.len() >= 2, "{}: one palette is no variety", d.id);
+            for p in &d.palettes {
+                // a tint multiplies the surface: one that is nearly black would hide the region
+                for tint in [p.wall, p.trim, p.floor, p.lamp] {
+                    assert!(tint.iter().any(|c| *c >= 0x60), "{}/{}: tint {tint:?} is too dark", d.id, p.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_extra_prop_set_is_read_beside_the_prop_set() {
+        let text = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"extra_prop_set\":[{\"type\":\"cone\",\"size\":[0.4,0.7,0.4]},{\"type\":\"puddle\",\"size\":[1,0.02,1],\"solid\":false}]", 1);
+        let d = parse_file("t.json", &text).unwrap();
+        assert_eq!(d.prop_set.len(), 1);
+        assert_eq!(d.extra_prop_set.len(), 2);
+        assert!(d.extra_prop_set[0].solid && !d.extra_prop_set[1].solid);
+        assert!(parse_file("t.json", MIN).unwrap().extra_prop_set.is_empty());
+        let bad = MIN.replacen("\"id\":\"t\"", "\"id\":\"t\",\"extra_prop_set\":[{\"type\":\"cone\",\"size\":[1,1]}]", 1);
+        assert!(fails(&bad).contains("extra_prop_set[0].size"));
     }
 
     #[test]

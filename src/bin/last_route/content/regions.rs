@@ -95,6 +95,230 @@ mod tests {
         assert!(parse_file("lit.json", &region(r#","safe_light":{"energy":99}"#)).is_err(), "energy is range checked");
     }
 
+    // ------------------------------------------------------------------------------------------------------
+    // the regions pass (docs/REGIONS_PASS.md): region props, their models, the seasonal regions
+
+    /// Every prop definition of data/props/*.json, by type id.
+    fn prop_defs() -> std::collections::HashMap<String, crate::content::props::PropDef> {
+        let mut out = std::collections::HashMap::new();
+        for (path, text) in embedded::data_under("props/") {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{path}: {e}"));
+            for p in crate::content::props::parse_file(&v) {
+                out.insert(p.id.clone(), p);
+            }
+        }
+        out
+    }
+
+    /// A model's document, its lowest and highest corner in metres (cubes only) and its drawn triangles.
+    fn read_model(path: &str) -> (serde_json::Value, [f32; 3], [f32; 3], usize) {
+        let bytes = embedded::asset(path).unwrap_or_else(|| panic!("{path} is embedded"));
+        let j: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let (mut lo, mut hi, mut tris) = ([f32::MAX; 3], [f32::MIN; 3], 0usize);
+        for e in j["elements"].as_array().unwrap_or_else(|| panic!("{path}: elements")) {
+            if e["type"].as_str() != Some("cube") {
+                continue;
+            }
+            for i in 0..3 {
+                let (f, t) = (e["from"][i].as_f64().unwrap() as f32 / 16.0, e["to"][i].as_f64().unwrap() as f32 / 16.0);
+                assert!(f < t, "{path}: {} has no volume", e["name"]);
+                lo[i] = lo[i].min(f);
+                hi[i] = hi[i].max(t);
+            }
+            tris += e["faces"].as_object().map_or(0, |faces| faces.values().filter(|x| !x["texture"].is_null()).count() * 2);
+        }
+        (j, lo, hi, tris)
+    }
+
+    /// Every region's prop set (and its extra set), every room table's prop table and every recipe item names a
+    /// prop type of data/props whose models are all embedded and read as models with geometry.
+    #[test]
+    fn every_region_prop_names_a_prop_type_whose_models_parse() {
+        let defs = prop_defs();
+        let mut checked = std::collections::BTreeSet::new();
+        let mut check = |ty: &str, place: &str| {
+            let def = defs.get(ty).unwrap_or_else(|| panic!("{place}: {ty} is not a prop type of data/props"));
+            assert!(!def.models.is_empty(), "{place}: {ty} has no model");
+            if !checked.insert(ty.to_string()) {
+                return;
+            }
+            for model in &def.models {
+                let bytes = embedded::asset(model).unwrap_or_else(|| panic!("{place}: {ty}: {model} is not embedded"));
+                let j: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_else(|e| panic!("{model}: {e}"));
+                assert!(j["elements"].as_array().is_some_and(|e| !e.is_empty()), "{model}: no geometry");
+            }
+        };
+        let mut warnings = vec![];
+        let table = RegionTable::builtin(&mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        for def in &table.defs {
+            for p in def.prop_set.iter().chain(&def.extra_prop_set) {
+                check(&p.prop_type, &format!("regions/{}.json", def.id));
+                assert!(p.size.iter().all(|s| *s > 0.0 && *s < 40.0), "{}: {} size {:?}", def.id, p.prop_type, p.size);
+            }
+        }
+        for (id, rooms) in crate::world::route::furnished::region_rooms::all() {
+            let place = format!("region_rooms/{id}.json");
+            for p in &rooms.props {
+                check(&p.prop_type, &place);
+            }
+            for r in &rooms.rooms {
+                for ty in r.recipe_types() {
+                    check(ty, &place);
+                    assert!(rooms.props.iter().any(|p| p.prop_type == ty), "{place}: {ty} of room {} is in the prop table", r.role);
+                }
+            }
+            for rule in &rooms.tunnel_dressing {
+                check(&rule.prop_type, &place);
+            }
+        }
+        assert!(checked.len() > 100, "only {} prop types were checked", checked.len());
+    }
+
+    /// A prop type has one authored size wherever the regions pass lists it, so its blocker box is the same in
+    /// every region (the room tables' `data_prop_size` takes the first one it finds).
+    #[test]
+    fn a_regions_pass_prop_has_the_same_size_everywhere() {
+        let pass = pass_prop_ids();
+        let mut sizes: std::collections::BTreeMap<String, [f32; 3]> = Default::default();
+        let mut see = |ty: &str, size: [f32; 3], place: &str| {
+            if !pass.contains(&ty.to_string()) {
+                return;
+            }
+            let first = *sizes.entry(ty.to_string()).or_insert(size);
+            assert_eq!(first, size, "{place}: {ty}");
+        };
+        let table = RegionTable::builtin(&mut Vec::new());
+        for def in &table.defs {
+            for p in def.prop_set.iter().chain(&def.extra_prop_set) {
+                see(&p.prop_type, p.size, &def.id);
+            }
+        }
+        for (id, rooms) in crate::world::route::furnished::region_rooms::all() {
+            for p in &rooms.props {
+                see(&p.prop_type, p.size, id);
+            }
+        }
+        // every type of the pass is placed by at least one region
+        for ty in &pass {
+            assert!(sizes.contains_key(ty), "{ty} is in data/props/regions_pass.json but no region places it");
+        }
+    }
+
+    /// The prop types of data/props/regions_pass.json, in file order.
+    fn pass_prop_ids() -> Vec<String> {
+        let (_, text) = embedded::data_under("props/regions_pass.json").next().expect("props/regions_pass.json is embedded");
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["props"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// The 46 models of the regions pass (tools/props/props_pass_models.py): cubes only, within the triangle budget,
+    /// standing on the floor, inside the size the regions give the type, and all painted from the one palette
+    /// picture the props-pass models use, so they share a texture and a batch.
+    #[test]
+    fn the_regions_pass_models_are_small_cube_models_on_the_shared_palette() {
+        let defs = prop_defs();
+        let (palette_model, _, _, _) = read_model("props/maze/arcade_cabinet_lime.bbmodel");
+        let palette = palette_model["textures"][0]["source"].as_str().expect("the props-pass palette").to_string();
+        // the size of each type: the first region that lists it
+        let table = RegionTable::builtin(&mut Vec::new());
+        let size_of = |ty: &str| -> [f32; 3] {
+            table
+                .defs
+                .iter()
+                .flat_map(|d| d.prop_set.iter().chain(&d.extra_prop_set))
+                .find(|p| p.prop_type == ty)
+                .map(|p| p.size)
+                .unwrap_or_else(|| panic!("{ty} is in no region's prop set"))
+        };
+        let ids = pass_prop_ids();
+        assert_eq!(ids.len(), 45);
+        let mut models = 0;
+        for ty in &ids {
+            let def = defs.get(ty).unwrap_or_else(|| panic!("{ty}"));
+            let size = size_of(ty);
+            for model in &def.models {
+                models += 1;
+                let (j, lo, hi, tris) = read_model(model);
+                assert!(j["elements"].as_array().unwrap().iter().all(|e| e["type"].as_str() == Some("cube")), "{model}: cubes only");
+                assert!((40..=520).contains(&tris), "{model}: {tris} triangles");
+                assert!(lo[1].abs() < 1e-4, "{model}: stands on the floor, lowest point {}", lo[1]);
+                // the blocker box is centred on the prop: the model reaches no further than half the size on x and z
+                let slack = 0.011;
+                assert!(hi[1] <= size[1] + slack, "{model}: {} m tall in a {} m box", hi[1], size[1]);
+                for (axis, i) in [("x", 0), ("z", 2)] {
+                    let reach = hi[i].max(-lo[i]);
+                    assert!(reach <= size[i] * 0.5 + slack, "{model}: reaches {reach} m on {axis}, half the box is {}", size[i] * 0.5);
+                    assert!(reach >= size[i] * 0.5 - 0.06, "{model}: the {axis} box ({}) is larger than the model ({reach} each way)", size[i]);
+                }
+                assert_eq!(j["textures"][0]["source"].as_str(), Some(palette.as_str()), "{model}: the shared palette picture");
+            }
+        }
+        assert_eq!(models, 46);
+    }
+
+    /// A palette's `textures` is a texture set the game has, and every region the mix can place has a texture set of
+    /// its own in data/region_textures.json or a district (it is not left looking like the maze by accident).
+    #[test]
+    fn every_palette_names_a_texture_set_the_game_has() {
+        let table = RegionTable::builtin(&mut Vec::new());
+        for def in &table.defs {
+            for p in &def.palettes {
+                if let Some(set) = &p.textures {
+                    assert!(crate::world::TEXTURE_SETS.contains(&set.as_str()), "{}/{}: {set} is not a texture set", def.id, p.name);
+                }
+            }
+        }
+        for (id, _) in &crate::world::route::regions::mix().regions {
+            assert_ne!(crate::world::region_texture(id), "maze", "{id} has no row in data/region_textures.json");
+        }
+    }
+
+    /// The seasonal regions: each has its own prop set of at least nine types of its own, palettes, rooms, and the
+    /// lit props carry a modest light (a glow where the prop glows).
+    #[test]
+    fn the_seasonal_regions_have_their_own_props_palettes_and_lights() {
+        let defs = prop_defs();
+        let pass = pass_prop_ids();
+        let table = RegionTable::builtin(&mut Vec::new());
+        for (id, own) in [
+            ("festive", ["christmasTree", "wrappedPresents", "festiveWreath", "snowman", "candyCanePost", "stockingMantel", "festiveSleigh", "nutcracker", "stringLightPost"]),
+            ("halloween", ["jackOLantern", "witchCauldron", "coffin", "tombstone", "scarecrow", "cobwebCorner", "skeletonProp", "witchBroomRack", "candleCluster"]),
+            ("harvest", ["hayBale", "cornucopiaTable", "pumpkinPile", "cornStalkBundle", "harvestFeastTable", "pieStand", "turkeyCentrepiece", "leafPile", "woodenCart"]),
+        ] {
+            let def = table.def(id).unwrap_or_else(|| panic!("{id} has a region file"));
+            for ty in own {
+                assert!(pass.contains(&ty.to_string()), "{ty} is a type of the pass");
+                assert!(def.prop_set.iter().any(|p| p.prop_type == ty), "{id}: {ty} is in the prop set");
+            }
+            assert!(def.palettes.len() >= 2, "{id}: palettes");
+            assert!(def.room_roles.len() >= 4, "{id}: rooms");
+            assert!(crate::world::route::regions::is_extra(id), "{id} is not a Godot region");
+        }
+        for (ty, glow) in [
+            ("christmasTree", true),
+            ("stockingMantel", true),
+            ("jackOLantern", true),
+            ("witchCauldron", true),
+            ("candleCluster", false),
+            ("stringLightPost", false),
+            ("mansionCandelabra", false),
+            ("mansionFireplace", false),
+        ] {
+            let light = defs.get(ty).and_then(|d| d.light.as_ref()).unwrap_or_else(|| panic!("{ty} has a light"));
+            assert_eq!(light.glow, glow, "{ty}");
+            assert!(light.energy > 0.1 && light.energy <= 0.55, "{ty}: energy {}", light.energy);
+            assert!(light.range > 1.0 && light.range <= 4.5, "{ty}: range {}", light.range);
+        }
+        // no new type is read as a seat, a bed or a mirror by its name, but the piano stool, which is a seat
+        for ty in &pass {
+            let lowered = ty.to_lowercase();
+            let seat = ["chair", "couch", "bench", "stool", "sofa"].iter().any(|w| lowered.contains(w));
+            assert_eq!(seat, ty == "pianoStool", "{ty}");
+            assert!(!lowered.ends_with("bed") && !lowered.contains("bunk") && !lowered.contains("mirror"), "{ty}");
+        }
+    }
+
     #[test]
     fn the_standalone_defaults_match_the_game_constants() {
         assert_eq!(DEFAULT_WALL_HEIGHT, crate::config::WALL_HEIGHT);

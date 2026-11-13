@@ -1,0 +1,31 @@
+{
+	"schema": "lr.region/1",
+	"id": "festive",
+	"accent": {"texture": "floor", "kind": "metal0", "tint": "#c9a25a", "metal": true},
+	"hall_floor": ["parquet0", "parquet1"],
+	"hall_runner": true,
+	"room_default_floor": ["carpet_red"],
+	"room_roles": ["tree_parlour", "tree_parlour", "tree_parlour", "gift_workshop", "gift_workshop", "hearth_lounge", "hearth_lounge", "snow_court"],
+	"safe_light": {"color": [1.0, 0.85, 0.6], "energy": 2.2},
+	"prop_set": [
+		{"type": "christmasTree", "size": [1.42, 2.4, 1.42]},
+		{"type": "wrappedPresents", "size": [1.0, 0.61, 0.8]},
+		{"type": "festiveWreath", "size": [0.8, 1.7, 0.4]},
+		{"type": "snowman", "size": [0.8, 1.6, 0.8]},
+		{"type": "candyCanePost", "size": [0.44, 1.8, 0.35]},
+		{"type": "stockingMantel", "size": [1.8, 1.4, 0.56]},
+		{"type": "festiveSleigh", "size": [2.2, 1.1, 1.0]},
+		{"type": "nutcracker", "size": [0.62, 1.8, 0.4]},
+		{"type": "stringLightPost", "size": [0.43, 2.2, 0.43]},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17]},
+		{"type": "loungeCouchWide", "size": [3.7, 1.33, 1.54]},
+		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+	],
+	"palettes": [
+		{"name": "red_green", "weight": 2, "textures": "hotel", "wall": "#f0c0b8", "trim": "#6fae6f", "floor": "#e8d8d0", "lamp": "#ffe2b0", "ambient": "#6e4038"},
+		{"name": "snow", "textures": "hospital", "wall": "#e4eef8", "trim": "#c84848", "floor": "#f0f4f8", "lamp": "#f4f8ff", "ambient": "#56687c"},
+		{"name": "gold", "textures": "mansion", "wall": "#f4e2b0", "trim": "#b03a30", "floor": "#e8d8b8", "lamp": "#ffe8b8", "ambient": "#6c5430"}
+	]
+}

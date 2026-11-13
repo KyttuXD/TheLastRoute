@@ -107,5 +107,31 @@
 			],
 			"solid": false
 		}
+	],
+	"extra_prop_set": [
+		{"type": "mansionFireplace", "size": [1.02, 1.49, 0.72]},
+		{"type": "mansionGrandfatherClock", "size": [1.05, 3.19, 0.68]},
+		{"type": "mansionPortraitFrame", "size": [1.0, 2.0, 0.12]},
+		{"type": "mansionCandelabra", "size": [0.53, 1.6, 0.53]},
+		{"type": "mansionArmoire", "size": [1.4, 2.2, 0.7]},
+		{"type": "mansionChaiseLounge", "size": [2.71, 1.8, 1.17]},
+		{"type": "mansionUprightPiano", "size": [1.54, 1.62, 1.13]},
+		{"type": "pianoStool", "size": [0.6, 0.55, 0.45]},
+		{"type": "taxidermyPedestal", "size": [0.6, 1.5, 0.6]},
+		{"type": "suitOfArmour", "size": [0.76, 2.0, 0.6]},
+		{"type": "mansionBookshelfTall", "size": [1.2, 2.3, 0.45]},
+		{"type": "mansionBookshelfLow", "size": [1.6, 1.1, 0.45]},
+		{"type": "mansionBustPedestal", "size": [0.54, 1.98, 0.54]},
+		{"type": "mansionConsoleTable", "size": [1.83, 1.36, 0.7]},
+		{"type": "mansionDisplayCabinet", "size": [1.52, 2.78, 0.7]},
+		{"type": "mansionCoatRack", "size": [0.93, 2.94, 0.93]},
+		{"type": "mansionTeaCart", "size": [1.7, 1.55, 0.85]},
+		{"type": "mansionRockingChair", "size": [0.93, 2.33, 1.41]},
+		{"type": "diningChandelier", "size": [0.55, 1.5, 0.55], "solid": false}
+	],
+	"palettes": [
+		{"name": "burgundy", "weight": 2},
+		{"name": "forest", "wall": "#c8e0c8", "trim": "#d8c090", "floor": "#d8e0d0", "lamp": "#fff0c8", "ambient": "#3a5040"},
+		{"name": "navy", "wall": "#c4cce8", "trim": "#e0c890", "floor": "#d0d4e4", "lamp": "#f0f0ff", "ambient": "#3a4262"}
 	]
 }

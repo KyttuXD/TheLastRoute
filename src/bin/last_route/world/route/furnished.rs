@@ -74,6 +74,20 @@ fn has_model(t: &str) -> bool {
     MODEL_KEYS.contains(&t)
 }
 
+/// The authored size of a prop type that only the data knows: one with no Godot model key and no row in the
+/// generated size tables, listed in a room table's `props` (data/region_rooms/<region>.json) and drawn from
+/// data/props/*.json. `None` for every Godot type, and always on the Godot parity layout, so the goldens never see one.
+fn data_only_size(t: &str) -> Option<[f32; 3]> {
+    if super::layout::godot_regions()
+        || has_model(t)
+        || lookup(TEMPLATE_PROP_SIZES, t).is_some()
+        || lookup(PROP_COLLIDER_SIZES, t).is_some()
+    {
+        return None;
+    }
+    region_rooms::data_prop_size(t)
+}
+
 /// `PropModelCatalog.hunter_scale` (prop_model_catalog.gd:884): `HUNTER_SCALE.get(type, 1.0)`. The draw table
 /// (data/render/prop_draw_scale.json) carries the same values.
 fn hunter_scale(t: &str) -> f64 {
@@ -846,8 +860,10 @@ fn template_prop_entry(
     reserved: &Reserved,
 ) -> Option<Prop> {
     let prop_type = spec.ty;
-    // 4879-4880: a model and a size are needed (the content-pack size is not ported)
-    if !has_model(prop_type) || !(lookup(TEMPLATE_PROP_SIZES, prop_type).is_some() || lookup(PROP_COLLIDER_SIZES, prop_type).is_some()) {
+    // 4879-4880: a model and a size are needed (the content-pack size is not ported). A type only the data knows
+    // (docs/REGIONS_PASS.md) brings both from data; never on the Godot parity layout.
+    let data_size = data_only_size(prop_type);
+    if data_size.is_none() && (!has_model(prop_type) || !(lookup(TEMPLATE_PROP_SIZES, prop_type).is_some() || lookup(PROP_COLLIDER_SIZES, prop_type).is_some())) {
         return None;
     }
     let open = basis.open;
@@ -869,6 +885,7 @@ fn template_prop_entry(
     };
     let blocker_size: [f32; 3] = lookup(TEMPLATE_PROP_SIZES, prop_type)
         .or_else(|| lookup(PROP_COLLIDER_SIZES, prop_type))
+        .or(data_size)
         .unwrap_or([1.0, 1.0, 1.0]);
     let mut placement_offset: F2 = [0.0, 0.0];
     let wall_mounted = spec.wall_mount;
@@ -3276,9 +3293,12 @@ mod tests {
                     assert!(has_recipe(id, &r.role), "{id}/{}", r.role);
                 }
                 for ty in r.recipe_types() {
-                    assert!(has_model(ty), "{id}/{}: {ty} has a model", r.role);
+                    // a Godot type has a model key and a row in the size tables; a type only the data knows
+                    // (docs/REGIONS_PASS.md) has its size in a room table and its model in data/props
+                    let data_only = data_only_size(ty).is_some();
+                    assert!(has_model(ty) || data_only, "{id}/{}: {ty} has a model", r.role);
                     assert!(
-                        lookup(TEMPLATE_PROP_SIZES, ty).is_some() || lookup(PROP_COLLIDER_SIZES, ty).is_some(),
+                        lookup(TEMPLATE_PROP_SIZES, ty).is_some() || lookup(PROP_COLLIDER_SIZES, ty).is_some() || data_only,
                         "{id}/{}: {ty} has a size",
                         r.role
                     );
@@ -3318,6 +3338,35 @@ mod tests {
         assert_eq!(tunnels.tunnel_width, 3);
         let types: Vec<&str> = tunnels.tunnel_dressing.iter().map(|r| r.prop_type.as_str()).collect();
         assert!(types.contains(&"basaltPillar") && types.contains(&"wateringCart") && types.contains(&"floorLamp"));
+    }
+
+    /// The regions of the regions pass (docs/REGIONS_PASS.md) are furnished from data alone: every room is a data
+    /// room, every recipe type has a size in the region's own prop table, and the types only the data knows are placed
+    /// by the game but never on the Godot parity layout.
+    #[test]
+    fn the_seasonal_regions_are_furnished_from_data_and_never_on_the_parity_layout() {
+        for id in ["festive", "halloween", "harvest"] {
+            let t = region_rooms::table(id).unwrap_or_else(|| panic!("{id} has a room table"));
+            assert!(t.rooms.len() >= 4, "{id}: rooms");
+            let mut data_only = 0;
+            for r in &t.rooms {
+                assert_eq!(r.template, region_rooms::Template::Data, "{id}/{}", r.role);
+                assert_eq!(template_for(&r.role, id).as_deref(), Some(r.role.as_str()), "{id}/{}: its own recipe furnishes it", r.role);
+                for ty in r.recipe_types() {
+                    assert!(t.props.iter().any(|p| p.prop_type == ty), "{id}/{}: {ty} is in the prop table", r.role);
+                    if !has_model(ty) {
+                        assert!(data_only_size(ty).is_some(), "{id}/{}: {ty} has a size", r.role);
+                        assert!(crate::world::route::layout::with_godot_regions(|| data_only_size(ty)).is_none(), "{ty} on the parity layout");
+                        data_only += 1;
+                    }
+                }
+            }
+            assert!(data_only >= 8, "{id}: only {data_only} recipe items use the region's own props");
+        }
+        // a Godot type never takes the data path
+        for ty in ["woodenTable", "ceilingLight", "serverRack", "officeDesk"] {
+            assert_eq!(data_only_size(ty), None, "{ty}");
+        }
     }
 
     /// Whatever the room size and mirror, a data room asks for nothing outside the room's interior.

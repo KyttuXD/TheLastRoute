@@ -495,12 +495,15 @@ fn intern_purpose(id: &str) -> Option<&'static str> {
         .find(|p| *p == id)
 }
 
-/// The district a finite region maps to (an original district id passes through; unknown -> "maze").
+/// The district a finite region maps to (an original district id passes through; unknown -> its row of
+/// data/region_textures.json, else "maze").
 pub fn finite_district(region: &str) -> &'static str {
     if let Some(e) = FINITE_DISTRICT.iter().find(|e| e.0 == region) {
         return e.1;
     }
-    district(region).map(|d| d.id).unwrap_or("maze")
+    // a region with no district of its own (the regions only this port has) takes the texture set that
+    // data/region_textures.json names for it, else the maze's
+    district(region).or_else(|| district(crate::world::region_texture(region))).map(|d| d.id).unwrap_or("maze")
 }
 
 /// (purpose, district override) of a finite room type (an original purpose id passes through).

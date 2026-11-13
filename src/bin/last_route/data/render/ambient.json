@@ -49,6 +49,41 @@
     "fog_far": 24.0,
     "dark_far": 8.0
   },
+  "region.offices": {
+    "ambient_color": "#4c5666",
+    "ambient_energy": 0.29,
+    "fog_color": [0.009, 0.011, 0.017],
+    "fog_far": 22.0,
+    "dark_far": 10.0
+  },
+  "region.ice": {
+    "ambient_color": "#4a6a80",
+    "ambient_energy": 0.31,
+    "fog_color": [0.01, 0.016, 0.022],
+    "fog_far": 22.0,
+    "dark_far": 10.0
+  },
+  "region.festive": {
+    "ambient_color": "#6e4038",
+    "ambient_energy": 0.33,
+    "fog_color": [0.02, 0.01, 0.008],
+    "fog_far": 24.0,
+    "dark_far": 12.0
+  },
+  "region.halloween": {
+    "ambient_color": "#5a3418",
+    "ambient_energy": 0.24,
+    "fog_color": [0.014, 0.007, 0.012],
+    "fog_far": 16.0,
+    "dark_far": 8.0
+  },
+  "region.harvest": {
+    "ambient_color": "#6a4a24",
+    "ambient_energy": 0.32,
+    "fog_color": [0.018, 0.012, 0.006],
+    "fog_far": 24.0,
+    "dark_far": 11.0
+  },
   "level.-1": {
     "ambient_color": "#2c4a38",
     "ambient_energy": 0.22,

@@ -1,0 +1,16 @@
+{
+	"schema": "lr.region_mix/1",
+	"_about": "How level 0 of the Infinite route mixes in the regions the Godot game does not have (world/route/regions.rs extra_region_for; docs/REGIONS_PASS.md). extra_share: the share of region blocks (4 x 4 chunks; never the spawn block) that are one of these regions, 0 to 0.9. The other blocks keep Godot's own draw, so the Godot regions keep their weights against each other whatever this number is. regions: id and weight; a region's share of the extra blocks is its weight over the sum of the weights, and weight 0 switches it off. Raise a seasonal weight (festive, halloween, harvest) to see that region more. The draw is seeded by the world seed alone, never by the clock, so the host and every guest build the same world; that is also why there is no month setting here. tunnels is off because its corridors are carved by the concept map (data/concept), utility because the region is undecided.",
+	"extra_share": 0.24,
+	"regions": [
+		{"id": "offices", "weight": 6},
+		{"id": "ice", "weight": 3},
+		{"id": "stalls", "weight": 2},
+		{"id": "inferno0", "weight": 1},
+		{"id": "festive", "weight": 1},
+		{"id": "halloween", "weight": 1},
+		{"id": "harvest", "weight": 1},
+		{"id": "tunnels", "weight": 0},
+		{"id": "utility", "weight": 0}
+	]
+}

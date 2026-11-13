@@ -32,6 +32,7 @@
 				{"type": "filingCabinet", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
 				{"type": "filingCabinet", "side": ["-half+1", "half-1", 2], "depth": "mid", "facing": "back"},
 				{"type": "officeFileBoxes", "side": ["-half+1", "half-1", 4], "depth": "front-2", "facing": "center"},
+				{"type": "papersStack", "side": 0, "depth": "front-1", "loose": true, "chance": 0.7},
 				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
 			]
 		},
@@ -60,7 +61,36 @@
 				{"type": "woodenChair", "side": -2, "depth": "mid", "facing": "right"},
 				{"type": "woodenChair", "side": 2, "depth": "mid", "facing": "left"},
 				{"type": "officeWaterCooler", "side": "-half+1", "depth": "mid", "facing": "right", "mirror": true},
+				{"type": "officeCoffeeStation", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
 				{"type": "ceilingLight", "side": 0, "depth": "mid", "loose": true}
+			]
+		},
+		{
+			"role": "server_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 11], "max": [11, 11]},
+			"recipe": [
+				{"type": "serverRack", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "serverRack", "side": ["-half+1", "half-1", 2], "depth": "mid", "facing": "back", "min_depth_span": 11},
+				{"type": "cableCoil", "side": 0, "depth": "front-1", "loose": true},
+				{"type": "officeDesk", "side": "half-1", "depth": "front-1", "facing": "left", "mirror": true},
+				{"type": "cardboardBoxes", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "training_room",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "officeWhiteboard", "side": 0, "depth": 0, "wall": true},
+				{"type": "officeDesk", "side": ["-half+2", "half-2", 4], "depth": ["3", "front-2", 3], "facing": "back"},
+				{"type": "officeChair", "side": ["-half+2", "half-2", 4], "depth": ["4", "front-1", 3], "facing": "back"},
+				{"type": "officeCoffeeStation", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "papersStack", "side": "-half+1", "depth": "front-1", "loose": true, "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
 			]
 		}
 	],
@@ -80,6 +110,12 @@
 		{"type": "normalKitchenFridge", "size": [1.35, 2.91, 1.26], "solid": true, "weight": 1},
 		{"type": "woodenTable", "size": [1.92, 1.12, 1.17], "solid": true, "weight": 1},
 		{"type": "woodenChair", "size": [0.79, 1.41, 0.79], "solid": true, "weight": 1},
-		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1},
+		{"type": "officeWhiteboard", "size": [1.68, 1.9, 0.5], "solid": true, "weight": 1},
+		{"type": "officeCoffeeStation", "size": [1.6, 1.5, 0.62], "solid": true, "weight": 1},
+		{"type": "serverRack", "size": [0.98, 2.91, 1.26], "solid": true, "weight": 1},
+		{"type": "cableCoil", "size": [0.56, 0.09, 0.56], "solid": false, "weight": 1},
+		{"type": "papersStack", "size": [0.5, 0.25, 0.4], "solid": false, "weight": 1},
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81], "solid": true, "weight": 1}
 	]
 }

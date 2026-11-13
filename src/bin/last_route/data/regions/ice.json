@@ -20,5 +20,9 @@
 		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17]},
 		{"type": "normalBookcase", "size": [1.54, 2.72, 0.7]},
 		{"type": "floorLamp", "size": [0.6, 2.62, 0.6]}
+	],
+	"extra_prop_set": [
+		{"type": "floorPuddle", "size": [1.5, 0.02, 1.1], "solid": false},
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81]}
 	]
 }

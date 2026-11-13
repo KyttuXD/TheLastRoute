@@ -91,5 +91,14 @@
 			],
 			"solid": false
 		}
+	],
+	"extra_prop_set": [
+		{"type": "wetFloorSign", "size": [0.4, 0.65, 0.5]},
+		{"type": "trafficCone", "size": [0.4, 0.7, 0.4]},
+		{"type": "floorPuddle", "size": [1.5, 0.02, 1.1], "solid": false}
+	],
+	"palettes": [
+		{"name": "bright", "weight": 2},
+		{"name": "sunset", "wall": "#f8d8b8", "trim": "#d88850", "floor": "#f0dcc8", "lamp": "#ffe8c8", "ambient": "#7a5238"}
 	]
 }

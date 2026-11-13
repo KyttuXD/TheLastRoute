@@ -270,9 +270,16 @@ pub fn region_props(
 /// `REGION_PROP_SETS.get(region, REGION_PROP_SETS["maze"])` (streamed_route_generator.gd:2828). A region with a
 /// catalogue row (src/bin/last_route/data/regions/<id>.json, read through ContentRegistry) takes its set from the row; a region with
 /// no row keeps the code table.
+///
+/// The game also draws from the row's `extra_prop_set` (docs/REGIONS_PASS.md: more mansion props, clutter), appended
+/// after the set. The Godot parity layout (`layout::with_godot_regions`) never reads it.
 fn prop_set(region: &str) -> Vec<PropSetEntry> {
     if let Some(def) = region_def(region) {
-        return prop_set_of(def);
+        let mut set = prop_set_of(def);
+        if !super::layout::godot_regions() {
+            set.extend(def.extra_prop_set.iter().map(|p| PropSetEntry { prop_type: p.prop_type.as_str(), size: p.size, solid: p.solid }));
+        }
+        return set;
     }
     lookup(REGION_PROP_SETS, region).unwrap_or_else(|| lookup(REGION_PROP_SETS, "maze").unwrap_or(&[])).to_vec()
 }

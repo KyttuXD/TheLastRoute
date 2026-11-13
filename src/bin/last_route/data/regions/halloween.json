@@ -1,0 +1,33 @@
+{
+	"schema": "lr.region/1",
+	"id": "halloween",
+	"accent": {"texture": "floor", "kind": "metal0", "tint": "#e08030", "metal": false},
+	"hall_floor": ["stone0", "stone1"],
+	"hall_runner": true,
+	"room_default_floor": ["carpet_red"],
+	"room_roles": ["pumpkin_patch", "pumpkin_patch", "pumpkin_patch", "graveyard_room", "graveyard_room", "witch_kitchen", "witch_kitchen", "haunted_parlour"],
+	"safe_light": {"color": [1.0, 0.6, 0.25], "energy": 2.0},
+	"prop_set": [
+		{"type": "jackOLantern", "size": [0.6, 0.55, 0.61]},
+		{"type": "witchCauldron", "size": [0.9, 0.9, 0.9]},
+		{"type": "coffin", "size": [0.8, 0.6, 2.0]},
+		{"type": "tombstone", "size": [0.7, 1.0, 0.25]},
+		{"type": "scarecrow", "size": [1.2, 2.0, 0.4]},
+		{"type": "cobwebCorner", "size": [1.0, 1.6, 0.12]},
+		{"type": "skeletonProp", "size": [0.5, 1.8, 0.3]},
+		{"type": "witchBroomRack", "size": [0.9, 1.6, 0.35]},
+		{"type": "candleCluster", "size": [0.5, 0.5, 0.5]},
+		{"type": "pumpkinPile", "size": [1.2, 0.7, 1.0]},
+		{"type": "hayBale", "size": [1.21, 0.71, 0.71]},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17]},
+		{"type": "normalBookcase", "size": [1.54, 2.72, 0.7]},
+		{"type": "loungeCouchWide", "size": [3.7, 1.33, 1.54]},
+		{"type": "gothicFloorCandelabra", "size": [1.17, 2.72, 0.6]},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+	],
+	"palettes": [
+		{"name": "pumpkin", "weight": 2, "textures": "gothic", "wall": "#e8b890", "trim": "#603878", "floor": "#d8b8a0", "lamp": "#ffb060", "ambient": "#5a3418"},
+		{"name": "midnight", "textures": "gothic", "wall": "#b0a4d0", "trim": "#e08030", "floor": "#a8a0c0", "lamp": "#c8b0ff", "ambient": "#34264e"},
+		{"name": "swamp", "textures": "prison", "wall": "#a8c8a0", "trim": "#e08030", "floor": "#98b090", "lamp": "#c8ffb0", "ambient": "#2c4428"}
+	]
+}

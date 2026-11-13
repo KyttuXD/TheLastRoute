@@ -4,7 +4,7 @@
 	"hall_floor": ["carpet_tile1"],
 	"hall_runner": false,
 	"room_default_floor": ["carpet_tile1"],
-	"room_roles": ["cubicle_room", "cubicle_room", "cubicle_room", "meeting_room", "meeting_room", "office_reception", "private_office", "private_office", "office_job", "cubicle_farm", "cubicle_farm", "records_room", "print_room", "break_room"],
+	"room_roles": ["cubicle_room", "cubicle_room", "cubicle_room", "meeting_room", "meeting_room", "office_reception", "private_office", "private_office", "office_job", "cubicle_farm", "cubicle_farm", "records_room", "print_room", "break_room", "server_room", "training_room"],
 	"prop_set": [
 		{"type": "officeDesk", "size": [2.48, 1.12, 1.17]},
 		{"type": "officeChair", "size": [0.98, 1.97, 0.98]},
@@ -21,6 +21,20 @@
 		{"type": "normalKitchenFridge", "size": [1.35, 2.91, 1.26]},
 		{"type": "woodenTable", "size": [1.92, 1.12, 1.17]},
 		{"type": "woodenChair", "size": [0.79, 1.41, 0.79]},
-		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false},
+		{"type": "officeWhiteboard", "size": [1.68, 1.9, 0.5]},
+		{"type": "officeCoffeeStation", "size": [1.6, 1.5, 0.62]},
+		{"type": "serverRack", "size": [0.98, 2.91, 1.26]}
+	],
+	"extra_prop_set": [
+		{"type": "papersStack", "size": [0.5, 0.25, 0.4], "solid": false},
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81]},
+		{"type": "wetFloorSign", "size": [0.4, 0.65, 0.5]},
+		{"type": "cableCoil", "size": [0.56, 0.09, 0.56], "solid": false}
+	],
+	"palettes": [
+		{"name": "grey_blue", "weight": 2, "textures": "lab", "wall": "#c4cedd", "trim": "#8fa0b8", "floor": "#b8c2d4", "lamp": "#e4ecff", "ambient": "#4c5666"},
+		{"name": "beige", "textures": "hotel", "wall": "#e6d8bc", "trim": "#b89c74", "floor": "#d8c8a8", "lamp": "#fff0d8", "ambient": "#6a5c48"},
+		{"name": "green", "textures": "hospital", "wall": "#c4dcc4", "trim": "#7fa487", "floor": "#b4ccb8", "lamp": "#ecffe8", "ambient": "#4a6050"}
 	]
 }

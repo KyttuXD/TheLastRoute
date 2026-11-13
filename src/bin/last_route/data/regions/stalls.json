@@ -23,5 +23,10 @@
 	"geometry": {
 		"room_min": 6,
 		"room_max": 9
-	}
+	},
+	"extra_prop_set": [
+		{"type": "wetFloorSign", "size": [0.4, 0.65, 0.5]},
+		{"type": "bucketAndMop", "size": [0.5, 1.4, 0.5]},
+		{"type": "floorPuddle", "size": [1.5, 0.02, 1.1], "solid": false}
+	]
 }

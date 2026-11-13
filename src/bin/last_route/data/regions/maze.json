@@ -88,5 +88,17 @@
 			],
 			"solid": false
 		}
+	],
+	"extra_prop_set": [
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81]},
+		{"type": "floorPuddle", "size": [1.5, 0.02, 1.1], "solid": false},
+		{"type": "fallenCeilingTile", "size": [0.9, 0.12, 0.9], "solid": false},
+		{"type": "wetFloorSign", "size": [0.4, 0.65, 0.5]},
+		{"type": "bucketAndMop", "size": [0.5, 1.4, 0.5]}
+	],
+	"palettes": [
+		{"name": "concrete", "weight": 2},
+		{"name": "rust", "wall": "#e8cdb8", "trim": "#b87850", "floor": "#e0d0c0", "lamp": "#ffe4c0", "ambient": "#5e3c30"},
+		{"name": "teal", "wall": "#bfdcd8", "trim": "#6aa8a0", "floor": "#c8dcd8", "lamp": "#e0fff8", "ambient": "#30505a"}
 	]
 }

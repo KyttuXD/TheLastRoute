@@ -107,5 +107,15 @@
 			],
 			"solid": false
 		}
+	],
+	"extra_prop_set": [
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81]},
+		{"type": "papersStack", "size": [0.5, 0.25, 0.4], "solid": false},
+		{"type": "brokenSeat", "size": [0.8, 0.6, 1.04]}
+	],
+	"palettes": [
+		{"name": "cream", "weight": 2},
+		{"name": "olive", "wall": "#dcdcb4", "trim": "#8c8c50", "floor": "#d8d8c0", "lamp": "#fff8d0", "ambient": "#50502c"},
+		{"name": "slate", "wall": "#c8d0dc", "trim": "#7888a0", "floor": "#ccd0d8", "lamp": "#eef2ff", "ambient": "#3c4658"}
 	]
 }

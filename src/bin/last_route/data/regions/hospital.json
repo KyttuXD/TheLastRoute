@@ -86,5 +86,15 @@
 			],
 			"solid": false
 		}
+	],
+	"extra_prop_set": [
+		{"type": "wetFloorSign", "size": [0.4, 0.65, 0.5]},
+		{"type": "bucketAndMop", "size": [0.5, 1.4, 0.5]},
+		{"type": "floorPuddle", "size": [1.5, 0.02, 1.1], "solid": false}
+	],
+	"palettes": [
+		{"name": "teal", "weight": 2},
+		{"name": "mint", "wall": "#d0f0dc", "trim": "#78b890", "floor": "#d8ece0", "lamp": "#e8fff0", "ambient": "#4c7860"},
+		{"name": "peach", "wall": "#f4dcc8", "trim": "#c89878", "floor": "#ecdcd0", "lamp": "#fff0e0", "ambient": "#806454"}
 	]
 }

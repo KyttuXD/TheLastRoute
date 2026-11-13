@@ -1,4 +1,5 @@
-# Writes the 20 arcade and carnival models of the props pass (docs/PROPS_PASS.md): cubes only, one shared palette
+# Writes the 20 arcade and carnival models of the props pass (docs/PROPS_PASS.md) and the 46 models of the regions pass
+# (docs/REGIONS_PASS.md, the second half of this file): cubes only, one shared palette
 # picture, hidden faces left untextured. Run: python3 tools/props/props_pass_models.py src/bin/last_route/assets
 import json, zlib, struct, base64, uuid, os, sys
 OUT = sys.argv[1]
@@ -302,3 +303,311 @@ for i, col in enumerate(["lime", "lime", "yellow", "yellow", "orange", "orange",
 for i in range(4):
     c.append(box("TowerBulb", -3.3, 8.0 + i*9.0, 1.4, -2.9 + 0.0, 9.2 + i*9.0, 2.5, "yellow")); c.append(box("TowerBulb", 2.9, 8.0 + i*9.0, 1.4, 3.3, 9.2 + i*9.0, 2.5, "yellow"))
 model("props/carnival/strength_tester_blue", c)
+
+# =====================================================================================================================
+# The regions pass (docs/REGIONS_PASS.md): 46 models for the office, the mansion, clutter and the three seasonal
+# regions. Sizes are in metres here (16 model units a metre, drawn at scale 1); x and z are centred on the prop, the
+# back is -z (the wall side) and the floor is y 0. `REGION_PASS_SIZES` at the end prints each model's box.
+# =====================================================================================================================
+REGION_PASS = []
+def C(n, cx, cz, w, d, y0, y1, col):
+    return box(n, (cx - w/2)*16, y0*16, (cz - d/2)*16, (cx + w/2)*16, y1*16, (cz + d/2)*16, col)
+def rmodel(folder, name, cubes):
+    # never write over a model this script did not make (the Godot originals share these folders)
+    full = os.path.join(OUT, "props", folder, name + ".bbmodel")
+    assert not os.path.exists(full) or "props_pass_palette.png" in open(full).read(), full + " is not a props-pass model"
+    model("props/%s/%s" % (folder, name), cubes)
+    xs = [v for c in cubes for v in (c[1][0], c[2][0])]; ys = [v for c in cubes for v in (c[1][1], c[2][1])]; zs = [v for c in cubes for v in (c[1][2], c[2][2])]
+    assert min(ys) == 0, (name, min(ys))
+    # the collider box is centred on the prop: twice the furthest reach on x and z
+    REGION_PASS.append((folder, name, [round(2*max(-min(xs), max(xs))/16, 2), round(max(ys)/16, 2), round(2*max(-min(zs), max(zs))/16, 2)]))
+def legs(n, w, d, y0, y1, t, col):
+    return [C(n, sx*(w/2 - t/2), sz*(d/2 - t/2), t, t, y0, y1, col) for sx in (-1, 1) for sz in (-1, 1)]
+
+# ---------------- office ----------------
+c = [C("Foot", -0.8, 0, 0.08, 0.5, 0, 0.06, "dark"), C("Foot", 0.8, 0, 0.08, 0.5, 0, 0.06, "dark"),
+     C("Post", -0.8, 0, 0.06, 0.06, 0.06, 1.9, "metal"), C("Post", 0.8, 0, 0.06, 0.06, 0.06, 1.9, "metal"),
+     C("Board", 0, 0, 1.54, 0.04, 0.85, 1.85, "white"), C("FrameTop", 0, 0, 1.6, 0.06, 1.85, 1.9, "metal"), C("FrameBottom", 0, 0, 1.6, 0.06, 0.8, 0.85, "metal"),
+     C("Tray", 0, 0.06, 1.2, 0.08, 0.76, 0.8, "grey"), C("Marker", -0.3, 0.07, 0.12, 0.03, 0.8, 0.83, "red"), C("Marker", 0.1, 0.07, 0.12, 0.03, 0.8, 0.83, "blue"),
+     C("Scribble", -0.35, 0.025, 0.5, 0.01, 1.5, 1.53, "blue"), C("Scribble", -0.25, 0.025, 0.7, 0.01, 1.35, 1.38, "blue"), C("Scribble", 0.35, 0.025, 0.3, 0.01, 1.1, 1.4, "red"),
+     C("Chart", 0.3, 0.025, 0.05, 0.01, 1.45, 1.7, "green"), C("Chart", 0.42, 0.025, 0.05, 0.01, 1.45, 1.62, "green")]
+rmodel("maze", "office_whiteboard", c)
+c = [C("Counter", 0, 0, 1.6, 0.6, 0, 0.86, "white"), C("CounterTop", 0, 0, 1.6, 0.6, 0.86, 0.9, "grey"), C("KickPlate", 0, 0.301, 1.6, 0.004, 0, 0.1, "dark"),
+     C("CupboardDoor", -0.4, 0.302, 0.7, 0.006, 0.14, 0.82, "cream"), C("CupboardDoor", 0.4, 0.302, 0.7, 0.006, 0.14, 0.82, "cream"),
+     C("DoorPull", -0.1, 0.306, 0.03, 0.01, 0.4, 0.6, "metal"), C("DoorPull", 0.1, 0.306, 0.03, 0.01, 0.4, 0.6, "metal"),
+     C("CoffeeMachine", -0.5, -0.05, 0.3, 0.34, 0.9, 1.3, "black"), C("CoffeeTop", -0.5, -0.05, 0.26, 0.3, 1.3, 1.34, "metal"), C("CoffeePot", -0.5, 0.14, 0.14, 0.12, 0.92, 1.08, "glass"),
+     C("Microwave", 0.4, -0.05, 0.5, 0.36, 0.9, 1.18, "metal"), C("MicrowaveDoor", 0.33, 0.132, 0.32, 0.006, 0.94, 1.14, "black"), C("MicrowavePanel", 0.58, 0.132, 0.1, 0.006, 0.94, 1.14, "dark"),
+     C("Mug", -0.12, 0.1, 0.08, 0.08, 0.9, 1.0, "red"), C("Mug", 0.0, 0.16, 0.08, 0.08, 0.9, 1.0, "sky"), C("Backsplash", 0, -0.29, 1.6, 0.02, 0.9, 1.5, "cream")]
+rmodel("maze", "office_coffee_station", c)
+
+# ---------------- mansion ----------------
+def portrait(name, frame, coat, back):
+    c = [C("Plinth", 0, 0, 1.0, 0.12, 0, 0.1, "brown"), C("Stand", -0.4, 0, 0.06, 0.08, 0.1, 0.9, "brown"), C("Stand", 0.4, 0, 0.06, 0.08, 0.1, 0.9, "brown"),
+         C("FrameBottom", 0, 0, 1.0, 0.12, 0.9, 1.0, frame), C("FrameTop", 0, 0, 1.0, 0.12, 1.9, 2.0, frame), C("FrameSide", -0.45, 0, 0.1, 0.12, 1.0, 1.9, frame),
+         C("FrameSide", 0.45, 0, 0.1, 0.12, 1.0, 1.9, frame), C("Canvas", 0, -0.01, 0.8, 0.06, 1.0, 1.9, back), C("Shoulders", 0, 0.022, 0.5, 0.006, 1.0, 1.35, coat),
+         C("Collar", 0, 0.026, 0.14, 0.004, 1.25, 1.35, "white"), C("Face", 0, 0.022, 0.24, 0.006, 1.35, 1.66, "tan"), C("Hair", 0, 0.026, 0.28, 0.004, 1.6, 1.74, "black"),
+         C("Eye", -0.06, 0.026, 0.04, 0.004, 1.5, 1.53, "black"), C("Eye", 0.06, 0.026, 0.04, 0.004, 1.5, 1.53, "black")]
+    rmodel("mansion", name, c)
+portrait("mansion_portrait_frame", "gold", "crimson", "dkgreen")
+portrait("mansion_portrait_frame_navy", "brown", "navy", "dark")
+c = [C("Foot", 0, 0, 0.5, 0.5, 0, 0.06, "gold"), C("Stem", 0, 0, 0.08, 0.08, 0.06, 1.2, "gold"), C("Knop", 0, 0, 0.16, 0.16, 0.6, 0.7, "gold"), C("Arm", 0, 0, 0.5, 0.05, 1.2, 1.25, "gold"),
+     C("Arm", 0, 0, 0.05, 0.5, 1.2, 1.25, "gold")]
+for (x, z) in [(-0.22, 0), (0.22, 0), (0, -0.22), (0, 0.22), (0, 0)]:
+    top = 1.5 if (x, z) == (0, 0) else 1.42
+    c += [C("Cup", x, z, 0.09, 0.09, 1.25, 1.29, "gold"), C("Candle", x, z, 0.05, 0.05, 1.29, top, "cream"), C("CandleFlame", x, z, 0.03, 0.03, top, top + 0.1, "amber")]
+rmodel("mansion", "candelabra", c)
+c = [C("ArmoireBase", 0, 0, 1.4, 0.7, 0, 0.18, "brown"), C("ArmoireBody", 0, -0.02, 1.32, 0.62, 0.18, 2.05, "wood"), C("ArmoireCrown", 0, 0, 1.4, 0.7, 2.05, 2.2, "brown"),
+     C("ArmoireDoor", -0.33, 0.292, 0.6, 0.006, 0.26, 1.98, "brown"), C("ArmoireDoor", 0.33, 0.292, 0.6, 0.006, 0.26, 1.98, "brown"),
+     C("DoorPanel", -0.33, 0.296, 0.4, 0.004, 1.1, 1.85, "wood"), C("DoorPanel", 0.33, 0.296, 0.4, 0.004, 1.1, 1.85, "wood"), C("DoorPanel", -0.33, 0.296, 0.4, 0.004, 0.4, 0.95, "wood"),
+     C("DoorPanel", 0.33, 0.296, 0.4, 0.004, 0.4, 0.95, "wood"), C("DoorKnob", -0.06, 0.3, 0.04, 0.012, 1.0, 1.06, "gold"), C("DoorKnob", 0.06, 0.3, 0.04, 0.012, 1.0, 1.06, "gold")]
+rmodel("mansion", "mansion_armoire", c)
+c = legs("StoolLeg", 0.56, 0.41, 0, 0.42, 0.06, "brown") + [C("StoolRail", 0, 0, 0.5, 0.35, 0.2, 0.24, "brown"), C("StoolSeat", 0, 0, 0.6, 0.45, 0.42, 0.5, "black"),
+     C("StoolPad", 0, 0, 0.54, 0.39, 0.5, 0.55, "crimson")]
+rmodel("mansion", "piano_stool", c)
+c = [C("PedestalBase", 0, 0, 0.6, 0.6, 0, 0.1, "brown"), C("PedestalColumn", 0, 0, 0.44, 0.44, 0.1, 0.8, "wood"), C("PedestalTop", 0, 0, 0.6, 0.6, 0.8, 0.88, "brown"),
+     C("Plaque", 0, 0.221, 0.24, 0.006, 0.4, 0.52, "gold"), C("OwlBody", 0, 0, 0.26, 0.22, 0.98, 1.3, "tan"), C("OwlHead", 0, 0.01, 0.3, 0.24, 1.3, 1.5, "brown"),
+     C("OwlEye", -0.07, 0.131, 0.07, 0.006, 1.38, 1.45, "amber"), C("OwlEye", 0.07, 0.131, 0.07, 0.006, 1.38, 1.45, "amber"), C("OwlBeak", 0, 0.14, 0.04, 0.03, 1.33, 1.38, "gold"),
+     C("OwlWing", -0.15, -0.01, 0.05, 0.18, 1.0, 1.26, "brown"), C("OwlWing", 0.15, -0.01, 0.05, 0.18, 1.0, 1.26, "brown"), C("Perch", 0, 0, 0.36, 0.06, 0.88, 0.98, "wood")]
+rmodel("mansion", "taxidermy_pedestal", c)
+c = [C("ArmourBase", 0, 0, 0.7, 0.6, 0, 0.1, "brown"), C("Boot", -0.14, 0.02, 0.16, 0.26, 0.1, 0.2, "grey"), C("Boot", 0.14, 0.02, 0.16, 0.26, 0.1, 0.2, "grey"),
+     C("Greave", -0.14, 0, 0.15, 0.16, 0.2, 0.95, "metal"), C("Greave", 0.14, 0, 0.15, 0.16, 0.2, 0.95, "metal"), C("Tasset", 0, 0, 0.46, 0.24, 0.9, 1.05, "grey"),
+     C("Cuirass", 0, 0, 0.5, 0.28, 1.05, 1.55, "metal"), C("Pauldron", -0.31, 0, 0.14, 0.26, 1.42, 1.6, "grey"), C("Pauldron", 0.31, 0, 0.14, 0.26, 1.42, 1.6, "grey"),
+     C("Arm", -0.31, 0, 0.11, 0.14, 0.95, 1.42, "metal"), C("Arm", 0.31, 0, 0.11, 0.14, 0.95, 1.42, "metal"), C("Gorget", 0, 0, 0.2, 0.18, 1.55, 1.62, "grey"),
+     C("Helm", 0, 0, 0.26, 0.28, 1.62, 1.92, "metal"), C("Visor", 0, 0.141, 0.2, 0.006, 1.74, 1.8, "black"), C("Plume", 0, -0.04, 0.06, 0.16, 1.92, 2.0, "red"),
+     C("Halberd", 0.3, 0.2, 0.04, 0.04, 0.1, 1.9, "wood"), C("HalberdBlade", 0.3, 0.2, 0.04, 0.16, 1.66, 1.9, "metal")]
+rmodel("mansion", "suit_of_armour", c)
+def bookshelf(name, w, h, rows, d=0.45):
+    c = [C("ShelfSide", -(w/2 - 0.03), 0, 0.06, d, 0, h, "brown"), C("ShelfSide", w/2 - 0.03, 0, 0.06, d, 0, h, "brown"), C("ShelfBack", 0, -(d/2 - 0.02), w - 0.12, 0.04, 0, h, "wood"),
+         C("ShelfTop", 0, 0, w, d, h - 0.06, h, "brown"), C("ShelfPlinth", 0, 0, w - 0.12, d - 0.04, 0, 0.12, "brown")]
+    cols = ["crimson", "navy", "dkgreen", "gold", "purple", "tan", "teal", "brown"]
+    step = (h - 0.24) / rows
+    for r_ in range(rows):
+        y = 0.12 + r_*step
+        c.append(C("ShelfBoard", 0, 0.01, w - 0.12, d - 0.06, y - 0.03, y, "brown"))
+        x = -(w/2 - 0.1); i = r_*3
+        while x + 0.2 < w/2 - 0.08:
+            bw = 0.16 + 0.05*((i*7) % 3); bh = step*(0.62 + 0.1*((i*5) % 3))
+            if (i + r_) % 5 != 4: c.append(C("BookBlock", x + bw/2, 0.04, bw, d - 0.2, y, y + bh, cols[(i*3 + r_) % len(cols)]))
+            x += bw + 0.01; i += 1
+    rmodel("mansion", name, c)
+bookshelf("mansion_bookshelf_tall", 1.2, 2.3, 5)
+bookshelf("mansion_bookshelf_low", 1.6, 1.1, 2)
+
+# ---------------- clutter ----------------
+c = [C("PaperStack", 0, 0, 0.3, 0.22, 0, 0.2, "white"), C("PaperStack", -0.08, 0.06, 0.3, 0.22, 0.2, 0.25, "cream"), C("LooseSheet", 0.12, -0.08, 0.26, 0.2, 0, 0.012, "white"),
+     C("LooseSheet", -0.11, 0.09, 0.28, 0.2, 0, 0.01, "cream"), C("Folder", 0.02, 0.0, 0.3, 0.22, 0.2, 0.215, "amber")]
+c = [C("FloorSheets", 0, 0, 0.5, 0.4, 0, 0.008, "white")] + c
+rmodel("maze", "papers_stack", c)
+c = [C("BoxLarge", -0.2, -0.1, 0.6, 0.6, 0, 0.5, "tan"), C("BoxTape", -0.2, -0.1, 0.08, 0.61, 0.5, 0.506, "cream"), C("BoxSmall", -0.18, -0.12, 0.44, 0.44, 0.5, 0.9, "wood"),
+     C("BoxTape", -0.18, -0.12, 0.06, 0.45, 0.9, 0.906, "cream"), C("BoxSide", 0.3, 0.15, 0.4, 0.5, 0, 0.36, "tan"), C("BoxFlap", 0.3, 0.38, 0.4, 0.04, 0.36, 0.5, "wood"),
+     C("BoxLabel", -0.2, 0.201, 0.2, 0.004, 0.2, 0.34, "white"), C("FloorFlap", 0, 0, 1.0, 0.8, 0, 0.006, "wood")]
+rmodel("maze", "cardboard_boxes", c)
+c = [C("PuddleCore", 0, 0, 0.9, 0.7, 0, 0.012, "water"), C("PuddleArm", 0.15, 0.1, 1.2, 0.4, 0, 0.01, "water"), C("PuddleArm", -0.1, -0.05, 0.5, 1.0, 0, 0.01, "water"),
+     C("PuddleShine", -0.1, 0.05, 0.3, 0.12, 0.012, 0.016, "waterlt"), C("PuddleShine", 0.2, -0.1, 0.16, 0.08, 0.012, 0.016, "waterlt"),
+     C("PuddleEdge", 0, 0, 1.2, 1.0, 0, 0.004, "water")]
+rmodel("maze", "floor_puddle", c)
+c = [C("TileSlab", 0, 0, 0.6, 0.6, 0, 0.04, "cream"), C("TileSlabTilted", 0.2, 0.18, 0.4, 0.34, 0.04, 0.12, "white"), C("TileChunk", -0.3, 0.26, 0.2, 0.16, 0, 0.05, "cream"),
+     C("TileChunk", 0.3, -0.3, 0.16, 0.2, 0, 0.04, "white"), C("TileDust", 0, 0, 0.9, 0.9, 0, 0.006, "grey"), C("TileGridRail", -0.1, -0.2, 0.7, 0.03, 0.04, 0.07, "metal")]
+rmodel("maze", "fallen_ceiling_tile", c)
+c = [C("ConeBase", 0, 0, 0.4, 0.4, 0, 0.04, "black"), C("ConeTier", 0, 0, 0.28, 0.28, 0.04, 0.22, "orange"), C("ConeBand", 0, 0, 0.22, 0.22, 0.22, 0.34, "white"),
+     C("ConeTier", 0, 0, 0.16, 0.16, 0.34, 0.5, "orange"), C("ConeBand", 0, 0, 0.11, 0.11, 0.5, 0.58, "white"), C("ConeTip", 0, 0, 0.07, 0.07, 0.58, 0.7, "orange")]
+rmodel("maze", "traffic_cone", c)
+c = [C("SignPanelFront", 0, 0.17, 0.4, 0.04, 0, 0.3, "yellow"), C("SignPanelFront", 0, 0.11, 0.4, 0.04, 0.3, 0.5, "yellow"), C("SignPanelBack", 0, -0.17, 0.4, 0.04, 0, 0.3, "yellow"),
+     C("SignPanelBack", 0, -0.11, 0.4, 0.04, 0.3, 0.5, "yellow"), C("SignRidge", 0, 0, 0.4, 0.2, 0.5, 0.65, "yellow"), C("SignHandle", 0, 0, 0.16, 0.06, 0.55, 0.6, "black"),
+     C("SignFigure", 0, 0.191, 0.08, 0.004, 0.1, 0.24, "black"), C("SignStripe", 0, 0.191, 0.3, 0.004, 0.04, 0.07, "black"), C("SignFoot", 0, 0, 0.4, 0.5, 0, 0.006, "black")]
+rmodel("maze", "wet_floor_sign", c)
+c = [C("SeatFallen", 0, 0.05, 0.46, 0.08, 0.02, 0.5, "wood"), C("BackFallen", 0, -0.2, 0.46, 0.5, 0.02, 0.1, "wood"), C("LegUp", -0.2, 0.3, 0.06, 0.44, 0.04, 0.1, "brown"),
+     C("LegUp", 0.2, 0.3, 0.06, 0.44, 0.42, 0.48, "brown"), C("LegBroken", 0.3, -0.3, 0.2, 0.06, 0, 0.06, "brown"), C("LegBroken", -0.3, 0.35, 0.06, 0.2, 0, 0.06, "brown"),
+     C("Splinters", 0, 0, 0.8, 0.9, 0, 0.006, "tan"), C("CrossRail", 0, 0.3, 0.46, 0.05, 0.5, 0.6, "brown")]
+rmodel("maze", "broken_chair", c)
+c = [C("Bucket", -0.05, 0.05, 0.36, 0.36, 0, 0.34, "yellow"), C("BucketRim", -0.05, 0.05, 0.4, 0.4, 0.34, 0.38, "amber"), C("BucketWater", -0.05, 0.05, 0.32, 0.32, 0.38, 0.384, "water"),
+     C("Wringer", -0.05, -0.08, 0.3, 0.12, 0.38, 0.5, "red"), C("MopHandle", 0.14, -0.14, 0.04, 0.04, 0.3, 1.4, "wood"), C("MopHead", 0.14, -0.14, 0.2, 0.16, 0.06, 0.3, "white"),
+     C("MopStrand", 0.14, -0.12, 0.22, 0.2, 0, 0.06, "cream"), C("FloorDrips", 0, 0, 0.5, 0.5, 0, 0.004, "waterlt")]
+rmodel("maze", "bucket_and_mop", c)
+
+# ---------------- festive ----------------
+c = [C("TreePot", 0, 0, 0.5, 0.5, 0, 0.3, "crimson"), C("TreeTrunk", 0, 0, 0.14, 0.14, 0.3, 0.5, "brown")]
+tiers = [(1.4, 0.5, 0.86), (1.16, 0.84, 1.2), (0.92, 1.18, 1.52), (0.68, 1.5, 1.82), (0.44, 1.8, 2.08), (0.2, 2.06, 2.24)]
+for i, (w, y0, y1) in enumerate(tiers):
+    c.append(C("TreeTier", 0, 0, w, w, y0, y1, "dkgreen" if i % 2 == 0 else "green"))
+    if i < 5:
+        cols = ["red", "gold", "sky", "white"]
+        for k, (sx, sz) in enumerate([(-1, 1), (1, 1), (1, -1), (-1, -1)]):
+            c.append(C("Bauble", sx*(w/2 - 0.04), sz*(w/2 - 0.04), 0.1, 0.1, y0 + 0.04, y0 + 0.14, cols[(i + k) % 4]))
+        c.append(C("FairyLight", 0, w/2 + 0.002, w*0.5, 0.004, y0 + 0.2, y0 + 0.24, "yellow"))
+c += [C("TreeStar", 0, 0, 0.22, 0.06, 2.24, 2.4, "yellow"), C("TreeStarArm", 0, 0, 0.06, 0.2, 2.28, 2.36, "yellow"), C("TreeSkirt", 0, 0, 1.0, 1.0, 0, 0.03, "white")]
+rmodel("festive", "christmas_tree", c)
+c = [C("PresentLarge", -0.22, -0.1, 0.5, 0.5, 0, 0.42, "red"), C("Ribbon", -0.22, -0.1, 0.08, 0.51, 0, 0.426, "gold"), C("Ribbon", -0.22, -0.1, 0.51, 0.08, 0, 0.426, "gold"),
+     C("Bow", -0.22, -0.1, 0.2, 0.12, 0.426, 0.5, "gold"), C("PresentTall", 0.28, -0.14, 0.34, 0.34, 0, 0.6, "green"), C("Ribbon", 0.28, -0.14, 0.06, 0.35, 0, 0.606, "white"),
+     C("PresentSmall", 0.2, 0.22, 0.3, 0.26, 0, 0.22, "blue"), C("Ribbon", 0.2, 0.22, 0.31, 0.05, 0, 0.226, "yellow"), C("PresentFlat", -0.2, 0.26, 0.44, 0.24, 0, 0.14, "white"),
+     C("Ribbon", -0.2, 0.26, 0.06, 0.25, 0, 0.146, "red"), C("FloorPaper", 0, 0, 1.0, 0.8, 0, 0.004, "cream")]
+rmodel("festive", "wrapped_presents", c)
+c = [C("StandFoot", 0, 0, 0.8, 0.4, 0, 0.05, "dark"), C("StandPole", 0, 0, 0.05, 0.05, 0.05, 1.7, "dark"),
+     C("WreathTop", 0, 0.03, 0.8, 0.14, 1.52, 1.7, "dkgreen"), C("WreathBottom", 0, 0.03, 0.8, 0.14, 0.9, 1.08, "dkgreen"), C("WreathSide", -0.31, 0.03, 0.18, 0.14, 1.08, 1.52, "green"),
+     C("WreathSide", 0.31, 0.03, 0.18, 0.14, 1.08, 1.52, "green"), C("WreathBow", 0, 0.11, 0.3, 0.03, 0.92, 1.06, "red"), C("BowTail", -0.08, 0.11, 0.07, 0.03, 0.74, 0.92, "red"),
+     C("BowTail", 0.08, 0.11, 0.07, 0.03, 0.74, 0.92, "red"), C("Berry", -0.3, 0.105, 0.06, 0.02, 1.56, 1.62, "red"), C("Berry", 0.3, 0.105, 0.06, 0.02, 1.2, 1.26, "red"),
+     C("Berry", 0.2, 0.105, 0.06, 0.02, 1.58, 1.64, "gold"), C("Berry", -0.28, 0.105, 0.06, 0.02, 1.14, 1.2, "gold")]
+rmodel("festive", "festive_wreath", c)
+c = [C("SnowBase", 0, 0, 0.8, 0.8, 0, 0.6, "white"), C("SnowBody", 0, 0, 0.58, 0.58, 0.6, 1.06, "white"), C("SnowHead", 0, 0, 0.4, 0.4, 1.06, 1.4, "white"),
+     C("HatBrim", 0, 0, 0.5, 0.5, 1.4, 1.44, "black"), C("HatCrown", 0, 0, 0.3, 0.3, 1.44, 1.6, "black"), C("HatBand", 0, 0, 0.31, 0.31, 1.44, 1.48, "red"),
+     C("Scarf", 0, 0, 0.46, 0.46, 1.02, 1.1, "red"), C("ScarfTail", 0.14, 0.292, 0.1, 0.01, 0.8, 1.02, "red"), C("CarrotNose", 0, 0.26, 0.06, 0.14, 1.2, 1.26, "orange"),
+     C("CoalEye", -0.08, 0.201, 0.05, 0.006, 1.28, 1.33, "black"), C("CoalEye", 0.08, 0.201, 0.05, 0.006, 1.28, 1.33, "black"), C("CoalButton", 0, 0.291, 0.06, 0.006, 0.9, 0.96, "black"),
+     C("CoalButton", 0, 0.291, 0.06, 0.006, 0.72, 0.78, "black"), C("StickArm", -0.34, 0, 0.12, 0.04, 0.88, 0.92, "brown"), C("StickArm", 0.34, 0, 0.12, 0.04, 0.88, 0.92, "brown")]
+rmodel("festive", "snowman", c)
+c = [C("CaneBase", 0, 0, 0.35, 0.35, 0, 0.08, "white")]
+for i in range(8): c.append(C("CaneBand", 0, 0, 0.12, 0.12, 0.08 + i*0.19, 0.08 + (i + 1)*0.19, "red" if i % 2 == 0 else "white"))
+c += [C("CaneHook", 0.08, 0, 0.28, 0.12, 1.6, 1.72, "red"), C("CaneHookDrop", 0.165, 0, 0.11, 0.12, 1.44, 1.6, "white"), C("CaneBow", 0, 0.065, 0.2, 0.02, 1.0, 1.1, "green"),
+      C("CaneCap", 0, 0, 0.12, 0.12, 1.72, 1.8, "white")]
+rmodel("festive", "candy_cane_post", c)
+c = [C("MantelJamb", -0.72, 0, 0.36, 0.44, 0, 1.1, "crimson"), C("MantelJamb", 0.72, 0, 0.36, 0.44, 0, 1.1, "crimson"), C("MantelLintel", 0, 0, 1.8, 0.44, 1.1, 1.3, "crimson"),
+     C("MantelShelf", 0, 0.03, 1.8, 0.5, 1.3, 1.36, "white"), C("MantelBack", 0, -0.18, 1.08, 0.08, 0, 1.1, "black"), C("Ember", 0, 0, 0.6, 0.2, 0, 0.1, "orange"),
+     C("EmberGlow", 0.05, 0.02, 0.3, 0.1, 0.1, 0.3, "amber"), C("Garland", 0, 0.256, 1.7, 0.02, 1.2, 1.28, "green")]
+for i, col in enumerate(["red", "green", "white", "red"]):
+    x = -0.6 + i*0.4
+    c += [C("Stocking", x, 0.262, 0.14, 0.03, 0.82, 1.12, col), C("StockingCuff", x, 0.264, 0.16, 0.034, 1.08, 1.16, "white" if col != "white" else "red"),
+          C("StockingToe", x + 0.07, 0.262, 0.14, 0.03, 0.82, 0.92, col)]
+c += [C("MantelCandle", -0.7, 0.03, 0.06, 0.06, 1.36, 1.4, "cream"), C("MantelCandle", 0.7, 0.03, 0.06, 0.06, 1.36, 1.4, "cream")]
+rmodel("festive", "stocking_mantel", c)
+c = [C("Runner", 0, -0.42, 2.2, 0.08, 0, 0.08, "gold"), C("Runner", 0, 0.42, 2.2, 0.08, 0, 0.08, "gold"), C("RunnerCurl", 1.06, -0.42, 0.08, 0.08, 0.08, 0.4, "gold"),
+     C("RunnerCurl", 1.06, 0.42, 0.08, 0.08, 0.08, 0.4, "gold"), C("Strut", -0.6, 0, 0.08, 0.92, 0.08, 0.3, "gold"), C("Strut", 0.5, 0, 0.08, 0.92, 0.08, 0.3, "gold"),
+     C("SleighFloor", -0.1, 0, 1.8, 1.0, 0.3, 0.42, "red"), C("SleighSide", -0.1, -0.47, 1.8, 0.06, 0.42, 0.8, "red"), C("SleighSide", -0.1, 0.47, 1.8, 0.06, 0.42, 0.8, "red"),
+     C("SleighBack", -0.96, 0, 0.08, 1.0, 0.42, 1.1, "red"), C("SleighFront", 0.76, 0, 0.08, 1.0, 0.42, 0.9, "red"), C("SleighSeat", -0.6, 0, 0.5, 0.88, 0.42, 0.62, "green"),
+     C("SleighTrim", -0.96, 0, 0.1, 1.0, 1.04, 1.1, "gold"), C("GiftSack", 0.2, 0, 0.6, 0.6, 0.42, 0.9, "brown"), C("SackGift", 0.2, 0, 0.3, 0.3, 0.9, 1.04, "blue"),
+     C("TraceEnd", -1.06, 0, 0.08, 0.2, 0.3, 0.38, "gold")]
+rmodel("festive", "festive_sleigh", c)
+c = [C("NutBase", 0, 0, 0.5, 0.4, 0, 0.1, "black"), C("NutBoot", -0.1, 0, 0.14, 0.2, 0.1, 0.3, "black"), C("NutBoot", 0.1, 0, 0.14, 0.2, 0.1, 0.3, "black"),
+     C("NutLeg", -0.1, 0, 0.13, 0.16, 0.3, 0.8, "white"), C("NutLeg", 0.1, 0, 0.13, 0.16, 0.3, 0.8, "white"), C("NutCoat", 0, 0, 0.4, 0.26, 0.8, 1.3, "red"),
+     C("NutBelt", 0, 0, 0.41, 0.27, 0.86, 0.94, "black"), C("NutBuckle", 0, 0.136, 0.08, 0.004, 0.86, 0.94, "gold"), C("NutArm", -0.25, 0, 0.1, 0.16, 0.86, 1.28, "red"),
+     C("NutArm", 0.25, 0, 0.1, 0.16, 0.86, 1.28, "red"), C("NutEpaulette", -0.25, 0, 0.12, 0.2, 1.28, 1.32, "gold"), C("NutEpaulette", 0.25, 0, 0.12, 0.2, 1.28, 1.32, "gold"),
+     C("NutHead", 0, 0, 0.28, 0.26, 1.3, 1.56, "tan"), C("NutBeard", 0, 0.131, 0.2, 0.01, 1.3, 1.4, "white"), C("NutTeeth", 0, 0.132, 0.14, 0.01, 1.4, 1.44, "black"),
+     C("NutEye", -0.07, 0.131, 0.05, 0.006, 1.47, 1.52, "black"), C("NutEye", 0.07, 0.131, 0.05, 0.006, 1.47, 1.52, "black"), C("NutHat", 0, 0, 0.3, 0.28, 1.56, 1.76, "black"),
+     C("NutHatBand", 0, 0, 0.31, 0.29, 1.56, 1.6, "gold"), C("NutPlume", 0, 0, 0.08, 0.08, 1.76, 1.8, "red")]
+rmodel("festive", "nutcracker", c)
+c = [C("PostBase", 0, 0, 0.4, 0.4, 0, 0.1, "dark"), C("PostPole", 0, 0, 0.08, 0.08, 0.1, 2.1, "dkgreen"), C("PostCap", 0, 0, 0.16, 0.16, 2.1, 2.2, "gold"),
+     C("PostArm", 0, 0, 0.4, 0.04, 1.96, 2.0, "dkgreen"), C("PostArm", 0, 0, 0.04, 0.4, 1.96, 2.0, "dkgreen")]
+cols = ["red", "yellow", "lime", "sky", "hotpink", "amber"]
+for i in range(9):
+    y = 0.3 + i*0.19; s = [(-1, 0), (0, 1), (1, 0), (0, -1)][i % 4]
+    c.append(C("Bulb", s[0]*0.07, s[1]*0.07, 0.07, 0.07, y, y + 0.08, cols[i % 6]))
+for k, (x, z) in enumerate([(-0.18, 0), (0.18, 0), (0, -0.18), (0, 0.18)]): c.append(C("HangingBulb", x, z, 0.07, 0.07, 1.84, 1.96, cols[k]))
+rmodel("festive", "string_light_post", c)
+
+# ---------------- halloween ----------------
+c = [C("PumpkinBody", 0, 0, 0.6, 0.6, 0.04, 0.42, "orange"), C("PumpkinFoot", 0, 0, 0.44, 0.44, 0, 0.04, "orange"), C("PumpkinCrown", 0, 0, 0.44, 0.44, 0.42, 0.47, "orange"),
+     C("PumpkinStem", 0, 0, 0.08, 0.08, 0.47, 0.55, "dkgreen"), C("PumpkinRib", -0.15, 0.301, 0.02, 0.004, 0.06, 0.4, "brown"), C("PumpkinRib", 0.15, 0.301, 0.02, 0.004, 0.06, 0.4, "brown"),
+     C("GlowEye", -0.12, 0.302, 0.1, 0.006, 0.27, 0.35, "yellow"), C("GlowEye", 0.12, 0.302, 0.1, 0.006, 0.27, 0.35, "yellow"), C("GlowNose", 0, 0.302, 0.05, 0.006, 0.21, 0.26, "amber"),
+     C("GlowMouth", 0, 0.302, 0.34, 0.006, 0.1, 0.16, "yellow"), C("GlowTooth", -0.08, 0.303, 0.05, 0.006, 0.13, 0.16, "orange"), C("GlowTooth", 0.08, 0.303, 0.05, 0.006, 0.1, 0.13, "orange")]
+rmodel("halloween", "jack_o_lantern", c)
+c = legs("CauldronLeg", 0.7, 0.7, 0, 0.14, 0.1, "black") + [C("CauldronBelly", 0, 0, 0.9, 0.9, 0.14, 0.62, "black"), C("CauldronNeck", 0, 0, 0.74, 0.74, 0.62, 0.72, "dark"),
+     C("CauldronRim", 0, 0, 0.84, 0.84, 0.72, 0.78, "black"), C("Brew", 0, 0, 0.7, 0.7, 0.78, 0.784, "lime"), C("Bubble", -0.14, 0.08, 0.12, 0.12, 0.784, 0.86, "lime"),
+     C("Bubble", 0.16, -0.1, 0.08, 0.08, 0.784, 0.84, "green"), C("Ladle", 0.2, 0.16, 0.04, 0.04, 0.78, 0.9, "wood"), C("EmberBed", 0, 0, 0.5, 0.5, 0, 0.05, "orange"),
+     C("EmberLog", 0, 0, 0.64, 0.1, 0, 0.08, "brown")]
+rmodel("halloween", "witch_cauldron", c)
+c = [C("CoffinFoot", 0, 0.7, 0.5, 0.6, 0, 0.5, "brown"), C("CoffinWaist", 0, 0.1, 0.66, 0.6, 0, 0.5, "brown"), C("CoffinShoulder", 0, -0.45, 0.8, 0.5, 0, 0.5, "brown"),
+     C("CoffinHead", 0, -0.85, 0.56, 0.3, 0, 0.5, "brown"), C("LidFoot", 0, 0.7, 0.44, 0.56, 0.5, 0.6, "wood"), C("LidWaist", 0, 0.1, 0.6, 0.6, 0.5, 0.6, "wood"),
+     C("LidShoulder", 0, -0.45, 0.74, 0.5, 0.5, 0.6, "wood"), C("LidHead", 0, -0.85, 0.5, 0.26, 0.5, 0.6, "wood"), C("LidCross", 0, -0.3, 0.08, 0.7, 0.6, 0.604, "gold"),
+     C("LidCross", 0, -0.45, 0.36, 0.08, 0.6, 0.604, "gold"), C("CoffinHandle", -0.335, 0.1, 0.01, 0.3, 0.24, 0.3, "gold"), C("CoffinHandle", 0.335, 0.1, 0.01, 0.3, 0.24, 0.3, "gold")]
+rmodel("halloween", "coffin", c)
+c = [C("GraveMound", 0, 0, 0.7, 0.25, 0, 0.06, "dkgreen"), C("StoneSlab", 0, 0, 0.56, 0.16, 0.06, 0.8, "grey"), C("StoneShoulder", 0, 0, 0.44, 0.16, 0.8, 0.92, "grey"),
+     C("StoneCap", 0, 0, 0.28, 0.16, 0.92, 1.0, "grey"), C("Epitaph", 0, 0.081, 0.3, 0.004, 0.62, 0.66, "dark"), C("Epitaph", 0, 0.081, 0.36, 0.004, 0.52, 0.56, "dark"),
+     C("Epitaph", 0, 0.081, 0.24, 0.004, 0.42, 0.46, "dark"), C("StoneCrack", 0.14, 0.081, 0.02, 0.004, 0.1, 0.36, "dark"), C("Moss", -0.2, 0.081, 0.14, 0.006, 0.06, 0.2, "green"),
+     C("Moss", 0.1, 0, 0.2, 0.17, 0.995, 1.0, "green")]
+rmodel("halloween", "tombstone", c)
+c = [C("ScarecrowFoot", 0, 0, 0.4, 0.4, 0, 0.06, "brown"), C("ScarecrowPole", 0, 0, 0.08, 0.08, 0.06, 1.5, "wood"), C("CrossBar", 0, 0, 1.2, 0.07, 1.3, 1.37, "wood"),
+     C("Shirt", 0, 0, 0.46, 0.2, 0.9, 1.42, "red"), C("ShirtPatch", 0.1, 0.101, 0.12, 0.004, 1.0, 1.12, "blue"), C("Sleeve", -0.4, 0, 0.34, 0.16, 1.24, 1.42, "red"),
+     C("Sleeve", 0.4, 0, 0.34, 0.16, 1.24, 1.42, "red"), C("StrawHand", -0.58, 0, 0.04, 0.12, 1.2, 1.4, "yellow"), C("StrawHand", 0.58, 0, 0.04, 0.12, 1.2, 1.4, "yellow"),
+     C("Trousers", 0, 0, 0.4, 0.18, 0.46, 0.9, "navy"), C("StrawHem", 0, 0, 0.36, 0.14, 0.38, 0.46, "yellow"), C("SackHead", 0, 0, 0.3, 0.28, 1.42, 1.72, "tan"),
+     C("StitchEye", -0.07, 0.141, 0.05, 0.004, 1.58, 1.63, "black"), C("StitchEye", 0.07, 0.141, 0.05, 0.004, 1.58, 1.63, "black"), C("StitchMouth", 0, 0.141, 0.16, 0.004, 1.49, 1.51, "black"),
+     C("HatBrim", 0, 0, 0.5, 0.4, 1.72, 1.76, "brown"), C("HatCrown", 0, 0, 0.26, 0.24, 1.76, 2.0, "brown")]
+rmodel("halloween", "scarecrow", c)
+c = [C("WebPost", -0.47, 0, 0.06, 0.12, 0, 1.6, "dark"), C("WebPost", 0.47, 0, 0.06, 0.12, 0, 1.6, "dark"), C("WebBeam", 0, 0, 1.0, 0.12, 1.54, 1.6, "dark")]
+for i in range(6):
+    y = 1.5 - i*0.18; w = 0.88 - i*0.14
+    c.append(C("WebStrand", 0, 0, w, 0.01, y, y + 0.02, "white"))
+for x in (-0.3, -0.1, 0.1, 0.3): c.append(C("WebSpoke", x, 0, 0.02, 0.01, 1.54 - (0.8 if abs(x) < 0.2 else 0.45), 1.54, "white"))
+c += [C("Spider", 0.08, 0.02, 0.1, 0.03, 0.98, 1.06, "black"), C("SpiderLegs", 0.08, 0.02, 0.2, 0.02, 1.0, 1.02, "black"), C("SpiderThread", 0.08, 0.01, 0.01, 0.01, 1.06, 1.3, "white"),
+      C("WebFloor", 0, 0, 1.0, 0.12, 0, 0.01, "grey")]
+rmodel("halloween", "cobweb_corner", c)
+c = [C("BoneStandFoot", 0, 0, 0.5, 0.3, 0, 0.05, "dark"), C("BoneStandPole", 0, -0.1, 0.04, 0.04, 0.05, 1.8, "dark"), C("Shin", -0.09, 0, 0.05, 0.05, 0.05, 0.48, "white"),
+     C("Shin", 0.09, 0, 0.05, 0.05, 0.05, 0.48, "white"), C("Thigh", -0.09, 0, 0.06, 0.06, 0.48, 0.9, "cream"), C("Thigh", 0.09, 0, 0.06, 0.06, 0.48, 0.9, "cream"),
+     C("Pelvis", 0, 0, 0.3, 0.12, 0.9, 1.0, "white"), C("Spine", 0, 0, 0.05, 0.06, 1.0, 1.46, "cream")]
+for i in range(4): c.append(C("Rib", 0, 0.01, 0.3 - i*0.02, 0.14, 1.14 + i*0.08, 1.18 + i*0.08, "white"))
+c += [C("Collarbone", 0, 0, 0.4, 0.05, 1.46, 1.5, "white"), C("ArmBone", -0.21, 0, 0.04, 0.04, 0.96, 1.46, "cream"), C("ArmBone", 0.21, 0, 0.04, 0.04, 0.96, 1.46, "cream"),
+      C("Skull", 0, 0.01, 0.2, 0.22, 1.54, 1.76, "white"), C("Jaw", 0, 0.02, 0.14, 0.16, 1.5, 1.54, "cream"), C("EyeSocket", -0.05, 0.121, 0.05, 0.004, 1.63, 1.69, "black"),
+      C("EyeSocket", 0.05, 0.121, 0.05, 0.004, 1.63, 1.69, "black"), C("NoseSocket", 0, 0.121, 0.03, 0.004, 1.58, 1.62, "black")]
+rmodel("halloween", "skeleton_prop", c)
+c = [C("RackFoot", -0.4, 0, 0.1, 0.35, 0, 0.06, "brown"), C("RackFoot", 0.4, 0, 0.1, 0.35, 0, 0.06, "brown"), C("RackPost", -0.4, -0.1, 0.06, 0.06, 0.06, 1.3, "brown"),
+     C("RackPost", 0.4, -0.1, 0.06, 0.06, 0.06, 1.3, "brown"), C("RackRail", 0, -0.1, 0.9, 0.06, 1.2, 1.26, "wood"), C("RackRail", 0, -0.1, 0.9, 0.06, 0.3, 0.36, "wood")]
+for i, x in enumerate([-0.22, 0.0, 0.22]):
+    c += [C("BroomHandle", x, 0, 0.04, 0.04, 0.4, 1.6, "wood"), C("BroomBinding", x, 0, 0.1, 0.1, 0.36, 0.44, "black"), C("BroomBristles", x, 0, 0.16, 0.14, 0.04, 0.36, "amber" if i != 1 else "tan")]
+c += [C("WitchHat", 0.33, 0.02, 0.24, 0.24, 1.3, 1.34, "purple"), C("WitchHatCone", 0.33, 0.02, 0.12, 0.12, 1.34, 1.56, "purple")]
+rmodel("halloween", "witch_broom_rack", c)
+c = [C("WaxPool", 0, 0, 0.5, 0.5, 0, 0.02, "cream")]
+for (x, z, h, w) in [(-0.1, -0.08, 0.34, 0.12), (0.1, -0.1, 0.22, 0.1), (0.0, 0.1, 0.42, 0.11), (-0.16, 0.12, 0.16, 0.09), (0.17, 0.08, 0.28, 0.09)]:
+    c += [C("Candle", x, z, w, w, 0.02, h, "cream" if h > 0.25 else "white"), C("Wick", x, z, 0.015, 0.015, h, h + 0.03, "black"), C("CandleFlame", x, z, 0.04, 0.04, h + 0.03, h + 0.08, "amber")]
+rmodel("halloween", "candle_cluster", c)
+
+# ---------------- harvest ----------------
+c = [C("HayBlock", 0, 0, 1.2, 0.7, 0, 0.7, "amber"), C("HayTwine", -0.3, 0, 0.04, 0.71, 0, 0.706, "brown"), C("HayTwine", 0.3, 0, 0.04, 0.71, 0, 0.706, "brown"),
+     C("HayEnd", -0.602, 0, 0.004, 0.6, 0.06, 0.64, "yellow"), C("HayEnd", 0.602, 0, 0.004, 0.6, 0.06, 0.64, "yellow"), C("HayTuft", 0.1, 0.1, 0.3, 0.2, 0.7, 0.704, "yellow")]
+rmodel("harvest", "hay_bale", c)
+def table(w, d, h, col="wood", leg="brown"):
+    return legs("TableLeg", w - 0.1, d - 0.1, 0, h - 0.06, 0.09, leg) + [C("TableTop", 0, 0, w, d, h - 0.06, h, col)]
+c = table(1.4, 0.8, 0.78) + [C("TableRunner", 0, 0, 0.5, 0.8, 0.78, 0.786, "crimson"), C("HornMouth", -0.2, 0, 0.36, 0.34, 0.786, 1.1, "tan"), C("HornMid", 0.08, 0, 0.26, 0.26, 0.786, 1.02, "wood"),
+     C("HornTail", 0.3, 0, 0.2, 0.16, 0.786, 0.94, "brown"), C("HornTip", 0.45, 0, 0.1, 0.08, 0.84, 0.98, "brown"), C("Gourd", -0.5, 0.1, 0.18, 0.18, 0.786, 0.94, "orange"),
+     C("Apple", -0.45, -0.14, 0.1, 0.1, 0.786, 0.88, "red"), C("Grapes", -0.42, 0.28, 0.14, 0.12, 0.786, 0.86, "purple"), C("Corn", -0.56, -0.26, 0.2, 0.07, 0.786, 0.85, "yellow"),
+     C("Pear", -0.3, -0.3, 0.08, 0.08, 0.786, 0.9, "lime")]
+rmodel("harvest", "cornucopia_table", c)
+c = [C("PumpkinBig", -0.2, -0.1, 0.56, 0.56, 0, 0.46, "orange"), C("PumpkinStem", -0.2, -0.1, 0.08, 0.08, 0.46, 0.56, "dkgreen"), C("PumpkinMid", 0.3, 0.1, 0.44, 0.44, 0, 0.36, "amber"),
+     C("PumpkinStem", 0.3, 0.1, 0.07, 0.07, 0.36, 0.44, "dkgreen"), C("PumpkinSmall", -0.1, 0.34, 0.3, 0.3, 0, 0.24, "orange"), C("PumpkinStem", -0.1, 0.34, 0.05, 0.05, 0.24, 0.3, "brown"),
+     C("PumpkinTop", 0.02, -0.02, 0.36, 0.36, 0.46, 0.7, "orange"), C("PumpkinStem", 0.02, -0.02, 0.06, 0.06, 0.46, 0.5, "dkgreen"), C("WhiteGourd", 0.36, -0.3, 0.24, 0.24, 0, 0.2, "cream"),
+     C("StrawBed", 0, 0, 1.2, 1.0, 0, 0.01, "yellow")]
+rmodel("harvest", "pumpkin_pile", c)
+c = [C("BundleFoot", 0, 0, 0.6, 0.6, 0, 0.02, "yellow"), C("BundleCore", 0, 0, 0.3, 0.3, 0.02, 1.5, "tan"), C("BundleTie", 0, 0, 0.34, 0.34, 0.8, 0.9, "crimson")]
+for k, (x, z) in enumerate([(-0.18, -0.18), (0.18, -0.16), (-0.16, 0.18), (0.18, 0.18), (0, 0)]):
+    h = 2.0 if k == 4 else 1.7 + 0.06*k
+    c += [C("Stalk", x, z, 0.06, 0.06, 0.02, h, "amber" if k % 2 else "yellow"), C("Tassel", x, z, 0.14, 0.14, h - 0.22, h - 0.1, "tan")]
+c += [C("CornEar", 0.17, 0.02, 0.07, 0.07, 1.0, 1.24, "yellow"), C("CornEar", -0.17, -0.02, 0.07, 0.07, 1.12, 1.34, "gold"), C("Leaf", 0.21, -0.1, 0.02, 0.2, 0.5, 1.1, "green"),
+      C("Leaf", -0.21, 0.1, 0.02, 0.2, 0.4, 1.0, "green")]
+rmodel("harvest", "corn_stalk_bundle", c)
+c = table(2.4, 1.1, 0.8) + [C("FeastCloth", 0, 0, 2.2, 0.9, 0.8, 0.806, "cream"), C("FeastRunner", 0, 0, 2.3, 0.3, 0.806, 0.81, "orange"), C("RoastPlatter", 0, 0, 0.6, 0.44, 0.81, 0.84, "metal"),
+     C("RoastBird", 0, 0, 0.4, 0.3, 0.84, 1.04, "brown"), C("RoastLeg", -0.22, 0.1, 0.08, 0.08, 0.84, 0.98, "tan"), C("RoastLeg", 0.22, 0.1, 0.08, 0.08, 0.84, 0.98, "tan"),
+     C("PieDish", -0.75, 0, 0.3, 0.3, 0.81, 0.87, "orange"), C("BreadLoaf", 0.75, 0.1, 0.34, 0.16, 0.81, 0.93, "tan"), C("GravyBoat", 0.5, -0.25, 0.16, 0.1, 0.81, 0.9, "white"),
+     C("FeastCandle", -0.42, 0, 0.05, 0.05, 0.81, 1.1, "cream"), C("FeastCandle", 0.42, 0, 0.05, 0.05, 0.81, 1.1, "cream")]
+for x in (-0.9, -0.3, 0.3, 0.9):
+    for z in (-0.38, 0.38): c.append(C("Plate", x, z, 0.24, 0.2, 0.806, 0.82, "white"))
+rmodel("harvest", "harvest_feast_table", c)
+c = [C("PieStandFoot", 0, 0, 0.8, 0.5, 0, 0.06, "brown"), C("PieStandPost", -0.36, 0, 0.06, 0.4, 0.06, 1.3, "wood"), C("PieStandPost", 0.36, 0, 0.06, 0.4, 0.06, 1.3, "wood"),
+     C("PieStandSign", 0, 0, 0.8, 0.06, 1.14, 1.3, "crimson"), C("SignLetters", 0, 0.031, 0.5, 0.004, 1.19, 1.25, "cream")]
+for i, y in enumerate([0.36, 0.7, 1.0]):
+    c.append(C("PieShelf", 0, 0, 0.72, 0.46, y, y + 0.04, "wood"))
+    if i < 2:
+        for k, x in enumerate([-0.18, 0.18]):
+            c += [C("PieCrust", x, 0, 0.28, 0.28, y + 0.04, y + 0.1, "tan"), C("PieFilling", x, 0, 0.2, 0.2, y + 0.1, y + 0.114, ["orange", "crimson", "purple", "amber"][i*2 + k])]
+    else: c += [C("PieCrust", 0, 0, 0.3, 0.3, y + 0.04, y + 0.1, "tan"), C("PieLattice", 0, 0, 0.22, 0.22, y + 0.1, y + 0.114, "wood")]
+rmodel("harvest", "pie_stand", c)
+c = [C("PlinthBase", 0, 0, 0.7, 0.7, 0, 0.08, "brown"), C("PlinthColumn", 0, 0, 0.5, 0.5, 0.08, 0.6, "wood"), C("PlinthTop", 0, 0, 0.66, 0.66, 0.6, 0.66, "brown"),
+     C("TurkeyBody", 0, 0.02, 0.3, 0.34, 0.72, 0.96, "brown"), C("TurkeyFoot", -0.07, 0.04, 0.04, 0.1, 0.66, 0.72, "amber"), C("TurkeyFoot", 0.07, 0.04, 0.04, 0.1, 0.66, 0.72, "amber"),
+     C("TurkeyNeck", 0, 0.16, 0.1, 0.1, 0.96, 1.04, "brown"), C("TurkeyHead", 0, 0.18, 0.12, 0.12, 1.0, 1.1, "red"), C("TurkeyBeak", 0, 0.26, 0.04, 0.05, 1.03, 1.07, "amber"),
+     C("TurkeyWattle", 0, 0.245, 0.03, 0.02, 0.96, 1.03, "crimson"), C("TurkeyWing", -0.17, 0.02, 0.04, 0.24, 0.76, 0.92, "tan"), C("TurkeyWing", 0.17, 0.02, 0.04, 0.24, 0.76, 0.92, "tan")]
+for i, (x, h, col) in enumerate([(-0.24, 0.98, "orange"), (-0.12, 1.06, "crimson"), (0, 1.1, "gold"), (0.12, 1.06, "crimson"), (0.24, 0.98, "orange")]):
+    c.append(C("TailFeather", x, -0.17, 0.1, 0.04, 0.76, h, col))
+rmodel("harvest", "turkey_centrepiece", c)
+c = [C("LeafBed", 0, 0, 1.2, 1.1, 0, 0.02, "brown"), C("LeafHeap", 0, 0, 0.9, 0.8, 0.02, 0.14, "orange"), C("LeafHeap", -0.05, 0.05, 0.6, 0.5, 0.14, 0.24, "amber"),
+     C("LeafHeap", 0.05, 0, 0.3, 0.26, 0.24, 0.3, "crimson"), C("LooseLeaf", -0.48, 0.4, 0.14, 0.12, 0.02, 0.03, "red"), C("LooseLeaf", 0.46, -0.42, 0.16, 0.12, 0.02, 0.03, "yellow"),
+     C("LooseLeaf", 0.42, 0.36, 0.12, 0.14, 0.02, 0.03, "orange"), C("LooseLeaf", -0.44, -0.38, 0.14, 0.14, 0.02, 0.03, "gold")]
+rmodel("harvest", "leaf_pile", c)
+c = [C("CartBed", 0, 0, 1.4, 0.8, 0.5, 0.58, "wood"), C("CartSide", 0, -0.37, 1.4, 0.06, 0.58, 0.9, "brown"), C("CartSide", 0, 0.37, 1.4, 0.06, 0.58, 0.9, "brown"),
+     C("CartEnd", -0.67, 0, 0.06, 0.8, 0.58, 0.9, "brown"), C("CartEnd", 0.67, 0, 0.06, 0.8, 0.58, 0.9, "brown"), C("Axle", 0, 0, 0.08, 1.0, 0.36, 0.44, "dark"),
+     C("AxleBlock", 0, 0, 0.2, 0.7, 0.44, 0.5, "brown")]
+for z in (-0.47, 0.47):
+    c += [C("WheelRim", 0, z, 0.8, 0.06, 0, 0.08, "dark"), C("WheelRim", 0, z, 0.8, 0.06, 0.72, 0.8, "dark"), C("WheelRim", -0.36, z, 0.08, 0.06, 0.08, 0.72, "dark"),
+          C("WheelRim", 0.36, z, 0.08, 0.06, 0.08, 0.72, "dark"), C("WheelSpoke", 0, z, 0.64, 0.04, 0.37, 0.43, "wood"), C("WheelSpoke", 0, z, 0.06, 0.04, 0.08, 0.72, "wood")]
+c += [C("Shaft", 0.8, -0.3, 0.2, 0.06, 0.5, 0.56, "wood"), C("Shaft", 0.8, 0.3, 0.2, 0.06, 0.5, 0.56, "wood"), C("Shaft", -0.8, -0.3, 0.2, 0.06, 0.5, 0.56, "wood"),
+      C("Shaft", -0.8, 0.3, 0.2, 0.06, 0.5, 0.56, "wood"), C("CartPumpkin", -0.3, 0, 0.36, 0.36, 0.58, 0.9, "orange"), C("CartPumpkin", 0.2, 0.1, 0.3, 0.3, 0.58, 0.84, "amber"),
+      C("CartHay", 0.2, -0.1, 0.6, 0.4, 0.58, 0.7, "yellow"), C("CartSquash", 0.42, 0.14, 0.16, 0.2, 0.84, 1.1, "cream")]
+rmodel("harvest", "wooden_cart", c)
+
+print("REGION_PASS_SIZES")
+for folder, name, size in REGION_PASS: print("  props/%s/%s.bbmodel %s" % (folder, name, size))
+print(len(REGION_PASS), "regions pass models")

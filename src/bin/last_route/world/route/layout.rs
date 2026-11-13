@@ -1617,8 +1617,10 @@ fn allowed(c: Coord) -> bool {
     c.y <= 0 && c.y >= -3
 }
 
+/// The regions only this port has (`regions::is_extra`) are laid out as banks too; Godot's draw never returns one, so
+/// the parity layouts are unchanged.
 fn is_dense(region: &str) -> bool {
-    DENSE_DISTRICTS.contains(&region)
+    DENSE_DISTRICTS.contains(&region) || regions::is_extra(region)
 }
 
 impl<'a> Gen<'a> {
@@ -3189,10 +3191,15 @@ mod tests {
                 for cz in -12..13 {
                     let c = Coord::new(cx, 0, cz);
                     let l = chunk_layout(world, c).expect("every level 0 chunk has a layout");
-                    assert_eq!(l.region, regions::godot_region_for(world, cx, cz, 0), "{world} {c:?}");
+                    // Godot's region, or one of the extra regions of data/world/region_mix.json (docs/REGIONS_PASS.md)
+                    let extra = regions::extra_region_for(world, cx, cz);
+                    assert_eq!(l.region, extra.unwrap_or_else(|| regions::godot_region_for(world, cx, cz, 0)), "{world} {c:?}");
                     assert!(!l.rooms.is_empty() || !l.corridors.is_empty(), "{world} {c:?} is rock");
                     let godot = chunk_layout_godot(world, c).expect("godot layout");
-                    assert_eq!(l.region_props.is_some(), godot.region_props.is_some(), "{world} {c:?}");
+                    assert_eq!(godot.region, regions::godot_region_for(world, cx, cz, 0), "{world} {c:?}");
+                    if extra.is_none() {
+                        assert_eq!(l.region_props.is_some(), godot.region_props.is_some(), "{world} {c:?}");
+                    }
                     let tunnel = l.region_props.iter().flatten().any(|p| p.id.contains(":TUNNEL:"));
                     assert!(!tunnel, "{world} {c:?} has tunnel dressing");
                 }

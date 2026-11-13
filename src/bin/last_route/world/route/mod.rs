@@ -8,7 +8,7 @@
 //! world those saves were started in.
 
 use crate::world::rng::Rng;
-use crate::shared::atomic64::AtomicU64;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use crate::shared::clock::{SystemTime, UNIX_EPOCH};
 

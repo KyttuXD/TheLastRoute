@@ -12,6 +12,10 @@
 //! VoidRegion.ENABLED false; _dual_level_pair_active returns false): the void footprint
 //! ("mezzanine"), the deck patches and the dual-level carnival. With them off, the highest
 //! walkable level is always 0, so greenhouse is never allowed.
+//!
+//! Beyond Godot (docs/REGIONS_PASS.md): the game's level 0 also draws the regions Godot does not have (`extra_region_for`,
+//! weights in data/world/region_mix.json). The Godot draw (`godot_region_for`, `GODOT_NAMES`) is untouched and is what
+//! the parity goldens read; the extra draw has its own seed text, so it takes nothing from Godot's streams.
 
 use crate::world::rng::Rng;
 
@@ -26,9 +30,28 @@ const SEWER_LEVEL: i32 = -1;
 const LOWER_SEWER_LEVEL: i32 = -2;
 const INFERNO_LEVEL: i32 = -3;
 
-/// Every region name the Godot generator can return, in a fixed order (the index is the
-/// value Facility::merge stores per cell).
-pub const NAMES: [&str; 20] = [
+/// The parity set: every region name the Godot generator can return, in Godot's order. `godot_region_for` returns
+/// only these, and they are the first names of `NAMES`.
+pub const GODOT_NAMES: [&str; 14] = [
+    "maze",
+    "mansion",
+    "hotel",
+    "apartment",
+    "beach",
+    "gothic",
+    "prison",
+    "carnival",
+    "hospital",
+    "lab",
+    "greenhouse",
+    "mall",
+    "sewer",
+    "inferno",
+];
+
+/// Every region name the game can return, in a fixed order (the index is the value Facility::merge stores per
+/// cell): `GODOT_NAMES`, then the regions only this port has.
+pub const NAMES: [&str; 23] = [
     "maze",
     "mansion",
     "hotel",
@@ -51,7 +74,126 @@ pub const NAMES: [&str; 20] = [
     "tunnels",
     "offices",
     "utility",
+    // the seasonal regions (docs/REGIONS_PASS.md), appended for the same reason
+    "festive",
+    "halloween",
+    "harvest",
 ];
+
+/// True for a region only this port has (a name of `NAMES` that is not in `GODOT_NAMES`). These are laid out as
+/// banks along a central cross, like Godot's dense districts (`layout::is_dense`).
+pub fn is_extra(region: &str) -> bool {
+    NAMES.iter().skip(GODOT_NAMES.len()).any(|n| *n == region)
+}
+
+/// The schema of data/world/region_mix.json.
+pub const MIX_SCHEMA: &str = "lr.region_mix/1";
+/// The largest `extra_share`: Godot's regions always keep at least a tenth of the region blocks.
+pub const MAX_EXTRA_SHARE: f64 = 0.9;
+/// The largest weight of one extra region.
+pub const MAX_MIX_WEIGHT: u32 = 64;
+
+/// How level 0 mixes the extra regions in with Godot's (data/world/region_mix.json, `lr.region_mix/1`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionMix {
+    /// The share of region blocks (not the spawn block) that are an extra region. The rest keep Godot's draw, so the
+    /// Godot regions keep their weights against each other whatever this is.
+    pub extra_share: f64,
+    /// The extra regions that can be drawn and their weights against each other (a weight of 0 is left out).
+    pub regions: Vec<(&'static str, u32)>,
+}
+
+/// Parses data/world/region_mix.json. Every error names the file and the key.
+pub fn parse_mix(file: &str, text: &str) -> Result<RegionMix, String> {
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("{file}: {e}"))?;
+    if v["schema"].as_str() != Some(MIX_SCHEMA) {
+        return Err(format!("{file}: \"schema\" must be \"{MIX_SCHEMA}\""));
+    }
+    let extra_share = v["extra_share"]
+        .as_f64()
+        .filter(|s| (0.0..=MAX_EXTRA_SHARE).contains(s))
+        .ok_or_else(|| format!("{file}: \"extra_share\" must be a number from 0 to {MAX_EXTRA_SHARE}"))?;
+    let rows = v["regions"].as_array().ok_or_else(|| format!("{file}: \"regions\" must be an array of objects"))?;
+    let mut regions: Vec<(&'static str, u32)> = Vec::new();
+    let mut seen: Vec<&'static str> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let id = row["id"].as_str().unwrap_or("");
+        let Some(name) = NAMES.iter().copied().find(|n| *n == id) else {
+            return Err(format!("{file}: \"regions[{i}].id\" ({id}) is not a region the game knows"));
+        };
+        if !is_extra(name) {
+            return Err(format!("{file}: \"regions[{i}].id\" ({id}) is a Godot region; its weight is Godot's own"));
+        }
+        if seen.contains(&name) {
+            return Err(format!("{file}: \"regions[{i}].id\" ({id}) is listed twice"));
+        }
+        seen.push(name);
+        let weight = row["weight"]
+            .as_u64()
+            .filter(|w| *w <= MAX_MIX_WEIGHT as u64)
+            .ok_or_else(|| format!("{file}: \"regions[{i}].weight\" must be a whole number from 0 to {MAX_MIX_WEIGHT}"))? as u32;
+        if weight > 0 {
+            regions.push((name, weight));
+        }
+    }
+    Ok(RegionMix { extra_share, regions })
+}
+
+/// The shipped mix. A broken built-in file is a build error, so this panics with the message.
+pub fn mix() -> &'static RegionMix {
+    static CELL: std::sync::OnceLock<RegionMix> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| {
+        let (file, text) = crate::content::embedded::data_under("world/region_mix.json")
+            .next()
+            .unwrap_or_else(|| panic!("region mix: world/region_mix.json is not embedded"));
+        parse_mix(file, text).unwrap_or_else(|e| panic!("region mix: {e}"))
+    })
+}
+
+/// The extra region of the level 0 chunk (cx, cz) under `mix`, or `None` when the block keeps Godot's draw. One
+/// seeded stream per region block, with its own seed text: a float against `extra_share`, then one weighted pick.
+/// The spawn block always keeps Godot's draw. A pure function of the world seed text and the block, so the host and
+/// every guest get the same answer; it never reads the clock.
+pub fn extra_region_in(mix: &RegionMix, world: &str, cx: i32, cz: i32) -> Option<&'static str> {
+    let rx = cx.div_euclid(REGION_SIZE_CHUNKS);
+    let rz = cz.div_euclid(REGION_SIZE_CHUNKS);
+    if rx == 0 && rz == 0 {
+        return None;
+    }
+    let total: u32 = mix.regions.iter().map(|(_, w)| *w).sum();
+    if total == 0 || mix.extra_share <= 0.0 {
+        return None;
+    }
+    let mut rng = Rng::new(&format!("{world}:EXTRA-REGION:{rx}:{rz}"));
+    if rng.next_float() >= mix.extra_share {
+        return None;
+    }
+    let mut roll = rng.next_index(total as usize) as u32;
+    for (id, weight) in &mix.regions {
+        if roll < *weight {
+            return Some(*id);
+        }
+        roll -= *weight;
+    }
+    None
+}
+
+/// `extra_region_in` with the shipped mix.
+pub fn extra_region_for(world: &str, cx: i32, cz: i32) -> Option<&'static str> {
+    extra_region_in(mix(), world, cx, cz)
+}
+
+/// The colour variant of the region block that holds chunk (cx, cz) on `level`: one of the region's `palettes`
+/// (data/regions/<id>.json), picked by a stable hash of the world seed text and the block, so every chunk of a
+/// patch has the same palette and the host and guests agree. `None` for a region with no palettes. It formats a
+/// key, so call it when a chunk is built, never per frame.
+#[allow(dead_code)] // read by the renderer once its hook lands (docs/REGIONS_PASS.md, "Hooks")
+pub fn palette_at(world: &str, cx: i32, cz: i32, level: i32) -> Option<&'static crate::content::regions::RegionPalette> {
+    let def = region_def(region_for(world, cx, cz, level))?;
+    let rx = cx.div_euclid(REGION_SIZE_CHUNKS);
+    let rz = cz.div_euclid(REGION_SIZE_CHUNKS);
+    def.palette_for(&format!("{world}:{rx}:{level}:{rz}"))
+}
 
 /// The level-0 choice list, duplicates kept: they are the weights (streamed_route_generator.gd:1232-1234).
 const BASE_CHOICES: [&str; 16] = [
@@ -108,7 +250,7 @@ fn pick(level: i32, choices: &[&'static str], rng: &mut Rng) -> &'static str {
 /// The region of chunk (cx, cz) on `level` in the world with seed text `world`. While the concept map is enabled
 /// (`concept_map::enabled`) level 0 is read from it (`concept_map`): the spawn chunk is the maze, every other chunk takes the region of the map under it, and a
 /// chunk of solid rock or tunnel counts as "maze". Every other level, and level 0 with the map off, keeps Godot's draw
-/// (`godot_region_for`).
+/// (`godot_region_for`), except that a level 0 region block may be one of the extra regions (`extra_region_for`).
 pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
     if level == 0 && super::concept_map::enabled() {
         return super::concept_map::region_of_chunk(world, cx, cz);
@@ -117,6 +259,11 @@ pub fn region_for(world: &str, cx: i32, cz: i32, level: i32) -> &'static str {
     if let Some(entry) = crate::world::levels::entry(level) {
         if entry.whole {
             return entry.region.as_str();
+        }
+    }
+    if level == 0 {
+        if let Some(extra) = extra_region_for(world, cx, cz) {
+            return extra;
         }
     }
     godot_region_for(world, cx, cz, level)
@@ -337,16 +484,167 @@ mod tests {
     }
 
     #[test]
-    fn with_the_concept_map_off_level_zero_is_godots_draw() {
+    fn with_the_concept_map_off_level_zero_is_godots_draw_or_an_extra_region() {
         assert!(!super::super::concept_map::enabled());
+        let (mut extra, mut godot) = (0, 0);
         for i in 0..20 {
             let world = format!("OFF-{i}");
             for cx in -12..12 {
                 for cz in -12..12 {
-                    assert_eq!(region_for(&world, cx, cz, 0), godot_region_for(&world, cx, cz, 0), "{world} {cx},{cz}");
+                    let r = region_for(&world, cx, cz, 0);
+                    match extra_region_for(&world, cx, cz) {
+                        Some(e) => {
+                            assert_eq!(r, e, "{world} {cx},{cz}");
+                            assert!(is_extra(e) && !is_spawn_block(cx, cz, 0), "{world} {cx},{cz}: {e}");
+                            extra += 1;
+                        }
+                        None => {
+                            assert_eq!(r, godot_region_for(&world, cx, cz, 0), "{world} {cx},{cz}");
+                            godot += 1;
+                        }
+                    }
                 }
             }
         }
+        // the shipped share: some extra blocks, and Godot's regions still the larger part
+        assert!(extra > 0 && godot > extra, "extra {extra}, godot {godot}");
+    }
+
+    #[test]
+    fn the_parity_set_is_the_godot_list_and_the_godot_draw_stays_inside_it() {
+        // streamed_route_generator.gd: the level 0 choices, the below-ground appends and the two whole levels
+        let godot = ["maze", "mansion", "hotel", "apartment", "beach", "gothic", "prison", "carnival", "hospital", "lab", "greenhouse", "mall", "sewer", "inferno"];
+        assert_eq!(GODOT_NAMES, godot);
+        assert_eq!(&NAMES[..GODOT_NAMES.len()], &godot[..], "the Godot names keep their indices");
+        for c in BASE_CHOICES {
+            assert!(GODOT_NAMES.contains(&c), "{c}");
+        }
+        assert_eq!(BASE_CHOICES.len(), 16);
+        for name in NAMES {
+            assert_eq!(is_extra(name), !GODOT_NAMES.contains(&name), "{name}");
+        }
+        for i in 0..40 {
+            let world = format!("PARITY-{i}");
+            for level in [0, -1, -2, -3, -4, -6, 2] {
+                for cx in (-40..40).step_by(4) {
+                    for cz in (-40..40).step_by(4) {
+                        let r = godot_region_for(&world, cx, cz, level);
+                        assert!(GODOT_NAMES.contains(&r), "{world} {cx},{cz} level {level}: {r}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_extra_draw_is_the_same_every_time_and_whole_blocks_share_a_region() {
+        for i in 0..30 {
+            let world = format!("SAME-{i}");
+            for rx in -6..6 {
+                for rz in -6..6 {
+                    let (cx, cz) = (rx * REGION_SIZE_CHUNKS, rz * REGION_SIZE_CHUNKS);
+                    let first = extra_region_for(&world, cx, cz);
+                    assert_eq!(extra_region_for(&world, cx, cz), first);
+                    // every chunk of the block gives the block's answer
+                    for (dx, dz) in [(1, 0), (3, 3), (0, 2)] {
+                        assert_eq!(extra_region_for(&world, cx + dx, cz + dz), first, "{world} block {rx},{rz}");
+                    }
+                    assert_eq!(region_for(&world, cx, cz, 0), region_for(&world, cx + 3, cz + 3, 0));
+                }
+            }
+            // the spawn block is never an extra region
+            assert_eq!(extra_region_for(&world, 0, 0), None);
+            assert_eq!(extra_region_for(&world, 3, 3), None);
+        }
+    }
+
+    #[test]
+    fn the_extra_regions_follow_the_weights_of_the_mix() {
+        let mix = RegionMix { extra_share: 0.5, regions: vec![("offices", 3), ("festive", 1)] };
+        let (mut offices, mut festive, mut none) = (0, 0, 0);
+        for i in 0..4000 {
+            match extra_region_in(&mix, "WEIGHTS", 4 + i * REGION_SIZE_CHUNKS, -8) {
+                Some("offices") => offices += 1,
+                Some("festive") => festive += 1,
+                Some(other) => panic!("{other} is not in the mix"),
+                None => none += 1,
+            }
+        }
+        // half the blocks are extra, three offices to one festive
+        assert!((1800..2200).contains(&none), "none {none}");
+        assert!((1350..1650).contains(&offices), "offices {offices}");
+        assert!((400..600).contains(&festive), "festive {festive}");
+        // a share of 0, or no weights, turns the extra regions off
+        let off = RegionMix { extra_share: 0.0, regions: mix.regions.clone() };
+        let empty = RegionMix { extra_share: 0.5, regions: vec![] };
+        for i in 1..200 {
+            assert_eq!(extra_region_in(&off, "WEIGHTS", i * 4, 0), None);
+            assert_eq!(extra_region_in(&empty, "WEIGHTS", i * 4, 0), None);
+        }
+    }
+
+    #[test]
+    fn the_shipped_mix_parses_and_every_region_in_it_can_be_built() {
+        let m = mix();
+        assert!(m.extra_share > 0.0 && m.extra_share <= 0.5, "extra_share {}", m.extra_share);
+        let ids: Vec<&str> = m.regions.iter().map(|(id, _)| *id).collect();
+        for id in ["offices", "ice", "stalls", "festive", "halloween", "harvest"] {
+            assert!(ids.contains(&id), "{id} is switched on");
+        }
+        // the mineshaft tunnels need the concept map's carving and the utility region is undecided: both stay off
+        assert!(!ids.contains(&"tunnels") && !ids.contains(&"utility"));
+        let seasonal: u32 = m.regions.iter().filter(|(id, _)| ["festive", "halloween", "harvest"].contains(id)).map(|(_, w)| *w).sum();
+        let total: u32 = m.regions.iter().map(|(_, w)| *w).sum();
+        assert!(seasonal * 3 <= total, "the seasonal regions are occasional: {seasonal} of {total}");
+        for (id, _) in &m.regions {
+            let def = region_def(id).unwrap_or_else(|| panic!("{id} has a region file"));
+            assert!(!def.prop_set.is_empty() && !def.room_roles.is_empty(), "{id}");
+            let rooms = crate::world::route::furnished::region_rooms::table(id).unwrap_or_else(|| panic!("{id} has a room table"));
+            assert_eq!(def.room_roles, rooms.role_list(), "{id}: the catalogue row is the table's role list");
+        }
+    }
+
+    #[test]
+    fn a_bad_mix_file_names_the_key() {
+        let file = |share: &str, rows: &str| format!(r#"{{"schema":"lr.region_mix/1","extra_share":{share},"regions":[{rows}]}}"#);
+        assert!(parse_mix("m.json", &file("0.2", r#"{"id":"offices","weight":2},{"id":"utility","weight":0}"#)).is_ok());
+        for (text, want) in [
+            (file("1.5", ""), "extra_share"),
+            (file("0.2", r#"{"id":"maze","weight":1}"#), "Godot region"),
+            (file("0.2", r#"{"id":"dungeon","weight":1}"#), "not a region the game knows"),
+            (file("0.2", r#"{"id":"ice","weight":1},{"id":"ice","weight":2}"#), "listed twice"),
+            (file("0.2", r#"{"id":"ice","weight":-1}"#), "regions[0].weight"),
+            (file("0.2", r#"{"id":"ice","weight":1}"#).replace("lr.region_mix/1", "lr.region_mix/2"), "schema"),
+        ] {
+            let e = parse_mix("m.json", &text).expect_err("the file should be rejected");
+            assert!(e.contains("m.json") && e.contains(want), "wanted {want:?} in {e:?}");
+        }
+    }
+
+    #[test]
+    fn a_patch_has_one_palette_and_a_region_shows_every_palette_somewhere() {
+        let mut seen: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> = Default::default();
+        for i in 0..12 {
+            let world = format!("PAINT-{i}");
+            for rx in -8..8 {
+                for rz in -8..8 {
+                    let (cx, cz) = (rx * REGION_SIZE_CHUNKS, rz * REGION_SIZE_CHUNKS);
+                    let region = region_for(&world, cx, cz, 0);
+                    let p = palette_at(&world, cx, cz, 0);
+                    assert_eq!(p.is_some(), region_def(region).is_some_and(|d| !d.palettes.is_empty()), "{region}");
+                    // the whole block has the palette, and asking again gives it again
+                    assert_eq!(palette_at(&world, cx + 3, cz + 2, 0), p);
+                    assert_eq!(palette_at(&world, cx, cz, 0), p);
+                    if let Some(p) = p {
+                        seen.entry(region).or_default().insert(p.name.clone());
+                    }
+                }
+            }
+        }
+        let offices = region_def("offices").expect("offices");
+        assert_eq!(seen.get("offices").map(|s| s.len()), Some(offices.palettes.len()), "{seen:?}");
+        let names: Vec<&str> = offices.palettes.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["grey_blue", "beige", "green"]);
     }
 
     #[test]

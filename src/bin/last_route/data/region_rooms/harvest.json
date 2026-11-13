@@ -1,0 +1,84 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "harvest",
+	"colour": "D4A017",
+	"note": "thanksgiving / harvest region (regions pass, Rust only)",
+	"rooms": [
+		{
+			"role": "hay_barn",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "hayBale", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "hayBale", "side": ["-half+2", "half-2", 3], "depth": "mid", "facing": "back"},
+				{"type": "woodenCart", "side": 0, "depth": "front-2", "claim": true},
+				{"type": "cornStalkBundle", "side": "-half+1", "depth": "front-1", "facing": "center"},
+				{"type": "cornStalkBundle", "side": "half-1", "depth": "front-1", "facing": "center"},
+				{"type": "storageBarrel", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "leafPile", "side": "-half+2", "depth": "mid+2", "loose": true, "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "feast_hall",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "harvestFeastTable", "side": 0, "depth": "mid", "claim": true},
+				{"type": "woodenChair", "side": ["-1", "1", 2], "depth": "mid-2"},
+				{"type": "woodenChair", "side": ["-1", "1", 2], "depth": "mid+2", "facing": "back"},
+				{"type": "cornucopiaTable", "side": 0, "depth": 0, "wall": true},
+				{"type": "turkeyCentrepiece", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "pieStand", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "cornStalkBundle", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "leafPile", "side": "-half+1", "depth": "front-1", "loose": true, "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "harvest_market",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "pieStand", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "pumpkinPile", "side": ["-half+2", "half-2", 4], "depth": "mid"},
+				{"type": "woodenCart", "side": 0, "depth": "front-2", "claim": true, "min_depth_span": 11},
+				{"type": "cornStalkBundle", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "supplyCrates", "side": "-half+1", "depth": "mid", "facing": "right", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "corn_store",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [9, 11], "max": [11, 11]},
+			"recipe": [
+				{"type": "cornStalkBundle", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "hayBale", "side": ["-half+2", "half-2", 3], "depth": "mid"},
+				{"type": "storageBarrel", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "pumpkinPile", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true, "chance": 0.7},
+				{"type": "leafPile", "side": 0, "depth": "front-1", "loose": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "hayBale", "size": [1.21, 0.71, 0.71], "solid": true, "weight": 1},
+		{"type": "cornucopiaTable", "size": [1.4, 1.1, 0.8], "solid": true, "weight": 1},
+		{"type": "pumpkinPile", "size": [1.2, 0.7, 1.0], "solid": true, "weight": 1},
+		{"type": "cornStalkBundle", "size": [0.6, 2.0, 0.6], "solid": true, "weight": 1},
+		{"type": "harvestFeastTable", "size": [2.4, 1.1, 1.1], "solid": true, "weight": 1},
+		{"type": "pieStand", "size": [0.8, 1.3, 0.5], "solid": true, "weight": 1},
+		{"type": "turkeyCentrepiece", "size": [0.7, 1.1, 0.7], "solid": true, "weight": 1},
+		{"type": "leafPile", "size": [1.2, 0.3, 1.1], "solid": false, "weight": 1},
+		{"type": "woodenCart", "size": [1.8, 1.1, 1.0], "solid": true, "weight": 1},
+		{"type": "woodenChair", "size": [0.79, 1.41, 0.79], "solid": true, "weight": 1},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67], "solid": true, "weight": 1},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}

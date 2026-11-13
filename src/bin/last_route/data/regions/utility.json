@@ -18,5 +18,10 @@
 		{"type": "hazardSign", "size": [0.6, 0.62, 0.05], "solid": false},
 		{"type": "floorLamp", "size": [0.6, 2.62, 0.6]},
 		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+	],
+	"extra_prop_set": [
+		{"type": "cableCoil", "size": [0.56, 0.09, 0.56], "solid": false},
+		{"type": "trafficCone", "size": [0.4, 0.7, 0.4]},
+		{"type": "cardboardBoxes", "size": [1.0, 0.91, 0.81]}
 	]
 }

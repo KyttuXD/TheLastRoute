@@ -1,0 +1,30 @@
+{
+	"schema": "lr.region/1",
+	"id": "harvest",
+	"accent": {"texture": "floor", "kind": "metal0", "tint": "#a05828", "metal": false},
+	"hall_floor": ["parquet0", "parquet1"],
+	"hall_runner": false,
+	"room_default_floor": ["parquet0", "parquet1"],
+	"room_roles": ["hay_barn", "hay_barn", "hay_barn", "feast_hall", "feast_hall", "harvest_market", "harvest_market", "corn_store"],
+	"safe_light": {"color": [1.0, 0.8, 0.5], "energy": 2.1},
+	"prop_set": [
+		{"type": "hayBale", "size": [1.21, 0.71, 0.71]},
+		{"type": "cornucopiaTable", "size": [1.4, 1.1, 0.8]},
+		{"type": "pumpkinPile", "size": [1.2, 0.7, 1.0]},
+		{"type": "cornStalkBundle", "size": [0.6, 2.0, 0.6]},
+		{"type": "harvestFeastTable", "size": [2.4, 1.1, 1.1]},
+		{"type": "pieStand", "size": [0.8, 1.3, 0.5]},
+		{"type": "turkeyCentrepiece", "size": [0.7, 1.1, 0.7]},
+		{"type": "leafPile", "size": [1.2, 0.3, 1.1], "solid": false},
+		{"type": "woodenCart", "size": [1.8, 1.1, 1.0]},
+		{"type": "woodenChair", "size": [0.79, 1.41, 0.79]},
+		{"type": "storageBarrel", "size": [0.67, 0.94, 0.67]},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67]},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false}
+	],
+	"palettes": [
+		{"name": "amber", "weight": 2, "textures": "mansion", "wall": "#f0d4a0", "trim": "#a05828", "floor": "#e0c498", "lamp": "#ffd8a0", "ambient": "#6a4a24"},
+		{"name": "russet", "textures": "mansion", "wall": "#e4b498", "trim": "#7a4a20", "floor": "#d0a888", "lamp": "#ffc890", "ambient": "#643624"},
+		{"name": "straw", "textures": "apartment", "wall": "#f0e4b8", "trim": "#8a6a30", "floor": "#e8dcb0", "lamp": "#fff0c0", "ambient": "#6a5c34"}
+	]
+}

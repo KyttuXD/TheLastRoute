@@ -21,6 +21,13 @@
     "gothic": "gothic",
     "hospital": "hospital",
     "mall": "mall",
-    "maze": "maze"
+    "maze": "maze",
+    "offices": "lab",
+    "ice": "hospital",
+    "stalls": "mall",
+    "inferno0": "gothic",
+    "festive": "hotel",
+    "halloween": "gothic",
+    "harvest": "mansion"
   }
 }

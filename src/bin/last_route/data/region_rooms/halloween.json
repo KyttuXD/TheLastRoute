@@ -1,0 +1,86 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "halloween",
+	"colour": "E67E22",
+	"note": "halloween region (regions pass, Rust only)",
+	"rooms": [
+		{
+			"role": "pumpkin_patch",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "jackOLantern", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "pumpkinPile", "side": ["-half+2", "half-2", 4], "depth": "mid"},
+				{"type": "scarecrow", "side": 0, "depth": "front-2", "claim": true},
+				{"type": "hayBale", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "candleCluster", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "graveyard_room",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "tombstone", "side": ["-half+1", "half-1", 2], "depth": ["1", "front-2", 3]},
+				{"type": "coffin", "side": 0, "depth": "front-2", "chance": 0.6},
+				{"type": "skeletonProp", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "cobwebCorner", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "candleCluster", "side": 0, "depth": 0, "wall": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "witch_kitchen",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "witchCauldron", "side": 0, "depth": "mid", "claim": true},
+				{"type": "witchBroomRack", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "normalBookcase", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "woodenTable", "side": 0, "depth": 0, "wall": true},
+				{"type": "jackOLantern", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "cobwebCorner", "side": "-half+1", "depth": "mid", "facing": "right", "mirror": true},
+				{"type": "candleCluster", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "haunted_parlour",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "coffin", "side": 0, "depth": 1, "claim": true},
+				{"type": "gothicFloorCandelabra", "side": "-half+1", "depth": 0, "wall": true},
+				{"type": "gothicFloorCandelabra", "side": "half-1", "depth": 0, "wall": true},
+				{"type": "loungeCouchWide", "side": 0, "depth": "mid+1", "facing": "back"},
+				{"type": "skeletonProp", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true},
+				{"type": "cobwebCorner", "side": "-half+1", "depth": "front-1", "facing": "right", "mirror": true},
+				{"type": "jackOLantern", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "jackOLantern", "size": [0.6, 0.55, 0.61], "solid": true, "weight": 1},
+		{"type": "witchCauldron", "size": [0.9, 0.9, 0.9], "solid": true, "weight": 1},
+		{"type": "coffin", "size": [0.8, 0.6, 2.0], "solid": true, "weight": 1},
+		{"type": "tombstone", "size": [0.7, 1.0, 0.25], "solid": true, "weight": 1},
+		{"type": "scarecrow", "size": [1.2, 2.0, 0.4], "solid": true, "weight": 1},
+		{"type": "cobwebCorner", "size": [1.0, 1.6, 0.12], "solid": true, "weight": 1},
+		{"type": "skeletonProp", "size": [0.5, 1.8, 0.3], "solid": true, "weight": 1},
+		{"type": "witchBroomRack", "size": [0.9, 1.6, 0.35], "solid": true, "weight": 1},
+		{"type": "candleCluster", "size": [0.5, 0.5, 0.5], "solid": true, "weight": 1},
+		{"type": "pumpkinPile", "size": [1.2, 0.7, 1.0], "solid": true, "weight": 1},
+		{"type": "hayBale", "size": [1.21, 0.71, 0.71], "solid": true, "weight": 1},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17], "solid": true, "weight": 1},
+		{"type": "normalBookcase", "size": [1.54, 2.72, 0.7], "solid": true, "weight": 1},
+		{"type": "loungeCouchWide", "size": [3.7, 1.33, 1.54], "solid": true, "weight": 1},
+		{"type": "gothicFloorCandelabra", "size": [1.17, 2.72, 0.6], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}

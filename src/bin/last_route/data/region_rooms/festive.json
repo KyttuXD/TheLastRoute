@@ -1,0 +1,86 @@
+{
+	"schema": "lr.region_rooms/1",
+	"region": "festive",
+	"colour": "C0392B",
+	"note": "festive / christmas region (regions pass, Rust only)",
+	"rooms": [
+		{
+			"role": "tree_parlour",
+			"weight": 3,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "christmasTree", "side": 0, "depth": "mid", "claim": true},
+				{"type": "stockingMantel", "side": 0, "depth": 0, "wall": true},
+				{"type": "wrappedPresents", "side": -2, "depth": "mid"},
+				{"type": "wrappedPresents", "side": 2, "depth": "mid+1", "chance": 0.7},
+				{"type": "nutcracker", "side": "half-1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "festiveWreath", "side": "-half+1", "depth": 0, "wall": true, "mirror": true},
+				{"type": "candyCanePost", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "stringLightPost", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "gift_workshop",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 9], "max": [13, 11]},
+			"recipe": [
+				{"type": "woodenTable", "side": ["-half+1", "half-1", 3], "depth": 0, "wall": true},
+				{"type": "wrappedPresents", "side": ["-half+2", "half-2", 3], "depth": "mid"},
+				{"type": "supplyCrates", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "nutcracker", "side": "-half+1", "depth": "mid", "facing": "right", "mirror": true},
+				{"type": "candyCanePost", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "hearth_lounge",
+			"weight": 2,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "stockingMantel", "side": 0, "depth": 0, "wall": true},
+				{"type": "normalCoffeeTable", "side": 0, "depth": 2},
+				{"type": "loungeCouchWide", "side": 0, "depth": "mid", "facing": "back"},
+				{"type": "festiveWreath", "side": "-half+1", "depth": 0, "wall": true},
+				{"type": "festiveWreath", "side": "half-1", "depth": 0, "wall": true},
+				{"type": "christmasTree", "side": "half-1", "depth": "front-1", "facing": "center", "mirror": true, "min_side_span": 11},
+				{"type": "stringLightPost", "side": "-half+1", "depth": "front-1", "facing": "center", "mirror": true},
+				{"type": "wrappedPresents", "side": "half-1", "depth": "mid", "facing": "left", "mirror": true, "chance": 0.6},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		},
+		{
+			"role": "snow_court",
+			"weight": 1,
+			"template": "data",
+			"size": {"min": [9, 9], "preferred": [11, 11], "max": [13, 13]},
+			"recipe": [
+				{"type": "snowman", "side": ["-half+2", "half-2", 4], "depth": "mid"},
+				{"type": "candyCanePost", "side": ["-half+1", "half-1", 2], "depth": 0, "wall": true},
+				{"type": "festiveSleigh", "side": 0, "depth": "front-2", "claim": true},
+				{"type": "stringLightPost", "side": "-half+1", "depth": "front-1", "facing": "center"},
+				{"type": "stringLightPost", "side": "half-1", "depth": "front-1", "facing": "center"},
+				{"type": "ceilingLight", "side": 0, "depth": ["2", "front-1", 4], "loose": true}
+			]
+		}
+	],
+	"props": [
+		{"type": "christmasTree", "size": [1.42, 2.4, 1.42], "solid": true, "weight": 1},
+		{"type": "wrappedPresents", "size": [1.0, 0.61, 0.8], "solid": true, "weight": 1},
+		{"type": "festiveWreath", "size": [0.8, 1.7, 0.4], "solid": true, "weight": 1},
+		{"type": "snowman", "size": [0.8, 1.6, 0.8], "solid": true, "weight": 1},
+		{"type": "candyCanePost", "size": [0.44, 1.8, 0.35], "solid": true, "weight": 1},
+		{"type": "stockingMantel", "size": [1.8, 1.4, 0.56], "solid": true, "weight": 1},
+		{"type": "festiveSleigh", "size": [2.2, 1.1, 1.0], "solid": true, "weight": 1},
+		{"type": "nutcracker", "size": [0.62, 1.8, 0.4], "solid": true, "weight": 1},
+		{"type": "stringLightPost", "size": [0.43, 2.2, 0.43], "solid": true, "weight": 1},
+		{"type": "woodenTable", "size": [1.92, 1.12, 1.17], "solid": true, "weight": 1},
+		{"type": "loungeCouchWide", "size": [3.7, 1.33, 1.54], "solid": true, "weight": 1},
+		{"type": "normalCoffeeTable", "size": [1.92, 0.75, 1.17], "solid": true, "weight": 1},
+		{"type": "supplyCrates", "size": [0.79, 0.94, 0.67], "solid": true, "weight": 1},
+		{"type": "ceilingLight", "size": [0.75, 0.3, 0.75], "solid": false, "weight": 1}
+	]
+}
