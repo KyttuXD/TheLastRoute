@@ -9,9 +9,9 @@ The normal game artifact still requires macOS 10.12 or later.
 2600, OS X 10.6.8): a 25 second `mixed` stress run averages 116 frames a second (it was 69 before the draw-call
 upload change, [PERFORMANCE.md](PERFORMANCE.md)), with no crash.
 
-The `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy) holds
-`last_route-macos-legacy.zip`: **one app for 64-bit Intel Macs on OS X 10.5 up to 10.11** (the normal app needs
-10.12). To rebuild it: `gh workflow run macos-legacy.yml` (from main). It has every feature of the normal build
+The `nightly` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly) holds
+`last_route-macos-legacy.zip`, next to the normal builds: **one app for 64-bit Intel Macs on OS X 10.5 up to 10.11** (the normal app needs
+10.12). It is rebuilt on every push to main; by hand: `gh workflow run build.yml` (from main). It has every feature of the normal build
 except Metal: file drops and the file chooser use old AppKit calls instead of the ones the normal build uses.
 
 Not tried: OS X 10.5 itself, 10.7 to 10.11, any other Mac, sound, the network, a whole play session.
@@ -22,7 +22,7 @@ Not tried: OS X 10.5 itself, 10.7 to 10.11, any other Mac, sound, the network, a
 | OS X 10.5, Intel 64-bit | same app; built for it, not tried on it |
 | 32-bit Intel (Core Duo Macs) | not built: a 32-bit Darwin 9 compiler exists at MacPorts, nothing is set up |
 | OS X 10.4, Intel | not built: MacPorts has no Darwin 8 Rust, and the Mac Pro 3,1 cannot run 10.4 |
-| Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X. A PowerPC Mac can run the PowerPC Linux build under Linux ([POWERPC.md](POWERPC.md)) |
+| Mac OS X on PowerPC (any version) | not possible with this code: Rust has no compiler target for PowerPC Mac OS X |
 
 ### How it was got running (each found on the Mac Pro, in this order)
 
@@ -42,8 +42,9 @@ Not tried: OS X 10.5 itself, 10.7 to 10.11, any other Mac, sound, the network, a
 6. A thousand "autoreleased with no pool" lines: the legacy build now has autorelease pools.
 
 7. **The app replaced itself with the normal Mac build.** The updater took the website's Mac build, which needs
-   macOS 10.12. The legacy app now updates only from the `nightly-legacy` release (`app/updater.rs`
-   `mac_release_source`); on the Mac Pro it fetched `last_route-macos-legacy.zip` and started again as the legacy app.
+   macOS 10.12. The legacy app now takes only `last_route-macos-legacy.zip` (`app/updater.rs` `mac_release_source`); on the Mac
+   Pro it fetched that file and started again as the legacy app. Since 2026-11-12 the file is in the `nightly`
+   release; apps built before that look in the old `nightly-legacy` release, which is no longer updated.
    A fresh download updates itself once on its first start (it has no record yet of which release it is).
 
 All of it is in `vendor/miniquad` behind `cfg(lr_macos_legacy)` (LAST_ROUTE_PATCHES.md items 9 and 10) and in
@@ -75,7 +76,7 @@ the game and vendored miniquad. Normal builds do not enable it. It:
 - replaces Lion/Retina fullscreen, mouse-coordinate, DPI and scroll calls;
 - forces OpenGL even if Metal was previously selected in saved settings.
 
-The `renderer` job of `.github/workflows/macos-legacy.yml` builds this configuration, audits
+The `macos-legacy-renderer` job of `.github/workflows/build.yml` builds this configuration, audits
 linked frameworks, tests shader conversion and legacy Apple shader compilation,
 and runs headless gameplay suites. It intentionally uses the supported 10.12
 compiler runtime until the runtime/dependency backport is ready. Its reports
@@ -100,7 +101,7 @@ isolation, files and local TCP, and prints OS/compiler/dynamic-library informati
 It creates and removes only its own temporary files. It does not install software.
 Passing this probe does not establish game or graphics compatibility.
 
-The `runtime` job of the same workflow fetches the actual
+The `macos-legacy` job of the same workflow fetches the actual
 MacPorts Darwin 10 bootstrap (Rust 1.77.0, published under its 1.78.0 release),
 its matching standard library and the legacy-support compatibility library.
 Downloads are SHA-256 checked and extracted into a private runner directory;
@@ -120,10 +121,11 @@ game, not a requirement for players to install Rust or MacPorts.
 
 ## CI
 
-One workflow, `macos-legacy` (`.github/workflows/macos-legacy.yml`), holds both jobs. It runs by hand only
-(Actions > macos-legacy > Run workflow, or `gh workflow run macos-legacy`), so pushes and pull requests get no
-extra check. The normal Intel build stays in `build.yml` (`macos-intel`, deployment target 10.12 from
-`packaging/macos/build_app.sh`). The OpenGL 2.1 smoke test prints `SKIPPED` on a machine with no accelerated
+Both jobs are in the normal nightly workflow, `.github/workflows/build.yml`: `macos-legacy-renderer` (the check) and
+`macos-legacy` (the app, published to the `nightly` release as `last_route-macos-legacy.zip`). They run on every
+push to main and by hand (`gh workflow run build.yml`). Both are `continue-on-error`, and no other job needs them,
+so a failure there does not stop the other builds from being published. The normal Intel build is the
+`macos-intel` job (deployment target 10.12 from `packaging/macos/build_app.sh`). The OpenGL 2.1 smoke test prints `SKIPPED` on a machine with no accelerated
 pixel format (hosted runners); run it on a real Mac.
 
 ## Legacy dependency graph (2026-11-12)

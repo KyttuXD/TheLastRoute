@@ -40,7 +40,7 @@ unsafe fn setup_pcm_device() -> *mut sys::snd_pcm_t {
         panic!("Can't set interleaved mode");
     }
 
-    // Last Route: the mixer writes f32 in the machine's byte order, so a big-endian machine (PowerPC) asks for the
+    // Last Route: the mixer writes f32 in the machine's byte order, so a big-endian machine asks for the
     // big-endian float format; FLOAT_LE there would play noise.
     let format = if cfg!(target_endian = "big") {
         sys::SND_PCM_FORMAT_FLOAT_BE

@@ -10,7 +10,7 @@
 use super::mesh_batch::BatchModel;
 use macroquad::prelude::*;
 use std::cell::RefCell;
-use crate::shared::atomic64::AtomicU64;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// macroquad's draw-call buffer sizes (main.rs sets them in the window conf): one draw call holds this many vertices

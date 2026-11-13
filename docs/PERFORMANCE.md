@@ -93,5 +93,5 @@ triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
 
 ## Not known yet
 
-- No number exists for a low-end PC or for the PowerPC builds.
+- No number exists for a low-end PC.
 - The MacBook Air numbers predate the RAM pass.

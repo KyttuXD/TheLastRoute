@@ -4,11 +4,14 @@ Every build goes to a rolling pre-release in GitHub Releases, not to Actions art
 
 | Release tag | What | Workflow | When it runs |
 |---|---|---|---|
-| `nightly` | KYTTU - The Last Route, Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/build.yml` | Every push to `main` (and by hand) |
+| `nightly` | KYTTU - The Last Route, Windows, Linux, macOS Intel and Apple Silicon, and the legacy Mac app for 64-bit Intel Macs on OS X 10.5 to 10.11 (`last_route-macos-legacy.zip`, job `macos-legacy`; runs on a Mac Pro 3,1 under 10.6.8) | `.github/workflows/build.yml` | Every push to `main` (and by hand: `gh workflow run build.yml`) |
 | `nightly-server` | `lr_server`, Linux x86_64, with its SHA-256 | `.github/workflows/build.yml` (Linux job) | Every push to `main` |
 | `nightly-nw` | Night Watch (`src/bin/night_watch`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-nw.yml` | By hand only |
 | `nightly-lrs` | LR Story (`src/bin/lr_story`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-lrs.yml` | By hand only |
-| `nightly-legacy` | Builds for old machines: the legacy Mac app for 64-bit Intel Macs on OS X 10.5 to 10.11 (`last_route-macos-legacy.zip`, runs on a Mac Pro 3,1 under 10.6.8) and the big-endian PowerPC Linux programs (`last_route-linux-powerpc64-UNTESTED.tar.gz`, `...powerpc32...`, untested on hardware) | `.github/workflows/macos-legacy.yml` (runtime job) and `.github/workflows/powerpc.yml` | By hand: `gh workflow run macos-legacy.yml` and `gh workflow run powerpc.yml` |
+
+The legacy Mac app is built by its own job with an old compiler ([MACOS_SNOW_LEOPARD.md](MACOS_SNOW_LEOPARD.md)). That job and
+its renderer check may fail without stopping the other builds from being published. The old `nightly-legacy`
+release is no longer written to.
 
 ## Running a manual build
 

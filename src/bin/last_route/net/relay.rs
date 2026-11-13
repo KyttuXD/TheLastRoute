@@ -136,7 +136,7 @@ pub struct RelayLink {
     last_hello: Option<Instant>,
     alive_stop: Arc<AtomicBool>,
     alive_thread: Option<std::thread::JoinHandle<()>>,
-    pub alive_sent: Arc<crate::shared::atomic64::AtomicU64>,
+    pub alive_sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
 fn resolve(address: &str, port: u16) -> std::io::Result<SocketAddr> {
@@ -181,7 +181,7 @@ impl RelayLink {
             last_hello: None,
             alive_stop: Arc::new(AtomicBool::new(false)),
             alive_thread: None,
-            alive_sent: Arc::new(crate::shared::atomic64::AtomicU64::new(0)),
+            alive_sent: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 

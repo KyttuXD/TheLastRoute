@@ -1994,7 +1994,7 @@ pub const CUSTOM_STEM: &str = "custom";
 
 /// Counts the skins saved with [`save_custom_skin`], so a caller that resolved the worn skin once knows to resolve it
 /// again after an APPLY even though the list id (always CUSTOM) did not change.
-static GENERATION: crate::shared::atomic64::AtomicU64 = crate::shared::atomic64::AtomicU64::new(0);
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The number of skins saved as the user's own so far this run.
 pub fn generation() -> u64 {
