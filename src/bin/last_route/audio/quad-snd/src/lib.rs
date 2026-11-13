@@ -11,6 +11,8 @@ pub use error::Error;
 mod snd;
 
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
+mod alsa_sys;
+#[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
 #[path = "alsa_snd.rs"]
 mod snd;
 

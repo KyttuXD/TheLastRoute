@@ -2,7 +2,7 @@
 
 use crate::{error::Error, PlaySoundParams};
 
-use quad_alsa_sys as sys;
+use crate::alsa_sys as sys;
 
 use std::sync::mpsc;
 

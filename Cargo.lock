@@ -546,15 +546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quad-alsa-sys"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c66c2f04a6946293477973d85adc251d502da51c57b08cd9c997f0cfd8dcd4b5"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "quad-rand"
 version = "0.2.3"
 
@@ -564,7 +555,6 @@ version = "0.2.8"
 dependencies = [
  "audir-sles",
  "libc",
- "quad-alsa-sys",
  "winapi",
 ]
 
