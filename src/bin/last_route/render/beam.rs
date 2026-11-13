@@ -106,6 +106,43 @@ pub fn remote_lamp(apex: Vec3) -> super::shader::Lamp {
     }
 }
 
+/// The cosine at the rim of a runner's flashlight light and where it is full strength: the held beam's own cone
+/// (render/shader.rs smoothstep 0.80 to 0.93).
+const FLASHLIGHT_COS: (f32, f32) = (0.80, 0.93);
+/// Kathy's cone is full strength within this share of her half angle.
+const KATHY_FULL_SHARE: f32 = 0.6;
+
+/// The real light of a lit remote flashlight: the same cone, reach and strength as the beam the runner itself sees
+/// (data/render/ambient.json `flashlight`), so the walls and floor it points at are lit for everyone in the room.
+pub fn flashlight_spot(apex: Vec3, yaw: f32, pitch: f32) -> super::shader::Spot {
+    let (fx, fz) = (-yaw.sin(), -yaw.cos());
+    let dir = vec3(fx * pitch.cos(), pitch.sin(), fz * pitch.cos());
+    let f = super::ambient::table().flashlight();
+    super::shader::Spot {
+        pos: apex,
+        dir,
+        range: f.range,
+        rgb: vec3(FLASHLIGHT_RGB.0, FLASHLIGHT_RGB.1, FLASHLIGHT_RGB.2) * f.intensity,
+        cos_outer: FLASHLIGHT_COS.0,
+        cos_inner: FLASHLIGHT_COS.1,
+    }
+}
+
+/// The real light of Kathy's eye beam, from her eye along her facing: yellow on patrol, red on the chase, as strong as
+/// a flashlight, over the search range and inside the half angle the visible cone has.
+pub fn kathy_spot(root: Mat4, eye: Vec3, chasing: bool) -> super::shader::Spot {
+    let rgb = if chasing { KATHY_CHASE_RGB } else { KATHY_BEAM_RGB };
+    let f = super::ambient::table().flashlight();
+    super::shader::Spot {
+        pos: root.transform_point3(eye),
+        dir: root.transform_vector3(Vec3::NEG_Z).normalize_or_zero(),
+        range: BEAM_RANGE,
+        rgb: vec3(rgb.0, rgb.1, rgb.2) * f.intensity,
+        cos_outer: BEAM_HALF_ANGLE.cos(),
+        cos_inner: (BEAM_HALF_ANGLE * KATHY_FULL_SHARE).cos(),
+    }
+}
+
 /// Where a runner's lamp is when no held flashlight model gives its tip (no item in the hand, or the body hidden): from
 /// its feet at `feet`, forward along its yaw, at the height it holds the lamp (standing or crouched).
 pub fn flashlight_apex(feet: Vec3, yaw: f32, crouching: bool) -> Vec3 {
@@ -184,6 +221,34 @@ mod tests {
         assert!(centre_of_rim(&up).y > up.vertices[0].position.y + 1.0, "an upward aim lifts the beam");
         // crouched: the lamp is lower
         assert!(flashlight_apex(Vec3::ZERO, 0.0, true).y < lamp.y);
+    }
+
+    #[test]
+    fn a_remote_flashlight_is_a_real_spot_along_the_aim_with_the_held_beams_cone() {
+        let lamp = vec3(1.0, 1.25, 2.0);
+        let s = flashlight_spot(lamp, 0.0, 0.0);
+        assert_eq!(s.pos, lamp);
+        assert!(s.dir.dot(vec3(0.0, 0.0, -1.0)) > 0.999, "yaw 0 looks along -Z: {:?}", s.dir);
+        assert_eq!(s.range, super::super::ambient::table().flashlight().range);
+        assert!(s.cos_outer < s.cos_inner && s.cos_inner < 1.0, "full strength inside the rim");
+        assert!(s.rgb.length() > 0.5, "it is a light, not a glow: {:?}", s.rgb);
+        let up = flashlight_spot(lamp, 0.0, std::f32::consts::FRAC_PI_4);
+        assert!(up.dir.y > 0.7, "the aim tilts the light up");
+    }
+
+    #[test]
+    fn kathys_eyes_light_the_way_she_faces_yellow_and_then_red() {
+        // a body turned -90 degrees about Y faces +X, the eye at 1.5 m
+        let root = Mat4::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        let patrol = kathy_spot(root, vec3(0.0, 1.5, 0.0), false);
+        assert!((patrol.pos - vec3(0.0, 1.5, 0.0)).length() < 1e-4);
+        assert!(patrol.dir.dot(vec3(1.0, 0.0, 0.0)) > 0.999, "{:?}", patrol.dir);
+        assert_eq!(patrol.range, BEAM_RANGE);
+        assert!(patrol.rgb.x > patrol.rgb.y && patrol.rgb.y > 0.5 * patrol.rgb.x && patrol.rgb.z == 0.0, "yellow: {:?}", patrol.rgb);
+        let chase = kathy_spot(root, vec3(0.0, 1.5, 0.0), true);
+        assert!(chase.rgb.x > 5.0 * chase.rgb.y && chase.rgb.z < chase.rgb.y, "red: {:?}", chase.rgb);
+        assert!((patrol.cos_outer - BEAM_HALF_ANGLE.cos()).abs() < 1e-6, "the cone is as wide as the visible beam");
+        assert!(patrol.cos_inner > patrol.cos_outer);
     }
 
     #[test]

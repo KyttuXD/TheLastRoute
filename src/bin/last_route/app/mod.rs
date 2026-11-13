@@ -12,6 +12,8 @@
 //!   LR_SHOT_FLASH=0         with a run: start with the flashlight off (default on)
 //!   LR_SHOT_EMPTY=1         with a run: select the first empty hotbar slot (nothing in hand)
 //!   LR_SHOT_REMOTE=1        with a run: a second runner stands three metres ahead, as in an open room
+//!   LR_SHOT_REMOTE_LIGHT=1  with LR_SHOT_REMOTE=1: its flashlight is on; LR_SHOT_REMOTE_AWAY=1 turns it to face down the hall
+//!   LR_SHOT_KATHY=1         with a run: Kathy stands six metres ahead facing the runner, awake (LR_SHOT_KATHY=chase: red beam)
 //!   LR_SHOT_SPECTATE=1      with LR_SHOT_REMOTE=1: the view is a spectator's follow camera behind that runner
 //!   LR_SHOT_SEED=n          with LR_SHOT_RUN=1: the run seed (default 20261101)
 //!   LR_SHOT_LEVEL=n         with LR_SHOT_RUN=1 (Infinite route): start on level n (-3 has spirals in open bays)
@@ -1611,6 +1613,28 @@ pub async fn run(
             if screenshot.is_some() && env("LR_SHOT_REMOTE").is_some() {
                 remotes.push(shot_remote(g));
             }
+            // LR_SHOT_KATHY=1 (or `chase`): Kathy stands six metres ahead, awake and facing the runner, for a picture of her eye
+            // beam and the light it throws (yellow; red when `chase`)
+            if screenshot.is_some() && env("LR_SHOT_KATHY").is_some() && !g.hunters.iter().any(|h| h.def.id == "kathy") {
+                if let Some(def) = w.content.hunter("kathy") {
+                    let (fx, fz) = g.p.forward2();
+                    let want = (g.p.pos.0 + fx * 6.0, g.p.pos.1 + fz * 6.0);
+                    if let Some(at) = g.fac.nearest_open(want.0, want.1, HUNTER_RADIUS) {
+                        let mut b = crate::hunters::brain::Brain::new(def.clone(), at, "SHOT:KATHY", g.difficulty);
+                        b.set_level(g.runner_level());
+                        b.active = true;
+                        b.facing = (-fx, -fz);
+                        if env("LR_SHOT_KATHY").as_deref() == Some("chase") {
+                            b.state = crate::hunters::brain::State::Chase;
+                            b.last_known = Some(g.p.pos);
+                        } else {
+                            b.state = crate::hunters::brain::State::Idle;
+                            b.idle_timer = 1000.0;
+                        }
+                        g.hunters.push(b);
+                    }
+                }
+            }
             // LR_SHOT_SPECTATE=1 (with LR_SHOT_REMOTE=1): this runner watches that second runner, as a downed one would
             if screenshot.is_some() && env("LR_SHOT_SPECTATE").is_some() {
                 g.spectate = remotes.first().map(|r| crate::game::spectate::Spectate { target: Some(r.peer), follow: true });
@@ -3010,7 +3034,8 @@ fn shot_remote(g: &Game) -> RemoteView {
         name: "SHOT".to_string(),
         x: g.p.pos.0 + fwd.x * 3.0,
         y: g.p.pos.1 + fwd.z * 3.0,
-        yaw: g.p.yaw + std::f32::consts::PI,
+        // LR_SHOT_REMOTE_AWAY=1: it faces down the hall, the way this runner looks, so its light is in the picture
+        yaw: if env("LR_SHOT_REMOTE_AWAY").is_some() { g.p.yaw } else { g.p.yaw + std::f32::consts::PI },
         h: g.p.y(),
         level: g.depth,
         skin: world_sync::SKIN_DEFAULT.to_string(),
@@ -3024,7 +3049,8 @@ fn shot_remote(g: &Game) -> RemoteView {
         clip: None,
         hide: None,
         held: None,
-        flash_pitch: None,
+        // LR_SHOT_REMOTE_LIGHT=1: its flashlight is on
+        flash_pitch: env("LR_SHOT_REMOTE_LIGHT").map(|_| -0.05),
         look_pitch: 0.0,
         emote: None,
         hide_since: None,

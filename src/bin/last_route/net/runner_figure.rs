@@ -628,7 +628,10 @@ pub fn flashlight_lamps(g: &Game, remotes: &[RemoteView]) -> Vec<crate::render::
         .filter(|r| r.flash_pitch.is_some())
         .map(|r| {
             let pos = vec3(r.x, remote_draw_y(r, active_y), r.y);
-            crate::render::beam::remote_lamp(crate::render::beam::flashlight_apex(pos, r.yaw, r.crouching))
+            let apex = crate::render::beam::flashlight_apex(pos, r.yaw, r.crouching);
+            // the beam itself is a real spotlight too (render/shader.rs `Spot`), noted for the world pass
+            crate::render::shader::note_spot(crate::render::beam::flashlight_spot(apex, r.yaw, r.flash_pitch.unwrap_or(0.0)));
+            crate::render::beam::remote_lamp(apex)
         })
         .collect()
 }

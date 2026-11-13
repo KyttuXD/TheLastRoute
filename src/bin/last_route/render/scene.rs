@@ -413,6 +413,8 @@ pub fn draw_scene(
     let frustum = frustum_cull_enabled().then(|| Frustum::from_view_proj(cam.matrix()));
     VIEW_FRUSTUM.with(|f| f.set(frustum));
     let light = lighting(g);
+    // the spotlights of the other runners' flashlights and of Kathy's eyes (noted last frame), the nearest few
+    shader::begin_spots(light.eye, &[]);
     clear_background(Color::new(light.fog.x, light.fog.y, light.fog.z, 1.0));
     let world = super::pipeline::world_material(mat);
     // the grab's fill joins the room's lamps while the struggle holds the runner (grab_fill); the flashlight is unchanged
@@ -992,6 +994,8 @@ pub fn draw_scene(
                 let mut cone = super::beam::kathy_cone(root, super::beam::kathy_eye_units(model), matches!(h.state, State::Chase));
                 cone.texture = Some(a.white.clone());
                 beams.push(cone);
+                // and a real light along it, read by the next frame's world pass
+                shader::note_spot(super::beam::kathy_spot(root, super::beam::kathy_eye_units(model), matches!(h.state, State::Chase)));
             }
         }
         if held_slot.is_some() && !held_driven {

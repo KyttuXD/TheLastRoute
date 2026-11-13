@@ -69,6 +69,10 @@ uniform vec4 Lamps[16];
 uniform vec4 LampColors[16];
 uniform vec4 Reach;
 uniform float LampCount;
+uniform vec4 SpotPos[4];
+uniform vec4 SpotDir[4];
+uniform vec4 SpotCol[4];
+uniform float SpotCount;
 void main() {
     float mode = nrm.w;
     float ghost = mode > 3.5 ? 1.0 : 0.0;
@@ -106,6 +110,16 @@ void main() {
         float ndl = max(dot(n, -dir), 0.0);
         beam = vec3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * Reach.z;
     }
+    for (int j = 0; j < 4; j++) {
+        if (float(j) >= SpotCount) break;
+        vec3 sd = wpos - SpotPos[j].xyz;
+        float sdist = length(sd) + 0.001;
+        vec3 sdir = sd / sdist;
+        float scone = smoothstep(SpotDir[j].w, SpotCol[j].a, dot(sdir, SpotDir[j].xyz));
+        float satt = clamp(1.0 - sdist / SpotPos[j].w, 0.0, 1.0);
+        float sndl = max(dot(n, -sdir), 0.0);
+        beam += SpotCol[j].rgb * scone * satt * satt * (0.25 + 0.75 * sndl);
+    }
     float fa = clamp(fd / Reach.x, 0.0, 1.0);
     float fl = clamp(fd / FogFar, 0.0, 1.0);
     float fb = clamp(fd / Reach.w, 0.0, 1.0);
@@ -136,6 +150,10 @@ struct Uniforms {
     packed_float4 LampColors[16];
     packed_float4 Reach;
     float LampCount;
+    packed_float4 SpotPos[4];
+    packed_float4 SpotDir[4];
+    packed_float4 SpotCol[4];
+    float SpotCount;
 };
 struct Vertex {
     float3 position [[attribute(0)]];
@@ -202,6 +220,19 @@ fragment float4 fragmentShader(VOut in [[stage_in]], constant Uniforms& u [[buff
         float ndl = max(dot(n, -dir), 0.0);
         beam = float3(1.0, 0.95, 0.86) * cone * att * att * (0.25 + 0.75 * ndl) * reach.z;
     }
+    for (int j = 0; j < 4; j++) {
+        if (float(j) >= u.SpotCount) break;
+        float4 sp = float4(u.SpotPos[j]);
+        float4 sdr = float4(u.SpotDir[j]);
+        float4 scl = float4(u.SpotCol[j]);
+        float3 sd = in.wpos - sp.xyz;
+        float sdist = length(sd) + 0.001;
+        float3 sdir = sd / sdist;
+        float scone = smoothstep(sdr.w, scl.a, dot(sdir, sdr.xyz));
+        float satt = clamp(1.0 - sdist / sp.w, 0.0, 1.0);
+        float sndl = max(dot(n, -sdir), 0.0);
+        beam += scl.rgb * scone * satt * satt * (0.25 + 0.75 * sndl);
+    }
     float fa = clamp(fd / reach.x, 0.0, 1.0);
     float fl = clamp(fd / u.FogFar, 0.0, 1.0);
     float fb = clamp(fd / reach.w, 0.0, 1.0);
@@ -249,6 +280,12 @@ fn world_uniforms_for(lamps: usize) -> Vec<UniformDesc> {
         UniformDesc::new("Reach", UniformType::Float4),
         // how many leading lamp slots hold a lamp (the shader's loop stops there)
         UniformDesc::new("LampCount", UniformType::Float1),
+        // real spotlights from other runners' flashlights and Kathy's eyes (see `Spot`): position and reach, direction
+        // and the cosine of the cone's rim, colour (already times its strength) and the cosine where it is full strength
+        UniformDesc::new("SpotPos", UniformType::Float4).array(MAX_SPOTS),
+        UniformDesc::new("SpotDir", UniformType::Float4).array(MAX_SPOTS),
+        UniformDesc::new("SpotCol", UniformType::Float4).array(MAX_SPOTS),
+        UniformDesc::new("SpotCount", UniformType::Float1),
     ]
 }
 
@@ -550,6 +587,73 @@ pub fn apply(mat: &Material, l: &Lighting, lamps: &[Lamp]) {
     mat.set_uniform_array("Lamps", &near.pos[..slots]);
     mat.set_uniform_array("LampColors", &near.col[..slots]);
     mat.set_uniform("LampCount", near.count as f32);
+    SPOTS_NOW.with(|n| {
+        let n = n.borrow();
+        let mut pos = [Vec4::ZERO; MAX_SPOTS];
+        let mut dir = [Vec4::ZERO; MAX_SPOTS];
+        let mut col = [Vec4::ZERO; MAX_SPOTS];
+        for (i, sp) in n.iter().take(MAX_SPOTS).enumerate() {
+            pos[i] = sp.pos.extend(sp.range);
+            dir[i] = sp.dir.extend(sp.cos_outer);
+            col[i] = sp.rgb.extend(sp.cos_inner);
+        }
+        mat.set_uniform_array("SpotPos", &pos);
+        mat.set_uniform_array("SpotDir", &dir);
+        mat.set_uniform_array("SpotCol", &col);
+        mat.set_uniform("SpotCount", n.len().min(MAX_SPOTS) as f32);
+    });
+}
+
+/// How many spotlights the world shader takes.
+pub const MAX_SPOTS: usize = 4;
+
+/// A real cone of light, drawn by the world shader like the held flashlight's beam: the walls and floor it reaches are lit
+/// inside the cone, brightest at its axis. The other runners' flashlights and Kathy's eyes are spots. `rgb` already has
+/// the strength multiplied in; the light is full between the axis and `cos_inner` and gone at `cos_outer`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spot {
+    pub pos: Vec3,
+    /// Unit vector from the lamp along the beam.
+    pub dir: Vec3,
+    pub range: f32,
+    pub rgb: Vec3,
+    pub cos_outer: f32,
+    pub cos_inner: f32,
+}
+
+thread_local! {
+    /// The spots the world pass uploads this frame, and the ones the hunter pass noted for the next (the world draws
+    /// before the hunters, so a hunter's light is read one frame late, which is not visible).
+    static SPOTS_NOW: RefCell<Vec<Spot>> = const { RefCell::new(Vec::new()) };
+    static SPOTS_NEXT: RefCell<Vec<Spot>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Notes a spot found while drawing (a hunter's eye beam) for the next frame's world pass.
+pub fn note_spot(s: Spot) {
+    SPOTS_NEXT.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.len() < 16 {
+            n.push(s);
+        }
+    });
+}
+
+/// Starts a frame's spots: the ones noted last frame plus `now` (the other runners' flashlights), the `MAX_SPOTS` nearest
+/// the eye whose reach covers it kept.
+pub fn begin_spots(eye: Vec3, now: &[Spot]) {
+    let mut all: Vec<Spot> = SPOTS_NEXT.with(|n| std::mem::take(&mut *n.borrow_mut()));
+    all.extend_from_slice(now);
+    SPOTS_NOW.with(|n| *n.borrow_mut() = nearest_spots(eye, all));
+}
+
+/// The `MAX_SPOTS` spots nearest `eye` (by the distance to the lamp less its reach, so a long beam far away still counts).
+pub fn nearest_spots(eye: Vec3, mut spots: Vec<Spot>) -> Vec<Spot> {
+    spots.retain(|s| s.range > 0.0);
+    if spots.len() > MAX_SPOTS {
+        spots.sort_by(|a, b| (a.pos.distance(eye) - a.range).total_cmp(&(b.pos.distance(eye) - b.range)));
+        spots.truncate(MAX_SPOTS);
+    }
+    spots
 }
 
 #[cfg(test)]
@@ -730,12 +834,13 @@ mod tests {
             want.push((u.name.clone(), at));
             at += u.uniform_type.size() * u.array_count;
         }
-        assert_eq!(at, 744, "total uniform bytes");
+        assert_eq!(at, 940, "total uniform bytes: 744 and the 196 of the spotlights (3 arrays of 4 float4s and SpotCount)");
         let off = |n: &str| want.iter().find(|(k, _)| k == n).map(|(_, o)| *o);
         assert_eq!(
             [off("CamPos"), off("LightPos"), off("LightDir"), off("LightOn"), off("AmbientColor"), off("FogColor"), off("FogFar"), off("Lamps"), off("LampColors"), off("Reach"), off("LampCount")],
             [144, 156, 168, 180, 184, 196, 208, 212, 468, 724, 740].map(Some)
         );
+        assert_eq!([off("SpotPos"), off("SpotDir"), off("SpotCol"), off("SpotCount")], [744, 808, 872, 936].map(Some));
         // the MSL struct, walked field by field, must land every field on the same offset with no padding
         let body = MSL.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
         let mut got: Vec<(String, usize)> = Vec::new();
@@ -752,7 +857,7 @@ mod tests {
             at += msl_size(ty) * count;
         }
         assert_eq!(got, want);
-        assert_eq!(at, 744);
+        assert_eq!(at, 940);
         // the arrays of 16 in the MSL are MAX_LAMPS
         assert_eq!(MAX_LAMPS, 16);
     }
@@ -884,7 +989,8 @@ mod tests {
             }
             // 212 bytes ahead of the arrays (144 of built-ins + 68 of single uniforms) + Lamps and LampColors (2 arrays of
             // n float4s = 32 * n) + the Reach float4 (16) that follows them: 228 + 32 * n (740 for the 16-lamp material)
-            assert_eq!(at, 212 + 32 * n + 16 + 4, "{n}: total uniform bytes");
+            // + the spotlights after LampCount: 3 arrays of MAX_SPOTS float4s (192) and SpotCount (4)
+            assert_eq!(at, 212 + 32 * n + 16 + 4 + 192 + 4, "{n}: total uniform bytes");
             let body = msl.split("struct Uniforms {").nth(1).and_then(|b| b.split("};").next()).expect("Uniforms struct");
             let mut got: Vec<(String, usize)> = Vec::new();
             let mut off = 0;
@@ -900,6 +1006,31 @@ mod tests {
             assert_eq!(got, want, "{n}: field offsets");
             assert_eq!(off, at, "{n}: struct size");
         }
+    }
+
+    #[test]
+    fn both_shaders_light_from_the_spot_arrays_with_the_same_cone() {
+        // other runners' flashlights and Kathy's eyes are real cones in the world shader, not only drawn ones
+        for (stage, src) in [("glsl", FRAGMENT), ("msl", MSL)] {
+            assert!(src.contains("SpotCount"), "{stage} reads the spot count");
+            assert!(src.contains("smoothstep("), "{stage} shapes the cone");
+            assert!(src.contains("satt * satt"), "{stage} falls off with distance like the held beam");
+        }
+        assert!(FRAGMENT.contains("j < 4") && MSL.contains("j < 4"), "both loops stop at MAX_SPOTS");
+        assert_eq!(MAX_SPOTS, 4);
+    }
+
+    #[test]
+    fn only_the_nearest_spots_are_kept_and_a_spot_with_no_reach_is_dropped() {
+        let spot = |x: f32, range: f32| Spot { pos: vec3(x, 0.0, 0.0), dir: Vec3::X, range, rgb: Vec3::ONE, cos_outer: 0.8, cos_inner: 0.93 };
+        let many: Vec<Spot> = (0..7).map(|i| spot(i as f32 * 10.0, 10.0)).collect();
+        let kept = nearest_spots(Vec3::ZERO, many);
+        assert_eq!(kept.len(), MAX_SPOTS);
+        assert_eq!(kept.iter().map(|s| s.pos.x).collect::<Vec<_>>(), [0.0, 10.0, 20.0, 30.0], "the nearest four");
+        assert!(nearest_spots(Vec3::ZERO, vec![spot(1.0, 0.0)]).is_empty(), "no reach, no light");
+        // a long beam from far away counts for more than a short one nearer
+        let kept = nearest_spots(Vec3::ZERO, vec![spot(30.0, 40.0), spot(5.0, 1.0), spot(6.0, 1.0), spot(7.0, 1.0), spot(8.0, 1.0)]);
+        assert!(kept.iter().any(|s| s.pos.x == 30.0), "a 40 m beam from 30 m away reaches the eye");
     }
 
     #[test]
