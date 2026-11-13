@@ -7,6 +7,9 @@
 //! sleep.sleeping(), sleep_cfg())` then [`Sleep::step`] with the nearest hunter distance, and applies the returned
 //! [`Jolt`] (exposure and noise) to the meters and freezes input for `jolt_seconds`. Only the side that owns the
 //! player runs this; hunters are never changed here.
+//!
+//! Wired by game/bed.rs (docs/SLEEP.md): lying on a bed and sleeping in it. Passing out and the tired slow-down are
+//! not wired yet.
 
 use serde_json::Value;
 use std::sync::OnceLock;

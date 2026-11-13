@@ -89,6 +89,8 @@ pub enum Focus {
     Door(usize),
     /// A sewer valve wheel, by its index in `Facility::props` (game/pipes.rs).
     Valve(usize),
+    /// A bed to lie down on, by its index in `Facility::props` (game/bed.rs).
+    Bed(usize),
 }
 
 /// Who does an interact effect: the player, or a bot by its `Npc::id` (game/npc.rs). The effects are shared.
@@ -244,6 +246,18 @@ impl Game {
                 consider((x + p.offset.0, z + p.offset.1), p.mount_y.map_or(1.0, |y| y as f32), INTERACT_REACH, Focus::Valve(i));
             }
         }
+        // beds (game/bed.rs; Godot `interaction_for` "lay"): the mattress, from the seating reach of data/seating.json
+        let bed_reach = super::seating::seating().default_reach;
+        for (i, p) in self.fac.props.iter().enumerate() {
+            let (x, z) = p.cell.center();
+            let at = (x + p.offset.0, z + p.offset.1);
+            if pdist(at, self.p.pos) > bed_reach {
+                continue;
+            }
+            if let Some((_, k)) = super::bed::seat_of(&p.ptype) {
+                consider(at, k.height, bed_reach - 0.3, Focus::Bed(i));
+            }
+        }
         best.map(|b| b.1)
     }
 
@@ -270,6 +284,10 @@ impl Game {
     }
 
     pub fn focus_prompt(&self) -> Option<String> {
+        // lying on a bed or asleep in it: the keys that sleep, wake and get up (game/bed.rs)
+        if let Some(p) = self.rest_prompt() {
+            return Some(p);
+        }
         if self.shop_open() {
             return Some(
                 "ZELLIA'S STORE // [1] COOL -2 // [2] WARM -2 // [3] REPAIR -3 // [4] PESTICIDE -4"
@@ -287,6 +305,7 @@ impl Game {
         }
         let f = self.focus?;
         Some(match f {
+            Focus::Bed(i) => super::bed::lie_prompt(&self.fac.props[i].ptype),
             Focus::Relay(_) => "[E] RECOVER RELAY".into(),
             Focus::Battery(_) => "[E] TAKE BATTERY".into(),
             Focus::Pickup(i) => format!("[E] COLLECT {}", self.pickups[i].item.label()),
@@ -354,6 +373,7 @@ impl Game {
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Valve(i) => self.fac.props[i].cell.center(),
+            Focus::Bed(i) => self.bed_centre(i),
             Focus::Shop(i) => self.hunters[i].pos,
             Focus::Door(i) => self.fac.doors().find(|d| d.0 == i).map_or(self.p.pos, |d| d.1),
         }
@@ -438,6 +458,10 @@ impl Game {
             Focus::Door(i) => self.use_door(i),
             // the turn is a hold (`update_valve_hold`), not a press
             Focus::Valve(_) => {}
+            // the lying prompt then names the keys (`rest_prompt`)
+            Focus::Bed(i) => {
+                self.lie_down(i);
+            }
         }
     }
 

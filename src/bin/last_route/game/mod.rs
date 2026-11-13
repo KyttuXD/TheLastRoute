@@ -44,6 +44,7 @@ mod items;
 pub mod meters;
 pub mod seating;
 pub mod sleep;
+pub mod bed;
 pub mod anti_idle;
 pub mod music_box;
 pub mod specialty;
@@ -268,6 +269,8 @@ pub struct Game {
     hide_check: Option<(usize, usize, f32)>,
     /// The look the runner had on entering a hiding spot and the glide's progress 0..1: the view eases out of the spot.
     hide_ease: Option<(f32, f32, f32)>,
+    /// The runner's rest on a bed: lying down and sleeping (game/bed.rs).
+    pub rest: bed::Rest,
     /// Host: the world events the game raised this frame for the guests (game/hunting.rs), taken by the app.
     pub hunter_out: crate::net::hunter_events::Outbox,
 
@@ -436,6 +439,7 @@ impl Game {
             locker_cooldown: vec![],
             hide_check: None,
             hide_ease: None,
+            rest: Default::default(),
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -594,6 +598,7 @@ impl Game {
             locker_cooldown: vec![],
             hide_check: None,
             hide_ease: None,
+            rest: Default::default(),
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -883,7 +888,8 @@ impl Game {
     }
 
     pub fn eye(&self) -> Vec3 {
-        self.p.eye()
+        // a runner lying on a bed sees from the pillow (game/bed.rs)
+        self.rest_eye().unwrap_or_else(|| self.p.eye())
     }
 
     pub fn camera_basis(&self) -> (Vec3, Vec3, Vec3) {
@@ -922,6 +928,7 @@ impl Game {
         if !self.ladder_look(c) {
             self.p.look(c.look);
         }
+        self.rest_clamp_look();
     }
 
     pub fn forward2(&self) -> (f32, f32) {
@@ -1145,6 +1152,8 @@ impl Game {
             .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
             .collect();
         self.fac.update_doors(&openers, &bodies, dt);
+        // a grab or a down takes the runner off its bed, and the drowsiness steps (game/bed.rs)
+        self.rest_tick(dt);
         // the mouse stays free through a hunter's grab (Godot adds only grab pitch and roll on top of the look)
         self.apply_look(dt, c);
         if self.escape.is_some() {
@@ -1166,6 +1175,9 @@ impl Game {
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
             self.update_water_sink(dt, false);
+        } else if self.rest.lying() {
+            // lying on a bed or asleep in it: no move, no tools; the hunters carry on below (game/bed.rs)
+            self.update_rest(dt, c);
         } else {
             self.hide_check = None;
             let in_safe = self.in_safe_zone();

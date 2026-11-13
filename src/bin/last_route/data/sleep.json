@@ -1,6 +1,6 @@
 {
   "schema": "lr.sleep/1",
-  "_note": "Drowsiness 0..100. It rises while awake and resting-still, falls fast while sleeping. A hunter inside disturb_radius jolts a sleeper awake and costs jolt_penalty drowsiness (the sleeper wakes shaken). Falling asleep by drowsiness alone happens at pass_out.",
+  "_note": "Drowsiness 0..100. It rises while awake and resting-still, falls fast while sleeping. A hunter inside disturb_radius (Godot SLEEP_WAKE_DISTANCE 5) jolts a sleeper awake and costs jolt_penalty drowsiness (the sleeper wakes shaken). Falling asleep by drowsiness alone happens at pass_out.",
   "max": 100.0,
   "awake_rise_per_s": 0.35,
   "moving_rise_scale": 1.0,
@@ -9,7 +9,7 @@
   "pass_out": 100.0,
   "may_sleep_below": 100.0,
   "wake_at": 5.0,
-  "disturb_radius": 14.0,
+  "disturb_radius": 5.0,
   "disturb_radius_sprinting": 22.0,
   "disturb_chase_always": true,
   "jolt_seconds": 1.2,
@@ -17,5 +17,34 @@
   "jolt_noise": 20.0,
   "jolt_penalty": 5.0,
   "slow_below": 70.0,
-  "slow_scale_at_max": 0.8
+  "slow_scale_at_max": 0.8,
+  "bed": {
+    "_note": "Lying on a bed and sleeping in it (game/bed.rs, docs/SLEEP.md; Godot docs/REST_AND_SLEEP.md). prop_rules: the first rule that matches a prop type (lower case) names its seat kind of data/seating.json (Godot: types ending in Bed, plus bunks). The eye lies eye_above_mattress over the seat height, head_inset metres in from the pillow end, and eases there in ease_seconds. The look is held around the bed's length: look_yaw_limit_deg each side, look_pitch_down_deg below and look_pitch_up_deg above level; look_pitch is the pitch on lying down (radians). Asleep: stamina_per_s more stamina a second, the screen darkens by dark_in_per_s up to dark_alpha, a hunter inside stir_radius gives the stir cue every stir_cooldown_s. In text, {fatigue} is the drowsiness in percent.",
+    "prop_rules": [
+      { "contains": "bunk", "kind": "bunk" },
+      { "ends_with": "bed", "kind": "bed" },
+      { "ends_with": "bedmansion", "kind": "bed" }
+    ],
+    "eye_above_mattress": 0.3,
+    "head_inset": 0.5,
+    "ease_seconds": 0.45,
+    "look_pitch": 0.12,
+    "look_yaw_limit_deg": 55.0,
+    "look_pitch_down_deg": 20.0,
+    "look_pitch_up_deg": 60.0,
+    "stamina_per_s": 9.0,
+    "dark_alpha": 0.94,
+    "dark_in_per_s": 1.5,
+    "stir_radius": 12.0,
+    "stir_cooldown_s": 3.0,
+    "text": {
+      "lying": "LYING DOWN // FATIGUE {fatigue}% // [SPACE] SLEEP // [E] GET UP",
+      "asleep": "ASLEEP // [SPACE] WAKE // [E] GET UP",
+      "fell_asleep": "ASLEEP",
+      "awake": "AWAKE",
+      "jolt": "WOKE WITH A JOLT",
+      "rested": "RESTED",
+      "not_tired": "NOT TIRED"
+    }
+  }
 }
