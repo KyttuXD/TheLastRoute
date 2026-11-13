@@ -177,6 +177,9 @@ pub struct Tuning {
     pub revive_range_factor: f32,
     /// ... and stands within this fraction of the revive reach (data `revive.stand_fraction`).
     pub revive_stand: f32,
+    /// Metres from a downed teammate within which a hunter (or a remembered sighting) keeps a bot from walking to it
+    /// (data `revive.safe_range`).
+    pub revive_safe_range: f32,
     /// The most bots a room holds in all, for owner summons (data `summon.room_cap`).
     pub summon_room_cap: usize,
     /// What a bot does in its spare time (data `life`).
@@ -370,11 +373,20 @@ pub struct FleeTuning {
     pub max_cells: usize,
     /// Seconds a bot stays alarmed after it last saw or heard a hunter (it keeps running or hiding as the view turns).
     pub alert: f32,
+    /// Metres a flight cell out of every hunter's sight is worth over one in sight (data `flee.cover_bonus`; 0 turns
+    /// the cover rule off and the farthest cell wins, as before).
+    pub cover_bonus: f32,
+    /// Most sight lines one flight plan tests for cover (data `flee.cover_checks`): the bound of the rule's cost.
+    pub cover_checks: usize,
+    /// Seconds a bot remembers where it last saw a hunter (data `flee.memory`).
+    pub memory: f32,
+    /// Metres round that remembered point in which no errand, goal or revive is taken (data `flee.memory_radius`).
+    pub memory_radius: f32,
 }
 
 impl Default for FleeTuning {
     fn default() -> FleeTuning {
-        FleeTuning { sight_range: 18.0, sight_half_angle: 70.0, sense_range: 4.0, hear_range: 20.0, clearance: 3.0, replan: 0.4, depth: 18, max_cells: 600, alert: 3.0 }
+        FleeTuning { sight_range: 18.0, sight_half_angle: 70.0, sense_range: 4.0, hear_range: 20.0, clearance: 3.0, replan: 0.4, depth: 18, max_cells: 600, alert: 3.0, cover_bonus: 6.0, cover_checks: 96, memory: 12.0, memory_radius: 6.0 }
     }
 }
 
@@ -392,6 +404,10 @@ impl FleeTuning {
             depth: v["depth"].as_u64().map_or(d.depth, |n| n.clamp(1, 200) as usize),
             max_cells: v["max_cells"].as_u64().map_or(d.max_cells, |n| n.clamp(1, 20000) as usize),
             alert: num("alert", d.alert),
+            cover_bonus: num("cover_bonus", d.cover_bonus),
+            cover_checks: v["cover_checks"].as_u64().map_or(d.cover_checks, |n| n.min(4096) as usize),
+            memory: num("memory", d.memory),
+            memory_radius: num("memory_radius", d.memory_radius),
         }
     }
 }
@@ -404,11 +420,15 @@ pub struct FleeState {
     pub since: f32,
     /// Seconds of alarm left after the bot last saw or heard a hunter.
     pub alert: f32,
+    /// Where the bot last saw a hunter, on its own level (kept while `memory` runs).
+    pub last_seen: Option<(f32, f32)>,
+    /// Seconds the bot still remembers `last_seen` (data `flee.memory`).
+    pub memory: f32,
 }
 
 impl Default for FleeState {
     fn default() -> FleeState {
-        FleeState { goal: None, since: f32::MAX, alert: 0.0 }
+        FleeState { goal: None, since: f32::MAX, alert: 0.0, last_seen: None, memory: 0.0 }
     }
 }
 
@@ -417,6 +437,17 @@ impl FleeState {
     fn stop(&mut self) {
         self.goal = None;
         self.since = f32::MAX;
+    }
+
+    /// Drops the remembered sighting (its point belongs to one floor frame and one level).
+    fn forget_sighting(&mut self) {
+        self.last_seen = None;
+        self.memory = 0.0;
+    }
+
+    /// True while the bot remembers a hunter it saw nearer `p` than `r` metres.
+    fn remembers(&self, p: (f32, f32), r: f32) -> bool {
+        self.memory > 0.0 && self.last_seen.map_or(false, |q| pdist(p, q) < r)
     }
 }
 
@@ -543,6 +574,7 @@ impl Tuning {
             coarse: CoarseTuning::parse(&v["coarse"]),
             revive_range_factor: num(&v["revive"], "range_factor").unwrap_or(2.0).max(0.0),
             revive_stand: num(&v["revive"], "stand_fraction").unwrap_or(0.6).clamp(0.0, 1.0),
+            revive_safe_range: num(&v["revive"], "safe_range").unwrap_or(6.0).max(0.0),
             summon_room_cap: v["summon"]["room_cap"].as_u64().map_or(24, |x| x as usize),
             life: LifeTuning::parse(&v["life"]),
             lively: Lively::parse(&v["lively"]),
@@ -822,6 +854,11 @@ pub struct GoalState {
     pub stuck: StuckState,
     /// Seconds spent farther than `goals.leash.max_distance` from the runner.
     pub away: f32,
+    /// The stuck watch of a plain walk (the follow walk, the walk to a downed teammate): see `walk_jam`.
+    pub jam: StuckState,
+    /// Seconds before a blocked step may plan a route again (`walk_toward`): a body wedged on a corner would otherwise
+    /// search a route on every frame.
+    pub block_cool: f32,
 }
 
 /// One player bot (NPC teammate). Fields for the deferred features (catch, revive, chat, admin commands) are
@@ -938,10 +975,13 @@ impl Npc {
         self.goal.done.clear();
         self.goal.banned.clear();
         self.goal.stuck = StuckState::default();
+        self.goal.jam = StuckState::default();
+        self.goal.block_cool = 0.0;
         self.goal.cool = 0.0;
         self.goal.away = 0.0;
         self.goal.cross = CrossCache::default();
         self.flee.stop();
+        self.flee.forget_sighting();
         self.claim = None;
         self.life = LifeState::default();
     }
@@ -1270,6 +1310,7 @@ fn door_near(fac: &Facility, p: (f32, f32), r: f32) -> Option<Cell> {
 fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) {
     let here = n.at;
     n.path_age += dt;
+    n.goal.block_cool = (n.goal.block_cool - dt).max(0.0);
     // a flight keeps the route `flee_route` chose: a replan here would run the shortest way, past the hunter
     let repath = repath_for(n);
     if n.path_age >= repath && !(n.flee.goal.is_some() && !n.path.is_empty()) {
@@ -1364,7 +1405,14 @@ fn walk_toward(n: &mut Npc, fac: &Facility, goal: (f32, f32), running: bool, t: 
                         return;
                     }
                 }
-                plan(n, fac, goal);
+                // a step blocked again right after a fresh route would get the same route again: the next plan waits one
+                // repath interval, so a wedged body does not search a route on every frame (`walk_jam` gets it free)
+                if n.goal.block_cool <= 0.0 {
+                    n.goal.block_cool = repath;
+                    if n.path_age > 0.0 {
+                        plan(n, fac, goal);
+                    }
+                }
                 n.walking = false;
                 return;
             }
@@ -1393,11 +1441,91 @@ fn follow(n: &mut Npc, fac: &Facility, leader: (f32, f32), t: &Tuning, dt: f32, 
         }
         let ring = follow_ring(n, t);
         let goal = slot_point(leader, n.slot, ring);
+        if walk_jam(n, fac, t, dt, presses) {
+            return;
+        }
         walk_toward(n, fac, goal, false, t, dt, presses);
     } else {
         n.life.ring_fresh = true;
         n.walking = false;
+        n.goal.jam.still = 0.0;
+        n.goal.jam.aside = 0.0;
     }
+}
+
+/// The stuck watch of a plain walk (the follow walk and the walk to a downed teammate; the goal walk has its own,
+/// `stuck_watch`). It reads the same data, `goals.stuck`: a bot that has a route, is not waiting at a door and has not
+/// moved `progress` metres for `seconds` takes the next rung each window: a fresh route, a press on a shut door within
+/// `door_reach`, then a step aside for `aside_seconds` in a direction seeded by its name and jam count (the first of
+/// eight its body fits along), and the ladder starts again. A bot with no route at all only waits. True when the bot
+/// used this frame to step aside. Call it on the frames the bot is about to walk, before `walk_toward`.
+fn walk_jam(n: &mut Npc, fac: &Facility, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
+    let s = &t.goals.stuck;
+    let mut st = std::mem::take(&mut n.goal.jam);
+    let mut used = false;
+    if st.aside > 0.0 {
+        used = true;
+        let dir = st.aside_dir;
+        st.aside -= dt;
+        let to = (n.at.0 + dir.0 * PLAYER_WALK_SPEED * dt, n.at.1 + dir.1 * PLAYER_WALK_SPEED * dt);
+        if matches!(sweep(fac, n.at, to), Sweep::Clear) {
+            n.at = to;
+            n.heading = dir;
+            turn(n, heading_yaw(dir), dt);
+            n.stride += PLAYER_WALK_SPEED * dt;
+            n.walking = true;
+        } else {
+            st.aside = 0.0;
+        }
+        if st.aside <= 0.0 {
+            st.aside = 0.0;
+            st.anchor = n.at;
+            st.still = 0.0;
+            n.path.clear();
+            n.hop = None;
+            n.path_age = REPATH;
+        }
+    } else if n.path.is_empty() || n.door.is_some() || pdist(n.at, st.anchor) >= s.progress {
+        st = StuckState { anchor: n.at, count: st.count, ..StuckState::default() };
+    } else {
+        st.still += dt;
+        if st.still >= s.seconds {
+            st.still = 0.0;
+            st.stage += 1;
+            st.count += 1;
+            match st.stage {
+                1 => {
+                    n.path.clear();
+                    n.hop = None;
+                    n.path_age = REPATH;
+                }
+                2 => {
+                    if let Some(d) = door_near(fac, n.at, s.door_reach) {
+                        if !fac.door_is_open(d) && t.does("door") {
+                            presses.push(d);
+                        }
+                    }
+                }
+                _ => {
+                    st.stage = 0;
+                    let mut rng = Rng::new(&format!("{}:jam:{}", n.name, st.count));
+                    let a0 = rng.next_f32() * 2.0 * PI;
+                    for k in 0..8 {
+                        let a = a0 + k as f32 * PI / 4.0;
+                        let dir = (a.sin(), a.cos());
+                        let to = (n.at.0 + dir.0 * 0.5, n.at.1 + dir.1 * 0.5);
+                        if matches!(sweep(fac, n.at, to), Sweep::Clear) {
+                            st.aside = s.aside_seconds;
+                            st.aside_dir = dir;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    n.goal.jam = st;
+    used
 }
 
 /// Metres from the runner past which a bot walks back: the follow radius widened by its slot's ring.
@@ -2478,6 +2606,42 @@ fn sees(n: &Npc, fac: &Facility, seen: &[Seen], f: &FleeTuning) -> bool {
     })
 }
 
+/// The nearest hunter in the bot's view, by the rule of `sees`: where it stands.
+fn seen_hunter(n: &Npc, fac: &Facility, seen: &[Seen], f: &FleeTuning) -> Option<(f32, f32)> {
+    let cos_half = f.sight_half_angle.to_radians().cos();
+    let mut best: Option<((f32, f32), f32)> = None;
+    for &(c, _) in seen {
+        let d = pdist(n.at, c);
+        if d > f.sight_range || best.map_or(false, |(_, bd)| d >= bd) {
+            continue;
+        }
+        let in_view = d <= f.sense_range
+            || n.heading == (0.0, 0.0)
+            || ((c.0 - n.at.0) * n.heading.0 + (c.1 - n.at.1) * n.heading.1) / d >= cos_half;
+        if in_view && fac.has_line_of_sight(n.at, c) {
+            best = Some((c, d));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Keeps the bot's memory of the hunter it last saw (data `flee.memory`): a sighting is remembered where it was, and the
+/// memory runs down while no hunter is in view.
+fn note_sighting(n: &mut Npc, sight: Option<(f32, f32)>, f: &FleeTuning, dt: f32) {
+    match sight {
+        Some(p) => {
+            n.flee.last_seen = Some(p);
+            n.flee.memory = f.memory;
+        }
+        None => n.flee.memory = (n.flee.memory - dt).max(0.0),
+    }
+}
+
+/// True when a hunter on the bot's level stands nearer `p` than `r` metres, or the bot remembers seeing one there.
+fn hunter_about(n: &Npc, seen: &[Seen], p: (f32, f32), r: f32) -> bool {
+    seen.iter().any(|&(c, _)| pdist(p, c) < r) || n.flee.remembers(p, r)
+}
+
 /// True when the bot heard a noise event and a hunter is within `hear_range` of it.
 fn hears_hunter(n: &Npc, seen: &[Seen], f: &FleeTuning) -> bool {
     n.heard.is_some() && seen.iter().any(|&(c, _)| pdist(n.at, c) < f.hear_range)
@@ -2485,8 +2649,10 @@ fn hears_hunter(n: &Npc, seen: &[Seen], f: &FleeTuning) -> bool {
 
 /// The flight route (cells, the bot's own first): a breadth-first walk over the open dry cells of the bot's level, never
 /// within `clearance` of a hunter (a bot already closer never steps nearer), at most `depth` cells long, ending on the
-/// cell farthest from the hunters. A flight never leaves the level: no link is taken. None when no cell is farther
-/// from the hunters than the bot stands.
+/// cell farthest from the hunters, where a cell no hunter has a sight line to counts `cover_bonus` metres farther (a bot
+/// ducks round a corner rather than run down the hunter's corridor; at most `cover_checks` cells are tested, and only
+/// those the bonus could make the best). A flight never leaves the level: no link is taken. None when no cell is
+/// farther from the hunters than the bot stands.
 fn flee_route(n: &Npc, fac: &Facility, threats: &[(f32, f32)], f: &FleeTuning) -> Option<Vec<(i32, i32)>> {
     let start = cell_at(n.at);
     let far = |c: Cell| threats.iter().map(|&p| pdist(c.center(), p)).fold(f32::MAX, f32::min);
@@ -2497,14 +2663,25 @@ fn flee_route(n: &Npc, fac: &Facility, threats: &[(f32, f32)], f: &FleeTuning) -
     let mut depth_of: std::collections::HashMap<Cell, usize> = std::collections::HashMap::from([(start, 0)]);
     let mut queue = std::collections::VecDeque::from([start]);
     let mut best: Option<(Cell, f32)> = None;
+    let mut cover_checks = 0usize;
     while let Some(c) = queue.pop_front() {
         if depth_of.len() > f.max_cells {
             break;
         }
         let depth = depth_of[&c];
-        let score = far(c) - 0.05 * depth as f32;
-        if c != start && far(c) > d0 && best.map_or(true, |(_, s)| score > s) {
-            best = Some((c, score));
+        let away = far(c);
+        if c != start && away > d0 {
+            let mut score = away - 0.05 * depth as f32;
+            if f.cover_bonus > 0.0 && cover_checks < f.cover_checks && best.map_or(true, |(_, s)| score + f.cover_bonus > s) {
+                cover_checks += 1;
+                let p = c.center();
+                if !threats.iter().any(|&h| pdist(p, h) <= f.sight_range && fac.has_line_of_sight(h, p)) {
+                    score += f.cover_bonus;
+                }
+            }
+            if best.map_or(true, |(_, s)| score > s) {
+                best = Some((c, score));
+            }
         }
         if depth >= f.depth {
             continue;
@@ -2704,6 +2881,7 @@ fn set_level(n: &mut Npc, level: i32) {
         n.visited.clear();
         n.errand = None;
         n.dwell = 0.0;
+        n.flee.forget_sighting();
     }
 }
 
@@ -3073,11 +3251,13 @@ fn errand_spot(fac: &Facility, e: Errand) -> Option<(f32, f32)> {
 }
 
 /// Whether a spot is safe for an errand: no chasing hunter within `errand_safe_range`, no hunter searching within
-/// `searched_avoid`, and no point the bot itself saw searched within `searched_avoid`.
+/// `searched_avoid`, no point the bot itself saw searched within `searched_avoid`, and no hunter the bot remembers
+/// seeing within `flee.memory_radius` (so it does not walk straight back to the hunter it just ran from).
 fn spot_safe(n: &Npc, sc: &Scene, spot: (f32, f32), t: &Tuning) -> bool {
     !chaser_within(sc.seen, spot, t.errand_safe_range)
         && !near_any(sc.searching, spot, t.searched_avoid)
         && !near_any(&n.searched, spot, t.searched_avoid)
+        && !n.flee.remembers(spot, t.flee.memory_radius)
 }
 
 /// The nearest spot of the kind (a relay, or a locker not burnt out) the bot has not been to, within `leash` of the
@@ -3439,19 +3619,27 @@ fn stuck_watch(n: &mut Npc, sc: &Scene, spot: Spot, t: &Tuning, dt: f32, presses
 }
 
 /// The "revive" intent: a bot walks to the nearest downed teammate on its floor inside `revive_range_factor` times the follow
-/// radius, and stands beside it (the hold itself is `Game::tick_revives`). False when there is none.
+/// radius, and stands beside it (the hold itself is `Game::tick_revives`). A body with a hunter within
+/// `revive_safe_range` of it, or where the bot remembers seeing one, is left until the hunter has gone: walking in
+/// would only put a second runner down. False when there is none to walk to.
 fn revive_walk(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -> bool {
     let range = t.follow_radius * t.revive_range_factor;
     let target = sc
         .downed
         .iter()
         .filter(|d| d.0 == n.level && d.2 != Some(n.id) && pdist(n.at, d.1) <= range)
+        .filter(|d| !hunter_about(&*n, sc.seen, d.1, t.revive_safe_range))
         .min_by(|a, b| pdist(n.at, a.1).total_cmp(&pdist(n.at, b.1)));
     let Some(&(_, spot, _)) = target else { return false };
     if pdist(n.at, spot) <= super::revive::rules().reach * t.revive_stand {
         n.walking = false;
         n.path.clear();
+        n.goal.jam.still = 0.0;
+        n.goal.jam.aside = 0.0;
     } else {
+        if walk_jam(n, sc.fac, t, dt, presses) {
+            return true;
+        }
         walk_toward(n, sc.fac, spot, false, t, dt, presses);
     }
     true
@@ -3908,7 +4096,9 @@ impl Game {
             s.sink.clear();
             let door_presses: &mut Vec<Cell> = if own { &mut s.presses } else { &mut s.sink };
             note_searched(n, searching, t);
-            n.flee.alert = if sees(n, fac, seen, &t.flee) || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
+            let sight = seen_hunter(n, fac, seen, &t.flee);
+            n.flee.alert = if sight.is_some() || hears_hunter(n, seen, &t.flee) { t.flee.alert } else { (n.flee.alert - dt).max(0.0) };
+            note_sighting(n, sight, &t.flee, dt);
             if n.hidden.is_some() {
                 n.life.interrupt(t.life.pause.0);
                 n.life.head_yaw = 0.0;
@@ -6881,6 +7071,10 @@ mod coarse_tests {
 #[cfg(test)]
 #[path = "rail_npc_tests.rs"]
 mod rail_npc_tests;
+
+#[cfg(test)]
+#[path = "npc_wits_tests.rs"]
+mod npc_wits_tests;
 
 #[cfg(test)]
 mod life_tests {

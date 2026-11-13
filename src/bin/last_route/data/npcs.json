@@ -14,7 +14,8 @@
   "revive": {
     "range_factor": 2.0,
     "stand_fraction": 0.6,
-    "_source": "Rust-only figures: a bot walks to a downed teammate (the runner or a bot) on its floor within range_factor times the follow radius, and stands within stand_fraction of the revive reach (data/revive.json) to hold the revive"
+    "safe_range": 6.0,
+    "_source": "Rust-only figures: a bot walks to a downed teammate (the runner or a bot) on its floor within range_factor times the follow radius, and stands within stand_fraction of the revive reach (data/revive.json) to hold the revive; a body with a hunter within safe_range metres of it (or where the bot remembers seeing one, flee.memory) is left until the hunter has gone"
   },
   "summon": {
     "room_cap": 24,
@@ -48,6 +49,11 @@
     "depth": 18,
     "max_cells": 600,
     "alert": 3.0,
+    "cover_bonus": 6.0,
+    "cover_checks": 96,
+    "memory": 12.0,
+    "memory_radius": 6.0,
+    "_cover_note": "Rust-only figures: a flight cell that no hunter within sight_range has a clear line to counts cover_bonus metres farther than it is, so a bot ducks round a corner rather than run down the hunter's corridor (0 turns the rule off); one flight plan tests at most cover_checks cells for it. A bot remembers where it last saw a hunter for memory seconds and takes no goal, errand or revive within memory_radius metres of that point",
     "_source": "Rust-only figures: a bot sees a hunter of any state within 18 m, 70 degrees either side of its heading with a clear line, or within 4 m all round; a bot that heard a noise runs from a hunter within 20 m; its flight route keeps 3 m off every hunter, is at most 18 cells long, and is re-planned at most every 0.4 s when a hunter crosses it (also after a plan that found no route) and looks at 600 cells at most; a bot stays alarmed 3 s after it last saw or heard a hunter. Godot only flees a chasing hunter inside the threat range"
   },
   "errand": {
@@ -105,7 +111,7 @@
     "low_stamina": 0.35,
     "heal_item": "stim_pack",
     "stuck": { "seconds": 2.0, "progress": 0.25, "aside_seconds": 0.6, "door_reach": 2.5, "ban_seconds": 20.0 },
-    "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 2 s (scaled faster by smart) and gives a goal up after 90 s; leash: a bot more than 36 m from the runner for 50 s drops its goal and takes none until it is back within 36 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 2 s without moving 0.25 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.6 s in a seeded direction, then gives the goal up for 20 s"
+    "_source": "Rust-only figures: a bot scores relays 100, a battery or heal item 70 while the lamp is under 30 percent or stamina under 35 percent, a useful pickup 40 and the exit 20 (once the level's relays are done), less 0.1 per path step up to 25, so a kind never loses to a lower one; a hunter-searched cell costs 12 steps; it picks again at most every 2 s (scaled faster by smart) and gives a goal up after 90 s; leash: a bot more than 36 m from the runner for 50 s drops its goal and takes none until it is back within 36 m. The follow intent stays last as the fallback. stuck (headless/bot.rs recovery ladder): after 2 s without moving 0.25 m a bot repaths, then presses a shut door within 2.5 m, then steps aside 0.6 s in a seeded direction, then gives the goal up for 20 s. The follow walk and the walk to a downed teammate use the same seconds, progress, door_reach and aside_seconds (repath, door, step aside, and again; no give-up)"
   },
   "life": {
     "range": 9.0,
