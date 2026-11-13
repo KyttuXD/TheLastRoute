@@ -60,7 +60,8 @@ pub struct ChunkView<'a> {
 }
 
 impl ChunkView<'_> {
-    fn inside(&self, x: i32, z: i32) -> bool {
+    /// Whether (x, z) is a cell of this chunk.
+    pub fn inside(&self, x: i32, z: i32) -> bool {
         x >= 0 && z >= 0 && x < self.size && z < self.size
     }
 

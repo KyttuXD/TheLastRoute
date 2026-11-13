@@ -19,6 +19,7 @@
 //!                           straight) found in the window, 1 m back from it, looking down at the well
 //!   LR_SHOT_PROP=type       with a run: stand LR_SHOT_DIST metres (default 3) from the nearest prop of that type in the streamed window
 //!                           (e.g. sewerOutflowPipe on level -1), looking at it; LR_SHOT_PITCH tilts the view (radians, default 0.1)
+//!   LR_SHOT_HALL_LIGHT=kind with a run: as LR_SHOT_ARCH, before the nearest hall light (kind: fairy | sconce)
 //!   LR_SHOT_ARCH=1          with a run: stand LR_SHOT_DIST metres (default 5) before the nearest hall arch, looking along
 //!                           the hall at it; LR_SHOT_BACK=1 stands on the other side
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
@@ -2492,7 +2493,10 @@ pub async fn run(
                 if let Some(ptype) = env("LR_SHOT_PROP") {
                     shot_at_prop(&mut g, &ptype);
                 }
-                if env("LR_SHOT_ARCH").is_some() {
+                if let Some(kind) = env("LR_SHOT_HALL_LIGHT") {
+                    let lights = crate::render::world_mesh::hall_light_sites(&g.fac, kind == "fairy");
+                    shot_at_hall_point(&mut g, lights);
+                } else if env("LR_SHOT_ARCH").is_some() {
                     shot_at_arch(&mut g);
                 }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
@@ -3002,8 +3006,13 @@ fn shot_remote(g: &Game) -> RemoteView {
 /// `LR_SHOT_ARCH=1`: stand in the hall `LR_SHOT_DIST` metres (default 5) before the hall arch nearest the player,
 /// looking along the hall at it; `LR_SHOT_BACK=1` stands on its other side.
 fn shot_at_arch(g: &mut Game) {
-    let from = g.p.pos;
     let (_, arches) = crate::render::world_mesh::hall_solids(&g.fac);
+    shot_at_hall_point(g, arches);
+}
+
+/// Stand in the hall before the nearest of `arches` (points over a hall), looking along the hall at it.
+fn shot_at_hall_point(g: &mut Game, arches: Vec<Vec3>) {
+    let from = g.p.pos;
     let dist: f32 = env("LR_SHOT_DIST").and_then(|d| d.parse().ok()).unwrap_or(5.0);
     let side = if env("LR_SHOT_BACK").is_some() { -1.0 } else { 1.0 };
     let mut by_distance: Vec<(f32, f32)> = arches.iter().map(|c| (c.x, c.z)).collect();

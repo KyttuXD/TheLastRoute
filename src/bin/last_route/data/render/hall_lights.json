@@ -1,0 +1,36 @@
+{
+  "schema": "lr.hall_lights/1",
+  "_about": "Hall lights (render/hall_lights.rs, drawn by render/world_mesh.rs into the chunk meshes; docs/HALL_LIGHTS.md): fairy-light strings hung across halls from wall to wall, and small wall lamps (sconces) on hall walls. Both are placed by a hash of the run's seed, the chunk and the cell, never by the route generator's random numbers, and neither is solid. Streamed windows above the sewers only (not the sewers, not the Inferno, not the finite floor). chance: `default` and one number per region id, 0..1; 0 turns the region off. Their lights go into the floor's lit-prop list (data/render/lamps.json prop_budget): a string's light counts as a glow (prop_glow_budget), a sconce's as a lamp; no light is added on top of the budget.",
+  "fairy": {
+    "_about": "A hall is cut into stretches of stretch_cells along its length; `chance` is the share of stretches that are strung (Godot hangs them in the maze and the carnival only). A strung stretch gets a string on every cell where (cell along the hall) mod string_every_cells == string_phase. A string runs from one wall face to the other, whatever the hall's width up to max_width_cells, drop_m under the ceiling at its ends and sagging sag_per_m per metre of span (at most sag_max_m) in the middle. wire_segments straight pieces draw the wire; a bulb hangs every bulb_spacing_m, bulb_size_m across, in a colour of bulb_colors (Godot's five), drawn unlit. Every light_every_strings-th string carries `light` at its middle (energy and range as the shader takes them; flicker_hz and flicker_depth as in data/props).",
+    "chance": { "default": 0.0, "maze": 0.16, "carnival": 0.35 },
+    "stretch_cells": 12,
+    "string_every_cells": 3,
+    "string_phase": 1,
+    "max_width_cells": 6,
+    "drop_m": 0.28,
+    "sag_per_m": 0.09,
+    "sag_max_m": 0.4,
+    "wire_thickness_m": 0.015,
+    "wire_segments": 4,
+    "wire_color": "#0d0d0f",
+    "bulb_spacing_m": 0.4,
+    "bulb_size_m": 0.13,
+    "bulb_colors": ["#f25973", "#59bff2", "#f2cc4d", "#73e68c", "#cc73f2"],
+    "light_every_strings": 2,
+    "light": { "color": "#ffd9a0", "energy": 0.9, "range": 5.5, "flicker_hz": 0.3, "flicker_depth": 0.3 }
+  },
+  "sconce": {
+    "_about": "A wall lamp may stand on a hall wall face where (cell along the wall) mod every_cells == phase (6 and 0 keep it between the pilasters); `chance` is the share of those faces that get one. Never beside a room cell, a corner, an opening or a cell that holds a prop. height_m: the lamp's middle above the floor. plate_m and shade_m: width along the wall, height, depth out of the wall, of the dark back plate and of the glowing shade in front of it. `light` stands light_out_m out from the wall.",
+    "chance": { "default": 0.06, "carnival": 0.0 },
+    "every_cells": 6,
+    "phase": 0,
+    "height_m": 1.95,
+    "plate_m": [0.16, 0.26, 0.04],
+    "shade_m": [0.1, 0.15, 0.09],
+    "plate_color": "#2a2622",
+    "shade_color": "#ffcf8a",
+    "light_out_m": 0.3,
+    "light": { "color": "#ffc98a", "energy": 0.8, "range": 5.0, "flicker_hz": 0.0, "flicker_depth": 0.0 }
+  }
+}

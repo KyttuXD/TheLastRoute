@@ -1077,7 +1077,27 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
         let (dx, dz) = (cx + p.offset.0 - near.0, cz + p.offset.1 - near.1);
         lit.push(LitProp { index, dist2: dx * dx + dz * dz, glow: light.glow });
     }
+    // the hall lights (render/hall_lights.rs) stand in the same queue for the same places, after the props: a
+    // string's light as a glow, a wall lamp's as a lamp. No place is added for them.
+    let hall = window_hall_lights(f);
+    for (k, h) in hall.iter().enumerate() {
+        let (dx, dz) = (h.pos.x - near.0, h.pos.z - near.1);
+        lit.push(LitProp { index: f.props.len() + k, dist2: dx * dx + dz * dz, glow: h.fairy });
+    }
     for index in pick_prop_lights(&lit, table.prop_budget(f.level), table.prop_glow_budget()) {
+        if index >= f.props.len() {
+            let h = hall[index - f.props.len()];
+            let cfg = super::hall_lights::config();
+            let light = if h.fairy { cfg.fairy.light } else { cfg.sconce.light };
+            out.push(Lamp {
+                pos: h.pos,
+                range: light.range,
+                color: Color::new(light.color[0], light.color[1], light.color[2], 1.0),
+                energy: light.energy,
+                flicker: lamp_flicker::make(light.flicker_hz, light.flicker_depth, world_place(f, h.pos)),
+            });
+            continue;
+        }
         let p = &f.props[index];
         let Some(light) = content.props.get(&p.ptype).and_then(|d| d.light.as_ref()) else {
             continue;
@@ -1991,6 +2011,9 @@ fn build_raw_meshes(
     }
     // hall pilasters and arches (render/hall_arch.rs), each drawn by the part that owns the hall cell its wall faces
     add_hall_arches(f, pick, &mut sewer, &mut surf, &mut plain, choices, assets);
+    // fairy-light strings across the halls and wall lamps on their walls (render/hall_lights.rs), built into the same
+    // meshes; their lights are in the lamp list (`lamps_with`)
+    add_hall_lights(f, pick, &mut plain);
     // the picked cells by chunk, for the sewer water and the cave decoration, which are made per chunk
     let mut chunk_cells: HashMap<(i32, i32), HashSet<(i32, i32)>> = HashMap::new();
     if sewer.is_some() || inferno.is_some() {
@@ -2358,6 +2381,130 @@ fn add_hall_arches(
             }
         }
     }
+}
+
+/// A window with hall lights (render/hall_lights.rs): one with hall decor that is not a sewer window.
+fn has_hall_lights(f: &Facility) -> bool {
+    has_hall_decor(f) && SewerFloor::of(f).is_none()
+}
+
+/// The window cells that hold a prop: no wall lamp is hung over one.
+fn prop_cells(f: &Facility) -> HashSet<(i32, i32)> {
+    f.props.iter().map(|p| (p.cell.x, p.cell.y)).collect()
+}
+
+/// The hall lights the open cells `cells` of chunk `key` own (render/hall_lights.rs), in the chunk's own cells, with
+/// the chunk's corner in window cells. Placed from the chunk's own grid and a hash of the floor's seed and the
+/// chunk, so a chunk's lights are the same in every window and every part build.
+fn chunk_hall_lights(f: &Facility, key: (i32, i32), cells: &[Cell], taken: &HashSet<(i32, i32)>) -> ((i32, i32), super::hall_lights::Decor) {
+    use super::hall_lights;
+    let cfg = hall_lights::config();
+    let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+    let open = |x: i32, z: i32| !f.is_wall_cell(at.0 + x, at.1 + z);
+    let brick = |_: i32, _: i32| true;
+    let room = |x: i32, z: i32| f.room_at((at.0 + x) as f64 + 0.5, (at.1 + z) as f64 + 0.5).is_some();
+    // nothing hangs where there is no ceiling (a stair's well, air under a drop)
+    let no_ceiling = |x: i32, z: i32| f.open_above(Cell::new(at.0 + x, at.1 + z));
+    let ceiling = |x: i32, z: i32| fixture_ceiling(f, Cell::new(at.0 + x, at.1 + z));
+    let view = super::hall_arch::ChunkView { size: CHUNK, sewer: false, open: &open, brick: &brick, room: &room, ramp: &no_ceiling, height: &ceiling };
+    let fairy_chance = |x: i32, z: i32| cfg.fairy.chance.of(f.region_at(at.0 + x, at.1 + z));
+    let sconce_chance = |x: i32, z: i32| cfg.sconce.chance.of(f.region_at(at.0 + x, at.1 + z));
+    let is_taken = |x: i32, z: i32| taken.contains(&(at.0 + x, at.1 + z));
+    let site = hall_lights::Site {
+        view: &view,
+        seed: hall_lights::seed(&f.seed_text, key),
+        fairy_chance: &fairy_chance,
+        sconce_chance: &sconce_chance,
+        taken: &is_taken,
+    };
+    let mut decor = hall_lights::Decor::default();
+    for &c in cells {
+        hall_lights::cell_lights(&site, cfg, c.x - at.0, c.y - at.1, &mut decor);
+    }
+    (at, decor)
+}
+
+/// The fairy-light strings and wall lamps of the picked cells (render/hall_lights.rs), built into the part's plain
+/// mesh: the wires and back plates lit, the bulbs and shades unlit at their own colour. Each is drawn by the part
+/// that owns the open hall cell it belongs to. Nothing is solid and nothing is drawn or chosen per frame.
+fn add_hall_lights(f: &Facility, pick: &Pick, plain: &mut Builder) {
+    if !has_hall_lights(f) {
+        return;
+    }
+    let mut by_chunk: HashMap<(i32, i32), Vec<Cell>> = HashMap::new();
+    for &c in &pick.cells {
+        if !f.is_wall_cell(c.x, c.y) {
+            by_chunk.entry(chunk_cell(f.origin, c.x, c.y).0).or_default().push(c);
+        }
+    }
+    let taken = prop_cells(f);
+    let colour = |c: [f32; 3]| Color::new(c[0], c[1], c[2], 1.0);
+    let mode = |unlit: bool| if unlit { 2.0 } else { 0.0 };
+    for (key, cells) in by_chunk {
+        let (at, decor) = chunk_hall_lights(f, key, &cells, &taken);
+        let shift = vec3(at.0 as f32, 0.0, at.1 as f32);
+        for q in &decor.quads {
+            plain.quad(q.c.map(|p| p + shift), UV1, q.n, colour(q.color), mode(q.unlit));
+        }
+        for b in &decor.boxes {
+            plain.cube(b.centre + shift, b.size, 0.0, colour(b.color), mode(b.unlit));
+        }
+    }
+}
+
+/// A kept list of a window's hall lights: the floor's seed text, the window's origin and level, and its room and
+/// prop counts (a window is the same floor whenever all of these are).
+type HallLightKey = (String, (i32, i32), i32, usize, usize);
+
+thread_local! {
+    /// The hall lights of the last few windows a lamp list was built for. A list takes one pass over the window's
+    /// floor, so it is made when a window is first asked for and kept: the lamp list is chosen again every few
+    /// metres the runner walks, and that must not walk the floor. A few hundred points of 16 bytes a window.
+    static HALL_LIGHTS: std::cell::RefCell<Vec<(HallLightKey, std::rc::Rc<Vec<super::hall_lights::HallLight>>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// How many windows' hall lights are kept: the active floor, its neighbour levels and the window before a recentre.
+const HALL_LIGHT_WINDOWS: usize = 8;
+
+/// The light of every fairy-light string and wall lamp of the window, in window metres (render/hall_lights.rs).
+/// Empty for a floor without hall lights.
+/// Where the window's hall lights stand (strings' glows or wall lamps), for the screenshot switch LR_SHOT_HALL_LIGHT.
+pub fn hall_light_sites(f: &Facility, fairy: bool) -> Vec<Vec3> {
+    window_hall_lights(f).iter().filter(|l| l.fairy == fairy).map(|l| l.pos).collect()
+}
+
+fn window_hall_lights(f: &Facility) -> std::rc::Rc<Vec<super::hall_lights::HallLight>> {
+    use std::rc::Rc;
+    if !has_hall_lights(f) {
+        return Rc::new(vec![]);
+    }
+    let same = |k: &HallLightKey| k.0 == f.seed_text && k.1 == f.origin && k.2 == f.level && k.3 == f.rooms.len() && k.4 == f.props.len();
+    if let Some(kept) = HALL_LIGHTS.with(|c| c.borrow().iter().find(|(k, _)| same(k)).map(|(_, l)| Rc::clone(l))) {
+        return kept;
+    }
+    let mut by_chunk: HashMap<(i32, i32), Vec<Cell>> = HashMap::new();
+    for c in f.floor_cells() {
+        by_chunk.entry(chunk_cell(f.origin, c.x, c.y).0).or_default().push(c);
+    }
+    // in chunk order, so the list (and with it which of two equally near lights is kept) is the same every time
+    let mut chunks: Vec<((i32, i32), Vec<Cell>)> = by_chunk.into_iter().collect();
+    chunks.sort_by_key(|(key, _)| *key);
+    let taken = prop_cells(f);
+    let mut lights = vec![];
+    for (key, cells) in chunks {
+        let (at, decor) = chunk_hall_lights(f, key, &cells, &taken);
+        let shift = vec3(at.0 as f32, 0.0, at.1 as f32);
+        lights.extend(decor.lights.iter().map(|l| super::hall_lights::HallLight { pos: l.pos + shift, fairy: l.fairy }));
+    }
+    let lights = Rc::new(lights);
+    HALL_LIGHTS.with(|c| {
+        let mut kept = c.borrow_mut();
+        if kept.len() >= HALL_LIGHT_WINDOWS {
+            kept.remove(0);
+        }
+        kept.push(((f.seed_text.clone(), f.origin, f.level, f.rooms.len(), f.props.len()), Rc::clone(&lights)));
+    });
+    lights
 }
 
 /// The radians a room prop's model is turned by when it is drawn, from its gameplay yaw. Godot turns every
