@@ -495,6 +495,11 @@ pub struct RunnerView {
     /// seconds the aim has been past the body's free range; the body turns once this passes `body_follow_delay`
     follow_timer: f32,
     primed: bool,
+    /// Planted feet while standing (`plant`): the stance of the standing clip last played, that clip's name, and how
+    /// far the planting is in, 0..1 (it eases over the idle blend time).
+    stance: Option<super::plant::Stance>,
+    stance_clip: String,
+    plant: f32,
 }
 
 impl RunnerView {
@@ -512,6 +517,9 @@ impl RunnerView {
             body_yaw: 0.0,
             follow_timer: 0.0,
             primed: false,
+            stance: None,
+            stance_clip: String::new(),
+            plant: 0.0,
         }
     }
 
@@ -612,6 +620,16 @@ impl RunnerView {
             }
             None => self.player.advance(&rig, dt),
         }
+        // standing: the idle clip sways the pelvis (the rig's root, at the hips), which turned the whole body about its
+        // middle; `locals` plants the feet instead, eased in and out over the idle blend
+        let standing = matches!(state.pose(), Pose::Idle) && !choice.paced && self.player.playing && self.player.assigned == choice.clip;
+        if standing && self.stance_clip != choice.clip {
+            self.stance = super::plant::Stance::of(&rig, &choice.clip);
+            self.stance_clip.clone_from(&choice.clip);
+        }
+        let step = if c.blend_idle > 1e-4 { dt / c.blend_idle } else { 1.0 };
+        let goal = if standing { 1.0 } else { 0.0 };
+        self.plant += (goal - self.plant).clamp(-step, step);
     }
 
     /// ModelSlot.play_if_available; a switch between walk / sprint / chase keeps the stride phase.
@@ -640,6 +658,9 @@ impl RunnerView {
         if let Some(head) = self.rig.bone("Head").and_then(|i| pose.get_mut(i)) {
             // yaw about the head's own up axis, then pitch about its side axis: the head's rest frame is the body's
             head.r *= Quat::from_rotation_y(self.head_yaw) * Quat::from_rotation_x(self.head_pitch);
+        }
+        if let Some(stance) = self.stance.as_ref().filter(|_| self.plant > 1e-3) {
+            stance.plant(&self.rig, &mut pose, self.plant * self.plant * (3.0 - 2.0 * self.plant));
         }
         pose
     }
@@ -840,7 +861,7 @@ mod tests {
         let stopped = st();
         view.update(&stopped, 1.0 / 30.0);
         assert_eq!(view.player.current_animation(), "idle");
-        // run past the blend: the pose is the idle clip alone
+        // run past the blend: the pose is the idle clip alone, on its planted feet
         for _ in 0..60 {
             view.update(&stopped, 1.0 / 30.0);
         }
@@ -849,9 +870,50 @@ mod tests {
         reference.play(&rig, "idle", 0.0);
         reference.seek(view.player.position());
         let a = view.locals();
-        let b = reference.pose(&rig);
+        let mut b = reference.pose(&rig);
+        super::super::plant::Stance::of(&rig, "idle").expect("the idle clip has a stance").plant(&rig, &mut b, 1.0);
         for (x, y) in a.iter().zip(b.iter()) {
             assert!(x.r.dot(y.r).abs() > 0.9999 && (x.t - y.t).length() < 1e-3);
+        }
+    }
+
+    /// A runner standing still stands on its feet: through a whole idle loop the ankles stay on their spots (the idle
+    /// clip sways the pelvis, which used to turn the whole body about its middle), and a walking runner is not planted.
+    #[test]
+    fn a_standing_runner_sways_over_planted_feet() {
+        for slim in [false, true] {
+            let mut view = RunnerView::load(slim).expect("rig");
+            let rig = view.rig.clone();
+            let stance = super::super::plant::Stance::of(&rig, "idle").expect("the idle clip has a stance");
+            let dt = 1.0 / 30.0;
+            for _ in 0..60 {
+                view.update(&st(), dt);
+            }
+            assert_eq!(view.player.current_animation(), "idle");
+            let (mut slid, mut clip_slid) = (0.0f32, 0.0f32);
+            let mut reference = AnimPlayer::default();
+            reference.play(&rig, "idle", 0.0);
+            for _ in 0..(rig.length("idle") / dt).ceil() as usize + 1 {
+                view.update(&st(), dt);
+                let now = stance.ankles(&view.locals());
+                reference.seek(view.player.position());
+                let alone = stance.ankles(&reference.pose(&rig));
+                for f in 0..2 {
+                    slid = slid.max(now[f].distance(stance.feet()[f]));
+                    clip_slid = clip_slid.max(alone[f].distance(stance.feet()[f]));
+                }
+            }
+            // bbmodel units: 0.05 is about a millimetre on a runner
+            assert!(slid < 0.05, "slim {slim}: a standing foot moved {slid} units");
+            assert!(clip_slid > slid * 4.0, "slim {slim}: the clip alone moves the feet {clip_slid} units");
+            // walking: the pose is the clips' own again once the planting has eased out
+            let speed = ref_speed(Some(&rig), "walk").0;
+            let walk = RunnerState { moving: true, speed, ..st() };
+            for _ in 0..60 {
+                view.update(&walk, dt);
+            }
+            let (a, b) = (view.locals(), view.player.pose(&rig));
+            assert!(a.iter().zip(&b).all(|(x, y)| x.r.dot(y.r).abs() > 0.999_999 && (x.t - y.t).length() < 1e-4), "slim {slim}: a walk is not planted");
         }
     }
 

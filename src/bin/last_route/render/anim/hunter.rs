@@ -602,6 +602,9 @@ pub struct HunterView {
     /// Kathy's scythe: this hunter carries it, and the seconds the swing one-shot has left.
     carries_scythe: bool,
     swing_left: f32,
+    /// Where the standing clip last played has its feet (`plant`), and that clip's name: read once per clip.
+    stance: Option<super::plant::Stance>,
+    stance_clip: String,
 }
 
 impl HunterView {
@@ -661,6 +664,8 @@ impl HunterView {
             emote_moving: false,
             carries_scythe: act::table().carries_scythe(shown_id),
             swing_left: 0.0,
+            stance: None,
+            stance_clip: String::new(),
         }
     }
 
@@ -1228,6 +1233,19 @@ impl HunterView {
             l.idle += (idle - l.idle) * k;
             l.live += ((live as i32 as f32) - l.live) * k;
             l.chase = self.chase.weight;
+            // standing: the idle clip sways the pelvis (the rig's root, at the hips), which turned the whole figure about
+            // its middle; the feet are planted and the sway goes to the body above them, eased with the idle layer
+            let standing = l.idle;
+            if sample && standing > 1e-3 {
+                if idle > 0.0 && self.stance_clip != clip {
+                    self.stance = super::plant::Stance::of(&rig, clip);
+                    self.stance_clip.clear();
+                    self.stance_clip.push_str(clip);
+                }
+                if let Some(s) = &self.stance {
+                    s.plant(&rig, &mut pose, standing);
+                }
+            }
             if sample && !self.profile.is_identity_pose() {
                 profile::apply(self.profile, &mut Bones::new(&rig, &mut pose), self.layers);
             }
@@ -1507,6 +1525,44 @@ mod lod_tests {
         assert_eq!(sampled.move_speed, far.move_speed);
         assert_eq!(sampled.stride_scale, far.stride_scale);
         assert_eq!(sampled.playback_speed(), far.playback_speed());
+    }
+
+    /// A hunter standing still stands on her feet: through a whole idle loop the foot bones stay where they are in the
+    /// world (the idle clip sways the pelvis, which used to turn the whole figure about its middle and slide the feet),
+    /// while the head still moves with the sway.
+    #[test]
+    fn an_idle_hunter_sways_over_planted_feet() {
+        for id in ["aki", "kathy", "ferryn"] {
+            let r = rig(id).unwrap_or_else(|| panic!("{id}: no rig"));
+            let mut v = HunterView::new(id, r.clone());
+            let i = input(0.0);
+            let dt = 1.0 / 30.0;
+            let mut clock = 0.0;
+            // the idle layer eases in: let it settle
+            for _ in 0..90 {
+                clock += dt;
+                v.update(&i, dt, clock);
+            }
+            assert!(v.clip().ends_with("idle"), "{id} stands in {}", v.clip());
+            let frames = (r.length(v.clip()) / dt).ceil() as usize + 1;
+            let (feet, head) = ([r.bone("L-Foot").unwrap(), r.bone("R-Foot").unwrap()], r.bone("Head").unwrap());
+            let at = |out: &Output, b: usize| out.root.transform_point3(out.bones[b].w_axis.truncate());
+            let mut first: Option<[Vec3; 2]> = None;
+            let mut slid = 0.0f32;
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for _ in 0..frames {
+                clock += dt;
+                let (_, out) = v.update(&i, dt, clock);
+                let now = [at(&out, feet[0]), at(&out, feet[1])];
+                let start = *first.get_or_insert(now);
+                slid = slid.max(now[0].distance(start[0])).max(now[1].distance(start[1]));
+                let h = at(&out, head);
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+            assert!(slid < 0.002, "{id}: a foot slid {} mm while she stood", slid * 1000.0);
+            assert!((hi - lo).length() > 0.004, "{id}: the body no longer sways ({} mm)", (hi - lo).length() * 1000.0);
+        }
     }
 
     /// `update` is the sampled path: the same pose length and bone count as `update_lod` with sample on.

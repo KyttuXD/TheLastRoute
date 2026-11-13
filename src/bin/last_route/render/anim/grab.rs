@@ -8,7 +8,11 @@
 //!   go to, and her own [forward, drop, lean].
 //! * her body: pose_hunter_body (pinned where the grab began, turned square to the runner over the reach, leaned, stepped,
 //!   crouched by _crouch's squat + waist bend), reach_correction (3 passes), solve_arm (two-bone IK with the elbow pole and
-//!   the upper-arm twist), rest_free_hands, head_look at the camera (Aki's look-away delay from the data).
+//!   the upper-arm twist), rest_free_hands, head_look at the camera (Aki's look-away delay from the data). The head's
+//!   turn is the port's own: (yaw, pitch) from her chest inside the neck's range (`neck_goal`), not the original's
+//!   free arc of up to 115 degrees, which bent Aki's neck back over her shoulder on the look-away.
+//! * variants: `variant_with` -- a picked style may give way to one of the data's variants (two_hand_lift, lunge_drag,
+//!   behind_grab), chosen by a hash of the seed, the hunter and the catch number. The port's own; same timings.
 //! * the first-person view: at the grabbed body's eyes, looking at her face, rolled within the limits, eased in from the
 //!   view at the catch (CATCH_EASE).
 //! * release: ease_out_grab -- her model and bones ease back to what her clips do over GRAB_EASE_SECONDS (smoothstep).
@@ -40,6 +44,10 @@ pub struct StyleTable {
     pub arm_stretch: f32,
     pub stretch_styles: Vec<String>,
     pub styles: Vec<StyleRule>,
+    /// The share of catches (0..1) on which a picked style gives way to one of its variants, when one fits the room.
+    pub variant_chance: f32,
+    /// Picked style -> the variants that may play in its place (the picked style itself is variant 0).
+    pub variants: Vec<(String, Vec<String>)>,
 }
 
 /// Reads `lr.grab_styles/1`; missing numbers read as 0 (no stretch, no room needed) and a missing row list as no styles.
@@ -64,6 +72,18 @@ pub fn parse_styles(v: &serde_json::Value) -> StyleTable {
                             hunter_back: num(s, "hunter_back"),
                             wall: num(s, "wall"),
                         })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        variant_chance: num(v, "variant_chance").clamp(0.0, 1.0),
+        variants: v["variants"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(k, a)| {
+                        let list: Option<Vec<String>> = a.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect());
+                        (k.clone(), list.unwrap_or_default())
                     })
                     .collect()
             })
@@ -110,7 +130,8 @@ pub const GRAB_TIMING_PATH: &str = "render/grab.json";
 
 /// The grab animation's timings and limits (data/render/grab.json): Godot's HunterGrab values. Seconds are the
 /// phases of a grab, `carry_*` the shoulder carry, `ease_seconds` the release ease, `catch_ease` the view's catch
-/// ease, the bends and roll limits radians. `head_turn_rate` is k of the head turn's 1 - e^(-k delta) ease.
+/// ease, the bends and roll limits radians. `head_turn_rate` is k of the head turn's 1 - e^(-k delta) ease. The
+/// `neck_*` limits and the `look_away_*` angles are the port's own (see `neck_goal`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GrabTiming {
     pub reach_seconds: f32,
@@ -126,6 +147,13 @@ pub struct GrabTiming {
     pub squat_bend: f32,
     pub head_turn_rate: f32,
     pub look_away_seconds: f32,
+    /// A shy hunter's look-away: how far her head turns to her side and dips, radians from her chest's forward.
+    pub look_away_yaw: f32,
+    pub look_away_down: f32,
+    /// The neck's range from the chest's forward, radians: either way, up and down. The head never passes it.
+    pub neck_yaw_limit: f32,
+    pub neck_up_limit: f32,
+    pub neck_down_limit: f32,
 }
 
 impl Default for GrabTiming {
@@ -145,6 +173,11 @@ impl Default for GrabTiming {
             squat_bend: 1.45,
             head_turn_rate: 7.0,
             look_away_seconds: 0.4,
+            look_away_yaw: 0.6,
+            look_away_down: 0.3,
+            neck_yaw_limit: 1.22,
+            neck_up_limit: 1.05,
+            neck_down_limit: 0.96,
         }
     }
 }
@@ -174,6 +207,11 @@ impl GrabTiming {
             squat_bend: num("squat_bend")?,
             head_turn_rate: num("head_turn_rate")?,
             look_away_seconds: num("look_away_seconds")?,
+            look_away_yaw: num("look_away_yaw")?,
+            look_away_down: num("look_away_down")?,
+            neck_yaw_limit: num("neck_yaw_limit")?,
+            neck_up_limit: num("neck_up_limit")?,
+            neck_down_limit: num("neck_down_limit")?,
         })
     }
 
@@ -323,26 +361,88 @@ pub fn pick_with(table: &StyleTable, mut pool: Vec<(String, f32)>, roll: f32, ro
     fitting.last().unwrap().0.clone()
 }
 
-/// The head's turn from where her face points (`facing`) toward `wanted`, limited to the neck (`limit`, radians):
-/// the GrabStyles.head_look rotation, clamped to the neck limit by slerping back toward identity.
-pub fn neck_turn(facing: Vec3, wanted: Vec3, limit: f32) -> Quat {
-    let full = if facing.angle_between(wanted) > 0.001 {
-        Quat::from_rotation_arc(facing, wanted)
-    } else {
-        Quat::IDENTITY
+/// The variant a catch plays in place of the picked `base` style (GrabStyles has no variants: this is the port's own).
+/// `key` is a hash of the run seed, the hunter and the catch number, so the same catch picks the same variant every
+/// time; no random stream is drawn from. The base style is variant 0 and keeps the catches the data's `variant_chance`
+/// leaves it, and every catch when none of its variants fits the room.
+pub fn variant_with(table: &StyleTable, base: &str, key: u32, room: &Room) -> String {
+    let Some((_, list)) = table.variants.iter().find(|(b, _)| b == base) else {
+        return base.to_string();
     };
-    let angle = full.angle_between(Quat::IDENTITY);
-    if angle > limit {
-        gd_slerp(Quat::IDENTITY, full, limit / angle)
-    } else {
-        full
+    let fitting = list.iter().filter(|s| fits(table, s, room)).count() as u32;
+    if fitting == 0 || (key % 1000) as f32 >= table.variant_chance * 1000.0 {
+        return base.to_string();
     }
+    let nth = ((key / 1000) % fitting) as usize;
+    list.iter().filter(|s| fits(table, s, room)).nth(nth).cloned().unwrap_or_else(|| base.to_string())
 }
 
-/// GrabStyles.head_look's easing: the turn eases toward `full` by 1 - e^(-head_turn_rate delta), Standard 7 every frame, the catch frame
-/// included (Godot eases from identity there too; snapping to a full look-away in one frame reads as a broken neck).
-pub fn ease_head_turn(current: Quat, full: Quat, delta: f32) -> Quat {
-    gd_slerp(current, full, 1.0 - (-grab_timing().head_turn_rate * delta).exp())
+/// The key `variant_with` reads for a catch.
+pub fn variant_key(seed: u32, hunter_id: &str, catch: u32) -> u32 {
+    // djb2 moves by one for the next catch number: mix it (the 32-bit finaliser of MurmurHash3) so catches in a row differ
+    let mut h = super::hunter::gd_hash(&format!("{seed}:GRABVARIANT:{hunter_id}:{catch}"));
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35);
+    h ^ (h >> 16)
+}
+
+/// The neck's range for a hunter, radians from her chest's forward: (either way, up, down). The data's per-hunter
+/// look yaw (GrabStyles.look_for, 2.0 by default) only narrows it: the original's limit let the head turn 115 degrees
+/// about any axis, which is past what a neck does.
+pub fn neck_limits(look: &Look) -> (f32, f32, f32) {
+    let t = grab_timing();
+    (look.yaw.min(t.neck_yaw_limit), t.neck_up_limit, t.neck_down_limit)
+}
+
+/// The head's turn that looks along `dir`, as (yaw, pitch) from the chest's forward: `dir` is in the chest's frame (it
+/// faces -Z, +X its right, +Y up), yaw is positive to her left, pitch positive up. Both are clamped to `limits`
+/// (`neck_limits`), so an aim behind her turns the head as far as the neck goes and no further. `away` (0..1) blends
+/// toward the shy look-away: a small turn to her right and down (the data's look_away_yaw / look_away_down).
+pub fn neck_goal(dir: Vec3, away: f32, limits: (f32, f32, f32)) -> (f32, f32) {
+    let (yaw_limit, up, down) = limits;
+    let (mut yaw, mut pitch) = (0.0f32, 0.0f32);
+    if dir.is_finite() && dir.length_squared() > 1e-8 {
+        let d = dir.normalize();
+        yaw = (-d.x).atan2(-d.z);
+        pitch = d.y.clamp(-1.0, 1.0).asin();
+    }
+    let t = grab_timing();
+    let away = away.clamp(0.0, 1.0);
+    yaw += (-t.look_away_yaw - yaw) * away;
+    pitch += (-t.look_away_down - pitch) * away;
+    (yaw.clamp(-yaw_limit, yaw_limit), pitch.clamp(-down, up))
+}
+
+/// The head's rotation in the chest's frame for a (yaw, pitch) turn: no roll.
+pub fn neck_quat(yaw: f32, pitch: f32) -> Quat {
+    Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)
+}
+
+/// The (yaw, pitch) of a head rotation in the chest's frame (the reverse of `neck_quat`; a roll is dropped).
+pub fn neck_angles(rel: Quat) -> (f32, f32) {
+    let f = rel * Vec3::NEG_Z;
+    ((-f.x).atan2(-f.z), f.y.clamp(-1.0, 1.0).asin())
+}
+
+/// GrabStyles.head_look's easing, on the two neck angles: each eases toward its goal by 1 - e^(-head_turn_rate delta),
+/// Standard 7, every frame, the catch frame included. Angles, not a quaternion slerp: the turn can not take a way
+/// round that leaves the neck's range.
+pub fn ease_neck(current: (f32, f32), goal: (f32, f32), delta: f32) -> (f32, f32) {
+    let k = 1.0 - (-grab_timing().head_turn_rate * delta.max(0.0)).exp();
+    (current.0 + (goal.0 - current.0) * k, current.1 + (goal.1 - current.1) * k)
+}
+
+/// A bone's rotation in model space at the rig's rest pose.
+pub fn rest_model_rot(rig: &Rig, bone: usize) -> Quat {
+    let mut q = rig.bones[bone].rest_r;
+    let mut at = rig.bones[bone].parent;
+    while let Some(p) = at {
+        q = rig.bones[p].rest_r * q;
+        at = rig.bones[p].parent;
+    }
+    q.normalize()
 }
 
 fn look_away(look: &Look, t: f32) -> f32 {
@@ -497,6 +597,38 @@ pub fn pose(style: &str, t: f32, c: &Ctx) -> Pose {
             o.at = vec3(0.0, 0.0, lerp(0.9, 1.2, down));
             o.tilt = lerp(0.0, PI * 0.5 - 0.1, down);
             o.hunter = [lerp(0.0, 0.3, a), 0.0, 0.15 * a];
+        }
+        "two_hand_lift" => {
+            // both hands on the shoulders, the runner lifted off the floor until the shoulders are level with hers
+            let lift = (c.shoulder_y - body_point("l_shoulder").y + 0.1).clamp(0.2, 0.7);
+            o.at = vec3(shake * 0.01, lift * a, 1.25);
+            o.tilt = 0.08 * a + shake * 0.03;
+            o.view_roll = sway * 0.03;
+            o.arms = vec![('R', "l_shoulder", r), ('L', "r_shoulder", r)];
+            o.hunter = [0.0, 0.0, -0.12 * a];
+        }
+        "lunge_drag" => {
+            // she lunges low for the legs, the runner goes down on their back and is dragged in as she backs away
+            let fall = smooth((t - grab_timing().reach_seconds) / (grab_timing().act_seconds + 0.25));
+            let drag = smooth(
+                (t - grab_timing().reach_seconds - grab_timing().act_seconds * 0.5)
+                    / (grab_timing().act_seconds * 0.5 + grab_timing().hold_seconds * 0.7),
+            );
+            let stoop = smooth((t - grab_timing().reach_seconds * 0.4) / (grab_timing().reach_seconds + 0.25));
+            o.at = vec3(0.0, 0.0, lerp(1.2, 0.95, drag));
+            o.tilt = lerp(0.0, PI * 0.5 - 0.08, fall);
+            o.view_roll = shake * 0.05 * drag;
+            o.arms = vec![('R', "knees", stoop.max(r * 0.3)), ('L', "r_ankle", stoop.max(r * 0.3))];
+            o.hunter = [-0.55 * drag, 0.55 * stoop, 0.4 * stoop];
+        }
+        "behind_grab" => {
+            // the runner turned away, her hands on both shoulders from behind, pulled back against her
+            o.face = -1.0;
+            o.at = vec3(shake * 0.012, 0.0, lerp(1.25, 1.0, a));
+            o.tilt = -0.18 * a + shake * 0.04;
+            o.view_roll = 0.1 * a + shake * 0.03;
+            o.arms = vec![('L', "l_shoulder", r), ('R', "r_shoulder", r)];
+            o.hunter = [0.0, 0.0, 0.08 * a];
         }
         "wall_pin" => {
             let to_wall = (c.back - 0.2).clamp(0.0, 1.1);
@@ -762,7 +894,10 @@ pub struct Grab {
     turn: f32,
     ctx: Ctx,
     look: Look,
-    head_turn: Quat,
+    /// Her head's turn from her chest's forward now, (yaw, pitch), and whether it has been read off her pose yet
+    /// (the first frame starts from where her head already is).
+    neck: (f32, f32),
+    neck_primed: bool,
     pub camera_from: (Vec3, Vec3),
     /// last frame's camera eye and her face (the eye is looked at from, the face looked at)
     pub camera: Option<(Vec3, Vec3, Vec3)>,
@@ -820,8 +955,26 @@ impl Grab {
         fac: &Facility,
         ceiling: f32,
         roll: f32,
+        variant: u32,
         camera: (Vec3, Vec3),
     ) -> Grab {
+        let (origin, along) = Grab::frame(view, out, runner_feet);
+        let room = probe_room(fac, runner_feet, origin, along, ceiling);
+        // HunterGrab.play's force_style (admin_force_grab): LR_GRAB_STYLE=<style> forces one for testing
+        let style = std::env::var("LR_GRAB_STYLE").ok().filter(|s| is_style(s)).unwrap_or_else(|| {
+            let picked = pick(&view.shown_id, roll, &room);
+            // a creature rig keeps its own styles: the variants are humanoid holds
+            if view.rig().is_creature() {
+                picked
+            } else {
+                variant_with(style_table(), &picked, variant, &room)
+            }
+        });
+        Grab::begin_with(slot, view, out, runner_feet, eye, style, room.back, camera)
+    }
+
+    /// Her anchor on the runner's floor and the floor direction from her to the runner.
+    fn frame(view: &HunterView, out: &Output, runner_feet: Vec3) -> (Vec3, Vec3) {
         let origin = vec3(out.root.w_axis.x, runner_feet.y, out.root.w_axis.z);
         let flat = vec3(runner_feet.x - origin.x, 0.0, runner_feet.z - origin.z);
         let along = if flat.length() > 0.01 {
@@ -829,14 +982,24 @@ impl Grab {
         } else {
             vec3(-view.yaw.sin(), 0.0, -view.yaw.cos())
         };
+        (origin, along)
+    }
+
+    /// Takes hold with a given style: `back` is the clear floor behind the runner, metres.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_with(
+        slot: usize,
+        view: &HunterView,
+        out: &Output,
+        runner_feet: Vec3,
+        eye: f32,
+        style: String,
+        back: f32,
+        camera: (Vec3, Vec3),
+    ) -> Grab {
+        let (origin, along) = Grab::frame(view, out, runner_feet);
         let side = along.cross(Vec3::Y).normalize_or_zero();
-        let room = probe_room(fac, runner_feet, origin, along, ceiling);
         let id = view.shown_id.clone();
-        // HunterGrab.play's force_style (admin_force_grab): LR_GRAB_STYLE=<style> forces one for testing
-        let style = std::env::var("LR_GRAB_STYLE")
-            .ok()
-            .filter(|s| is_style(s))
-            .unwrap_or_else(|| pick(&id, roll, &room));
         // HunterGrab.context: her right shoulder and arm, in the frame from her to the runner
         let rig = view.rig();
         let w = |n: &str| {
@@ -849,7 +1012,7 @@ impl Grab {
             shoulder_fwd: 0.0,
             shoulder_y: 1.8,
             arm: 0.66,
-            back: room.back,
+            back,
         };
         if let (Some(arm), Some(hand)) = (w("R-Arm"), w("R-Hand")) {
             let off = arm - vec3(out.root.w_axis.x, out.root.w_axis.y, out.root.w_axis.z);
@@ -878,7 +1041,8 @@ impl Grab {
             yaw0: view.yaw,
             turn,
             ctx,
-            head_turn: Quat::IDENTITY,
+            neck: (0.0, 0.0),
+            neck_primed: false,
             camera_from: camera,
             camera: None,
             face_point: None,
@@ -995,7 +1159,7 @@ impl Grab {
                 }
             }
         }
-        // head_look: at the camera (lifted toward her head), or ahead for the carry; Aki looks away first
+        // head_look: at the camera (lifted toward her head), or ahead for the carry; Aki looks a little aside first
         if let Some(head) = body.idx("Head").or_else(|| body.idx("head")) {
             let hp = body.pos(head);
             let mut target = match self.camera {
@@ -1007,21 +1171,29 @@ impl Grab {
                     + self.along * (4.0 + offsets[0])
                     + Vec3::Y * 1.6;
             }
-            let away = look_away(&self.look, t);
-            if away > 0.0 {
-                let off = hp + (self.side * 1.5 + Vec3::NEG_Y * 0.8 - self.along * 0.3);
-                target = target.lerp(off, away);
+            // the turn is measured from her chest, as (yaw, pitch) inside the neck's range, and replaces what the clips
+            // did to the head: the head can not end up further round than a neck goes, whatever the body is doing
+            let chest = body.idx("Chest").or(rig.bones[head].parent);
+            let chest_turn = match chest {
+                Some(c) => body.rot(c) * rest_model_rot(rig, c).inverse(),
+                None => body.root_r,
+            };
+            let head_rest = rest_model_rot(rig, head);
+            let limits = neck_limits(&self.look);
+            if !self.neck_primed {
+                let now = neck_angles(chest_turn.inverse() * body.rot(head) * head_rest.inverse());
+                self.neck = (now.0.clamp(-limits.0, limits.0), now.1.clamp(-limits.2, limits.1));
+                self.neck_primed = true;
             }
             let eyes = (body.idx("L-Eye-Attachment"), body.idx("R-Eye-Attachment"));
-            let facing = match eyes {
-                (Some(l), Some(r)) => (body.pos(l) + body.pos(r)) * 0.5 - hp,
-                _ => self.along,
-            }
-            .normalize_or_zero();
-            let wanted = (target - hp).normalize_or_zero();
-            let full = neck_turn(facing, wanted, self.look.yaw);
-            self.head_turn = ease_head_turn(self.head_turn, full, delta);
-            let q = self.head_turn * body.rot(head);
+            let from = match eyes {
+                (Some(l), Some(r)) => (body.pos(l) + body.pos(r)) * 0.5,
+                _ => hp,
+            };
+            let wanted = chest_turn.inverse() * (target - from);
+            let goal = neck_goal(wanted, look_away(&self.look, t), limits);
+            self.neck = ease_neck(self.neck, goal, delta);
+            let q = chest_turn * neck_quat(self.neck.0, self.neck.1) * head_rest;
             body.set_world_rot(head, q);
             self.face_point = Some(match eyes {
                 (Some(l), Some(r)) => (body.pos(l) + body.pos(r)) * 0.5,
@@ -1091,6 +1263,7 @@ pub fn drive(
             {
                 g.catches += 1;
                 let roll = Rng::new(&format!("{seed}:GRAB:1:{}", g.catches)).next_float() as f32;
+                let variant = variant_key(seed, &view.shown_id, g.catches);
                 let mut grab = Grab::begin(
                     slot,
                     view,
@@ -1100,6 +1273,7 @@ pub fn drive(
                     fac,
                     ceiling,
                     roll,
+                    variant,
                     camera,
                 );
                 grab.start = now;
@@ -1285,80 +1459,62 @@ mod tests {
     }
 
     #[test]
-    fn ease_head_turn_follows_the_data_rate() {
-        let full = Quat::from_rotation_y(1.0);
+    fn the_neck_eases_at_the_data_rate() {
         let k = 1.0 - (-grab_timing().head_turn_rate * 0.1).exp();
-        let want = gd_slerp(Quat::IDENTITY, full, k);
-        // compare components: Quat::angle_between is acos of a dot near 1, which only resolves ~5e-4 rad in f32
-        let got = ease_head_turn(Quat::IDENTITY, full, 0.1);
-        assert!((got.dot(want).abs() - 1.0).abs() < 1e-6, "got {got:?} want {want:?}");
-        assert!(got.angle_between(want) < 1e-3);
-        assert!(ease_head_turn(Quat::IDENTITY, full, 0.0).angle_between(Quat::IDENTITY) < 1e-6);
-        assert!(ease_head_turn(Quat::IDENTITY, full, 10.0).angle_between(full) < 1e-3);
+        let got = ease_neck((0.0, 0.0), (1.0, -0.5), 0.1);
+        assert!((got.0 - k).abs() < 1e-6 && (got.1 + 0.5 * k).abs() < 1e-6, "got {got:?}");
+        assert_eq!(ease_neck((0.2, 0.1), (1.0, -0.5), 0.0), (0.2, 0.1));
+        let done = ease_neck((0.0, 0.0), (1.0, -0.5), 10.0);
+        assert!((done.0 - 1.0).abs() < 1e-4 && (done.1 + 0.5).abs() < 1e-4);
     }
 
-    /// A look-away grab (the head turned to the side and down, away from the runner) never turns the head past
-    /// Aki's neck limit, and the limit is Godot's default look yaw (2.0 radians, about 115 degrees).
+    /// Wherever the aim is, in front, beside, above, below or behind her, the head's goal stays inside the neck's
+    /// range, and the range is a neck's, not the original's 115 degrees.
     #[test]
-    fn grab_head_look_stays_within_neck_limit() {
-        let look = look_for("aki");
-        let limit_deg = look.yaw.to_degrees();
-        assert!((look.yaw - 2.0).abs() < 1e-6, "aki neck limit {limit_deg}");
-        let facing = vec3(0.0, 0.0, -1.0);
-        // the look-away aim: far to one side and down
-        for side in [1.0_f32, -1.0] {
-            for (x, y, z) in [(1.5 * side, -0.8, 0.0), (3.0 * side, -2.0, 0.5), (1.5 * side, 0.0, 0.0)] {
-                let wanted = vec3(x, y, z).normalize();
-                let q = neck_turn(facing, wanted, look.yaw);
-                let turned = q.angle_between(Quat::IDENTITY);
-                assert!(
-                    turned <= look.yaw + 1e-4,
-                    "head turned {}deg, limit {limit_deg}deg",
-                    turned.to_degrees()
-                );
+    fn the_neck_goal_never_leaves_the_neck_range() {
+        let limits = neck_limits(&look_for("aki"));
+        assert!(limits.0 <= 1.3 && limits.1 <= 1.1 && limits.2 <= 1.1, "a neck's range, got {limits:?}");
+        assert!(limits.0 > 0.5 && limits.1 > 0.3 && limits.2 > 0.3);
+        for a in 0..24 {
+            for b in -5..=5 {
+                let (yaw, pitch) = (a as f32 * PI / 12.0, b as f32 * PI / 11.0);
+                let dir = vec3(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
+                for away in [0.0, 0.5, 1.0] {
+                    let g = neck_goal(dir, away, limits);
+                    assert!(g.0.abs() <= limits.0 + 1e-6 && g.1 <= limits.1 + 1e-6 && g.1 >= -limits.2 - 1e-6, "{dir:?}: {g:?}");
+                }
             }
         }
-        // a small aim is not clamped
-        let small = neck_turn(facing, vec3(0.1, 0.0, -1.0).normalize(), look.yaw);
-        assert!(small.angle_between(Quat::IDENTITY) < 0.2);
+        // straight ahead needs no turn, a small aim is not clamped, and an aim behind her stops at the limit
+        assert_eq!(neck_goal(Vec3::NEG_Z, 0.0, limits), (0.0, 0.0));
+        let small = neck_goal(vec3(-0.1, 0.05, -1.0), 0.0, limits);
+        assert!(small.0 > 0.05 && small.0 < 0.15 && small.1 > 0.02 && small.1 < 0.08, "{small:?}");
+        assert!((neck_goal(vec3(-0.2, 0.0, 1.0), 0.0, limits).0 - limits.0).abs() < 1e-6);
+        assert_eq!(neck_goal(Vec3::ZERO, 0.0, limits), (0.0, 0.0));
+        assert_eq!(neck_goal(Vec3::splat(f32::NAN), 0.0, limits), (0.0, 0.0));
     }
 
-    /// The look-away turn (Aki's delay: she looks away from the catch) eases in from the catch frame like Godot's, never
-    /// passes the neck limit on any frame, and reaches its aim.
+    /// The shy look-away is a small turn to her right and down, the same wherever the runner is, and a changed data
+    /// value changes it.
     #[test]
-    fn grab_head_turn_eases_within_neck_limit() {
-        let look = look_for("aki");
-        let along = vec3(0.0, 0.0, -1.0);
-        let facing = along;
-        // the look-away aim from grab.rs head_look: off to her side and down, a step back from the runner
-        let side = along.cross(Vec3::Y).normalize_or_zero();
-        let off = side * 1.5 + Vec3::NEG_Y * 0.8 - along * 0.3;
-        let full = neck_turn(facing, off.normalize(), look.yaw);
-        let full_angle = full.angle_between(Quat::IDENTITY);
-        assert!(full_angle <= look.yaw + 1e-4);
-        let dt = 1.0 / 60.0;
-        let mut turn = Quat::IDENTITY;
-        let mut first = 0.0;
-        for frame in 0..120 {
-            turn = ease_head_turn(turn, full, dt);
-            let a = turn.angle_between(Quat::IDENTITY);
-            if frame == 0 {
-                first = a;
-            }
-            assert!(
-                a <= look.yaw + 1e-4,
-                "frame {frame}: head turned {}deg, limit {}deg",
-                a.to_degrees(),
-                look.yaw.to_degrees()
-            );
+    fn the_look_away_is_a_small_turn_aside() {
+        let t = grab_timing();
+        let limits = neck_limits(&look_for("aki"));
+        assert!(look_for("aki").delay > 0.0, "Aki is the shy one");
+        for dir in [Vec3::NEG_Z, vec3(1.0, 0.3, -0.2), vec3(-1.0, -0.5, 0.4)] {
+            let g = neck_goal(dir, 1.0, limits);
+            assert!((g.0 + t.look_away_yaw).abs() < 1e-6 && (g.1 + t.look_away_down).abs() < 1e-6, "{g:?}");
         }
-        assert!(
-            first < full_angle * 0.5,
-            "catch frame turned {}deg of {}deg: the neck snaps",
-            first.to_degrees(),
-            full_angle.to_degrees()
-        );
-        assert!(turn.angle_between(full) < 1e-3, "head did not reach the look-away aim");
+        assert!(t.look_away_yaw < 0.8 && t.look_away_down < 0.5, "a glance aside, not a turn over the shoulder");
+        assert!(t.look_away_yaw < limits.0 && t.look_away_down < limits.2);
+        // half way back the head is between the two
+        let half = neck_goal(Vec3::NEG_Z, 0.5, limits);
+        assert!((half.0 + t.look_away_yaw * 0.5).abs() < 1e-6);
+        // the angles and the rotation agree, and the rotation has no roll
+        let q = neck_quat(-0.6, -0.3);
+        let (yaw, pitch) = neck_angles(q);
+        assert!((yaw + 0.6).abs() < 1e-5 && (pitch + 0.3).abs() < 1e-5);
+        assert!((q * Vec3::X).y.abs() < 1e-6, "the head's side axis stays level");
     }
 
     fn open_room() -> Room {
@@ -1491,8 +1647,8 @@ mod tests {
         let table = style_table();
         assert_eq!(table.fallback, "shoulder_grab");
         assert_eq!(table.arm_stretch, 1.6);
-        assert_eq!(table.styles.len(), 11, "the ten humanoid rows plus the creature pounce_pin");
-        assert_eq!(table.stretch_styles.len(), 9);
+        assert_eq!(table.styles.len(), 14, "the ten humanoid rows, the creature pounce_pin and the port's three variants");
+        assert_eq!(table.stretch_styles.len(), 12);
         assert!(stretches("wrap") && !stretches("shoulder_carry"));
         let rule = |id: &str| table.styles.iter().find(|s| s.id == id).cloned().unwrap();
         assert_eq!(rule("neck_lift").ceiling, 2.5);
@@ -1558,5 +1714,272 @@ mod camera_clearance_tests {
         assert!(c.fov_widen(1.3) > 0.0 && c.fov_widen(1.3) < c.fov_widen(style_table().arm_stretch));
         let wider = GrabCamera { fov_widen_deg: 20.0, ..c };
         assert!(wider.fov_widen(1.3) > c.fov_widen(1.3));
+    }
+}
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    fn open() -> Room {
+        Room { ceiling: 99.0, back: 99.0, hunter_back: 99.0 }
+    }
+
+    /// The data's variants are styles of the table with the standard length (a variant never changes how long a catch
+    /// plays), at least three of them are new, and none is in a hunter's own (Godot) pool.
+    #[test]
+    fn every_variant_in_the_data_is_a_style_of_the_standard_length() {
+        let t = style_table();
+        assert!(t.variant_chance > 0.0 && t.variant_chance < 1.0);
+        let mut new: Vec<&String> = vec![];
+        for (base, list) in &t.variants {
+            assert!(is_style(base), "variants are listed under unknown style {base}");
+            assert!(!list.is_empty(), "{base} lists no variants");
+            for v in list {
+                assert!(is_style(v), "{base} names unknown variant {v}");
+                assert_ne!(v, CREATURE_FALLBACK);
+                assert_eq!(duration(v), grab_timing().total_seconds(), "{v} keeps the standard length");
+                if !new.contains(&v) {
+                    new.push(v);
+                }
+            }
+        }
+        assert!(new.len() >= 3, "only {} variants", new.len());
+        for (path, _) in embedded::assets_under("hunters/grabs/") {
+            let id = path.trim_start_matches("hunters/grabs/").trim_end_matches(".json");
+            if id.starts_with('_') {
+                continue;
+            }
+            for (style, _) in pool_of(id) {
+                assert!(!new.iter().any(|v| **v == style), "{id}'s pool names the variant {style}");
+            }
+        }
+    }
+
+    /// The same catch always plays the same variant, the picked style is variant 0 and keeps most catches, every listed
+    /// variant comes up, and a style without variants is never replaced.
+    #[test]
+    fn a_catch_picks_its_variant_from_its_key() {
+        let t = style_table();
+        let list = &t.variants.iter().find(|(b, _)| b == "shoulder_grab").expect("shoulder_grab has variants").1;
+        let mut seen = vec![0usize; list.len()];
+        let mut base = 0;
+        for key in 0..6000u32 {
+            let v = variant_with(t, "shoulder_grab", key, &open());
+            assert_eq!(v, variant_with(t, "shoulder_grab", key, &open()));
+            match list.iter().position(|x| *x == v) {
+                Some(k) => seen[k] += 1,
+                None => {
+                    assert_eq!(v, "shoulder_grab");
+                    base += 1;
+                }
+            }
+            assert_eq!(variant_with(t, "upside_down", key, &open()), "upside_down");
+        }
+        assert!(seen.iter().all(|n| *n > 0), "every variant comes up: {seen:?}");
+        assert!(base > seen.iter().sum::<usize>(), "the picked style keeps most catches");
+        // a chance of 0 in the data switches the variants off
+        let off = StyleTable { variant_chance: 0.0, ..t.clone() };
+        assert!((0..2000u32).all(|key| variant_with(&off, "shoulder_grab", key, &open()) == "shoulder_grab"));
+    }
+
+    /// A variant the room rules out is not played: the lunge and drag needs floor behind both of them.
+    #[test]
+    fn the_room_rules_a_variant_out() {
+        let t = style_table();
+        let cramped = Room { ceiling: 99.0, back: 0.3, hunter_back: 0.3 };
+        let mut lunges = 0;
+        for key in 0..3000u32 {
+            assert_eq!(variant_with(t, "collar_drag", key, &cramped), "collar_drag");
+            assert_ne!(variant_with(t, "wrist_yank", key, &cramped), "lunge_drag");
+            if variant_with(t, "collar_drag", key, &open()) == "lunge_drag" {
+                lunges += 1;
+            }
+        }
+        assert!(lunges > 0, "with room, the lunge and drag plays");
+        let low = Room { ceiling: 2.2, back: 99.0, hunter_back: 99.0 };
+        assert!((0..3000u32).all(|key| variant_with(t, "neck_lift", key, &low) == "neck_lift"), "no lift under a low ceiling");
+    }
+
+    /// The key is the seed, the hunter and the catch number: the same three give the same key, and catches in a row
+    /// do not all land on the same side of the chance.
+    #[test]
+    fn the_variant_key_is_fixed_by_the_catch() {
+        assert_eq!(variant_key(7, "aki", 1), variant_key(7, "aki", 1));
+        assert_ne!(variant_key(7, "aki", 1), variant_key(7, "aki", 2));
+        assert_ne!(variant_key(7, "aki", 1), variant_key(8, "aki", 1));
+        assert_ne!(variant_key(7, "aki", 1), variant_key(7, "kathy", 1));
+        let t = style_table();
+        let swapped = (1..=40u32).filter(|c| variant_with(t, "wrist_yank", variant_key(7, "aki", *c), &open()) != "wrist_yank").count();
+        assert!(swapped > 0 && swapped < 40, "{swapped} of 40 catches in a row played a variant");
+    }
+
+    /// Each new style poses the runner and her hands through its whole length: finite, and it does something.
+    #[test]
+    fn the_new_styles_pose_the_runner_and_her_arms() {
+        let c = Ctx { eye: 1.6, shoulder_side: -0.45, shoulder_fwd: 0.0, shoulder_y: 1.8, arm: 0.66, back: 3.0 };
+        for style in ["two_hand_lift", "lunge_drag", "behind_grab"] {
+            let end = duration(style);
+            for k in 0..=40 {
+                let p = pose(style, end * k as f32 / 40.0, &c);
+                assert!(p.at.is_finite() && p.tilt.is_finite() && p.view_roll.is_finite(), "{style}");
+                assert!(p.hunter.iter().all(|x| x.is_finite()), "{style}");
+                assert_eq!(p.arms.len(), 2, "{style} takes both hands");
+                assert!(p.arms.iter().all(|(_, _, k)| (0.0..=1.0).contains(k)), "{style}");
+            }
+            let p = pose(style, end, &c);
+            assert!(p.arms.iter().all(|(_, _, k)| *k > 0.99), "{style}: both hands are on the runner at the end");
+        }
+        let lift = pose("two_hand_lift", duration("two_hand_lift"), &c);
+        assert!(lift.at.y >= 0.2, "the lift takes the runner off the floor");
+        let drag = pose("lunge_drag", duration("lunge_drag"), &c);
+        assert!(drag.tilt > 1.2 && drag.hunter[0] < -0.3 && drag.hunter[1] > 0.3, "down on their back, she low and backing away");
+        assert!(drag.at.z < pose("lunge_drag", 0.0, &c).at.z, "and dragged toward her");
+        let behind = pose("behind_grab", duration("behind_grab"), &c);
+        assert!(behind.face < 0.0 && behind.tilt < 0.0, "turned away and pulled back against her");
+    }
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::super::clip::rig;
+    use super::super::hunter::Input;
+    use super::*;
+    use crate::hunters::brain::State;
+
+    fn input(grabbing: bool) -> Input<'static> {
+        Input {
+            pos: (4.0, 5.0),
+            brain_facing: (0.0, -1.0),
+            active: true,
+            stun: 0.0,
+            heavy_stun: false,
+            state: State::Idle,
+            direct_visible: false,
+            winded: false,
+            airborne: false,
+            lift: 0.0,
+            sway: (0.0, 0.0),
+            charging: false,
+            look_target: None,
+            path_ahead: None,
+            chase_style: "pump",
+            camera: vec3(4.0, 1.6, 4.0),
+            grabbing,
+            peek_lean: None,
+            creature: None,
+            mechanic: None,
+        }
+    }
+
+    /// Her head's turn from her chest, read off the posed bones: (yaw, pitch, the roll left over), radians.
+    fn neck_of(r: &Rig, out: &Output) -> (f32, f32, f32) {
+        let turn = |b: usize| Quat::from_mat4(&out.bones[b]).normalize() * rest_model_rot(r, b).inverse();
+        let (chest, head) = (r.bone("Chest").unwrap(), r.bone("Head").unwrap());
+        let rel = (turn(chest).inverse() * turn(head)).normalize();
+        let (yaw, pitch) = neck_angles(rel);
+        let roll = (neck_quat(yaw, pitch).inverse() * rel).normalize();
+        (yaw, pitch, 2.0 * roll.w.abs().min(1.0).acos())
+    }
+
+    /// Runs `style` on `id` from a standing start to past its end, a frame every `dt`: the runner a metre in front of
+    /// her with the camera at its eyes. Every frame's bones and root must be finite. Returns (t, neck) per frame.
+    fn timeline(id: &str, style: &str, dt: f32) -> Vec<(f32, (f32, f32, f32))> {
+        let r = rig(id).expect("the rig is embedded");
+        let mut view = HunterView::new(id, r.clone());
+        let still = input(false);
+        let mut clock = 0.0;
+        let mut out = view.update(&still, dt, clock).1;
+        for _ in 0..20 {
+            clock += dt;
+            out = view.update(&still, dt, clock).1;
+        }
+        let fwd = vec3(-view.yaw.sin(), 0.0, -view.yaw.cos());
+        let feet = vec3(still.pos.0, 0.0, still.pos.1) + fwd;
+        let camera = (feet + Vec3::Y * 1.6, -fwd);
+        let mut grab = Grab::begin_with(0, &view, &out, feet, 1.6, style.to_string(), 3.0, camera);
+        let held = input(true);
+        let frames = (duration(style) / dt).ceil() as usize + 8;
+        let mut rows = Vec::with_capacity(frames);
+        for f in 0..frames {
+            let t = f as f32 * dt;
+            clock += dt;
+            let pose = view.update(&held, dt, clock).0;
+            let (out, locals, root) = grab.apply(&view, pose, t, dt, clock);
+            assert!(out.bones.iter().all(|m| m.is_finite()) && out.root.is_finite(), "{id} {style}: frame {f} bones");
+            assert!(locals.iter().all(|l| l.t.is_finite() && l.r.is_finite()), "{id} {style}: frame {f} pose");
+            assert!(root.0.is_finite() && root.1.is_finite() && root.2.is_finite(), "{id} {style}: frame {f} root");
+            rows.push((t, neck_of(&r, &out)));
+        }
+        rows
+    }
+
+    /// The neck's range and the most a frame may move each angle (the ease's share of the whole range), for `id`.
+    fn check_neck(id: &str, style: &str, dt: f32, rows: &[(f32, (f32, f32, f32))]) {
+        let (yaw_limit, up, down) = neck_limits(&look_for(id));
+        let k = 1.0 - (-grab_timing().head_turn_rate * dt).exp();
+        let slack = 2.0e-3;
+        let mut last: Option<(f32, f32, f32)> = None;
+        for (t, n) in rows {
+            let at = format!("{id} {style} t={t:.3}");
+            assert!(n.0.abs() <= yaw_limit + slack, "{at}: head turned {} deg, the neck goes {} deg", n.0.to_degrees(), yaw_limit.to_degrees());
+            assert!(n.1 <= up + slack && n.1 >= -down - slack, "{at}: head pitched {} deg", n.1.to_degrees());
+            assert!(n.2 < 0.02, "{at}: head rolled {} deg", n.2.to_degrees());
+            if let Some(l) = last {
+                assert!((n.0 - l.0).abs() <= k * 2.0 * yaw_limit + slack, "{at}: the head's turn jumped {} deg in a frame", (n.0 - l.0).to_degrees());
+                assert!((n.1 - l.1).abs() <= k * (up + down) + slack, "{at}: the head's pitch jumped {} deg in a frame", (n.1 - l.1).to_degrees());
+            }
+            last = Some(*n);
+        }
+    }
+
+    /// Aki's whole grab, look-away included, sampled at 60 frames a second: her head stays inside the neck's range from
+    /// her chest, never rolls, never jumps between frames, and the look-away is a glance aside (never past the data's
+    /// look-away angles, or where her head already was), reached before she looks back at the runner.
+    #[test]
+    fn akis_neck_stays_in_range_and_never_jumps_through_her_whole_grab() {
+        let look = look_for("aki");
+        let t = grab_timing();
+        let dt = 1.0 / 60.0;
+        for (style, _) in pool_of("aki") {
+            let rows = timeline("aki", &style, dt);
+            check_neck("aki", &style, dt, &rows);
+            let first = rows[0].1;
+            let mut shy = None;
+            for (at, n) in rows.iter().filter(|(at, _)| *at <= look.delay) {
+                assert!(
+                    n.0.abs() <= t.look_away_yaw.max(first.0.abs()) + 2.0e-3,
+                    "{style} t={at:.3}: the look-away turned her head {} deg",
+                    n.0.to_degrees()
+                );
+                assert!(n.1.abs() <= t.look_away_down.max(first.1.abs()) + 2.0e-3, "{style} t={at:.3}: pitched {} deg", n.1.to_degrees());
+                shy = Some(*n);
+            }
+            let shy = shy.expect("the grab is longer than the look-away delay");
+            assert!((shy.0 + t.look_away_yaw).abs() < 0.03 && (shy.1 + t.look_away_down).abs() < 0.03, "{style}: looked away to {shy:?}");
+            // and then she looks back toward the runner: the turn aside is given up
+            let end = rows.last().unwrap().1;
+            assert!((end.0 - shy.0).abs() + (end.1 - shy.1).abs() > 0.05, "{style}: she never looked back");
+        }
+    }
+
+    /// Every humanoid style of the table, the variants included, runs its whole timeline on a humanoid rig with finite
+    /// bones, and the head stays inside the neck's range.
+    #[test]
+    fn every_style_and_variant_runs_its_whole_timeline_inside_the_neck_range() {
+        let dt = 1.0 / 30.0;
+        let mut ran = 0;
+        for rule in style_table().styles.iter().filter(|s| s.id != CREATURE_FALLBACK) {
+            for id in ["aki", "kathy"] {
+                let rows = timeline(id, &rule.id, dt);
+                assert!(rows.last().unwrap().0 >= duration(&rule.id), "{id} {}: ran short", rule.id);
+                check_neck(id, &rule.id, dt, &rows);
+            }
+            ran += 1;
+        }
+        assert!(ran >= 13, "ran {ran} styles");
+        for v in ["two_hand_lift", "lunge_drag", "behind_grab"] {
+            assert!(is_style(v), "{v} is in the table");
+        }
     }
 }

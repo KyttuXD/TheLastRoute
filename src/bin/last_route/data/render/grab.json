@@ -12,6 +12,11 @@
   "squat_bend": 1.45,
   "head_turn_rate": 7.0,
   "look_away_seconds": 0.4,
+  "look_away_yaw": 0.6,
+  "look_away_down": 0.3,
+  "neck_yaw_limit": 1.22,
+  "neck_up_limit": 1.05,
+  "neck_down_limit": 0.96,
   "camera": {
     "wall_clearance": 0.3,
     "min_distance": 0.35,

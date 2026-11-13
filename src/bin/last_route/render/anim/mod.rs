@@ -9,6 +9,7 @@
 //! * `grab`   -- HunterGrab / GrabStyles: the hunter's hold on a caught runner (style pick, body points, two-bone arm IK).
 //! * `held`   -- the first-person held item: HeldItemPoses plus the player's tool tweens (swing, use, taser kick, torch click).
 //! * `hide`   -- the hiding spot's door cycle and the runner's crouch pose, driven by the hiding state.
+//! * `plant`  -- planted feet while a figure stands (the port's own): the idle clips sway the pelvis, the feet stay put.
 //!
 //! The views keep state between frames (smoothed speed, current clip, blends...), which the immutable `Game` does not
 //! carry, so they live here, keyed by the hunter's slot, and advance on the game clock.
@@ -22,6 +23,7 @@ pub mod held;
 pub mod hide;
 pub mod hunter;
 pub mod hunter_activity_pose;
+pub mod plant;
 pub mod player;
 pub mod profile;
 pub mod runner;
