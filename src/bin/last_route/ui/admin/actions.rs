@@ -200,7 +200,7 @@ impl Admin {
                     *l = on;
                 }
                 if let Some(content) = content {
-                    g.world.lamps = crate::render::world_mesh::lamps(&g.fac, &g.lights_on, content);
+                    g.world.lamps = crate::render::world_mesh::lamps_near(&g.fac, &g.lights_on, content, Some(g.p.pos));
                 }
             }
             "show_traps" => self.show_traps = !self.show_traps,

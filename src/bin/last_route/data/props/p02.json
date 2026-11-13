@@ -84,7 +84,20 @@
 			"id": "prizeClawMachine",
 			"models": [
 				"res://assets/props/maze/prize_claw_machine.bbmodel"
-			]
+			],
+			"light": {
+				"color": "ffd27a",
+				"energy": 0.3,
+				"range": 3.0,
+				"flicker_hz": 0.6,
+				"flicker_depth": 0.08,
+				"glow": true,
+				"offset": [
+					0,
+					1.6,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "prizeCounter",

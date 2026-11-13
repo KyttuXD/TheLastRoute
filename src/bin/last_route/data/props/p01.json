@@ -89,13 +89,39 @@
 				"res://assets/props/maze/arcade_cabinet_burgundy.bbmodel",
 				"res://assets/props/maze/arcade_cabinet_teal.bbmodel",
 				"res://assets/props/maze/arcade_cabinet_ultraviolet.bbmodel"
-			]
+			],
+			"light": {
+				"color": "5fe0ff",
+				"energy": 0.3,
+				"range": 3.0,
+				"flicker_hz": 1.3,
+				"flicker_depth": 0.14,
+				"glow": true,
+				"offset": [
+					0,
+					1.55,
+					-0.35
+				]
+			}
 		},
 		{
 			"id": "arcadeCabinetCyanMagenta",
 			"models": [
 				"res://assets/props/maze/arcade_cabinet_cyan_magenta.bbmodel"
-			]
+			],
+			"light": {
+				"color": "ff5fd8",
+				"energy": 0.3,
+				"range": 3.0,
+				"flicker_hz": 1.1,
+				"flicker_depth": 0.14,
+				"glow": true,
+				"offset": [
+					0,
+					1.55,
+					-0.35
+				]
+			}
 		},
 		{
 			"id": "filingCabinet",
@@ -125,7 +151,20 @@
 			"id": "arcadeTokenChanger",
 			"models": [
 				"res://assets/props/maze/arcade_token_changer.bbmodel"
-			]
+			],
+			"light": {
+				"color": "ffb347",
+				"energy": 0.2,
+				"range": 2.2,
+				"flicker_hz": 0.5,
+				"flicker_depth": 0.06,
+				"glow": true,
+				"offset": [
+					0,
+					1.3,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "backstageRepairStand",

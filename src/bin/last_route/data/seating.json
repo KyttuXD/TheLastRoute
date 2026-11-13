@@ -13,6 +13,28 @@
     "bunk":    { "pose": "lie", "offset": 0.0, "height": 0.55, "exit": 1.1, "label": "LIE DOWN" },
     "gurney":  { "pose": "lie", "offset": 0.0, "height": 0.8, "exit": 1.1, "label": "LIE DOWN" }
   },
+  "sit": {
+    "_note": "Sitting on a seat (game/bed.rs; Godot PropModelCatalog.interaction_for 'sit', player_controller_3d.gd use_furniture and rest_spot). prop_rules: the first rule that matches a prop type (lower case) names its seat kind above (Godot: any type containing chair, couch, bench, stool or sofa, and the diner booth); not_seats are the work benches Godot leaves out; a bed is never a seat. The body stays where it stood and only the eye moves: eye_above_seat over the kind's height (Godot SIT_EYE_ABOVE_SEAT), looking out of the seat's front with look_pitch (radians, negative is down). The look is held around the seat's facing: look_yaw_limit_deg each side (Godot SIT_YAW_LIMIT), look_pitch_down_deg below and look_pitch_up_deg above level (Godot SIT_PITCH -0.95..0.6 rad). Interact stands up; with stand_on_move a move key pressed after sitting stands up too. Sitting gives no stamina beyond the normal recovery.",
+    "prop_rules": [
+      { "contains": "dinerbooth", "kind": "bench" },
+      { "contains": "chair", "kind": "chair" },
+      { "contains": "couch", "kind": "couch" },
+      { "contains": "bench", "kind": "bench" },
+      { "contains": "stool", "kind": "stool" },
+      { "contains": "sofa", "kind": "sofa" }
+    ],
+    "not_seats": ["labBench", "pottingBench"],
+    "eye_above_seat": 0.83,
+    "look_pitch": -0.08,
+    "look_yaw_limit_deg": 75.0,
+    "look_pitch_down_deg": 54.4,
+    "look_pitch_up_deg": 34.4,
+    "stand_on_move": true,
+    "text": {
+      "seated": "SEATED // [E] STAND",
+      "stood": "STOOD UP"
+    }
+  },
   "emote_extras": {
     "doorway_pose": { "id": "doorway", "name": "DOORWAY", "duration": 6.0, "loop": true, "period": 6.0, "keys": [
       { "t": 0.0, "bones": { "R-Arm": [0, 0, 70], "L-Arm": [0, 0, -70], "Head": [0, 0, 4] } },

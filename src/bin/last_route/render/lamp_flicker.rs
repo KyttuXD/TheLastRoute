@@ -17,6 +17,8 @@ const SCHEMA: &str = "lr.lamps/1";
 pub struct Lamps {
     budget_default: usize,
     budget_levels: HashMap<i32, usize>,
+    glow_budget: usize,
+    reselect_distance: f32,
     rooms: HashMap<String, (f32, f32)>,
     tint_regions: HashMap<String, Tint>,
     tint_types: HashMap<String, Tint>,
@@ -41,6 +43,8 @@ fn fallback() -> Lamps {
     Lamps {
         budget_default: 10,
         budget_levels: HashMap::new(),
+        glow_budget: 4,
+        reselect_distance: 8.0,
         rooms: HashMap::new(),
         tint_regions: HashMap::new(),
         tint_types: HashMap::new(),
@@ -54,6 +58,17 @@ impl Lamps {
     /// How many lit props a floor on `level` keeps.
     pub fn prop_budget(&self, level: i32) -> usize {
         self.budget_levels.get(&level).copied().unwrap_or(self.budget_default)
+    }
+
+    /// How many of a floor's lit props may be screen glows (a prop light marked `glow`): the rest of the budget is the
+    /// real lamps'.
+    pub fn prop_glow_budget(&self) -> usize {
+        self.glow_budget
+    }
+
+    /// How far (metres) the runner walks before the lit props are chosen again around it.
+    pub fn prop_reselect_distance(&self) -> f32 {
+        self.reselect_distance
     }
 
     /// The (hz, depth) of the switchable room lights in `region`, if they flicker.
@@ -110,6 +125,12 @@ impl Lamps {
         }
         if !have_default {
             return Err("prop_budget.default: missing".into());
+        }
+        if let Some(n) = v.get("prop_glow_budget") {
+            out.glow_budget = n.as_u64().ok_or("prop_glow_budget: expected a whole number")? as usize;
+        }
+        if let Some(d) = v.get("prop_reselect_distance") {
+            out.reselect_distance = d.as_f64().filter(|d| *d > 0.0).ok_or("prop_reselect_distance: a number above 0")? as f32;
         }
         for (region, row) in v.get("room_flicker").and_then(Value::as_object).into_iter().flatten() {
             let num = |k: &str| row.get(k).and_then(Value::as_f64).filter(|n| *n >= 0.0).map(|n| n as f32);
@@ -228,6 +249,8 @@ mod tests {
         assert_eq!(t.prop_budget(0), 10);
         assert!(t.prop_budget(-1) > 10 && t.prop_budget(-2) > 10);
         assert_eq!(t.prop_budget(-3), 10);
+        assert!(t.prop_glow_budget() > 0 && t.prop_glow_budget() < t.prop_budget(0), "screen glows leave the real lamps most of the budget");
+        assert!(t.prop_reselect_distance() > 0.0);
         assert!(t.room_flicker("maintenance").is_some());
         assert_eq!(t.room_flicker("office"), None);
     }

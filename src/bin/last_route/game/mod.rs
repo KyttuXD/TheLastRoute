@@ -45,6 +45,7 @@ pub mod meters;
 pub mod seating;
 pub mod sleep;
 pub mod bed;
+pub mod instruments;
 pub mod anti_idle;
 pub mod music_box;
 pub mod specialty;
@@ -271,6 +272,8 @@ pub struct Game {
     hide_ease: Option<(f32, f32, f32)>,
     /// The runner's rest on a bed: lying down and sleeping (game/bed.rs).
     pub rest: bed::Rest,
+    /// The stage instruments still cooling down after a play (game/instruments.rs).
+    played: instruments::Played,
     /// Host: the world events the game raised this frame for the guests (game/hunting.rs), taken by the app.
     pub hunter_out: crate::net::hunter_events::Outbox,
 
@@ -440,6 +443,7 @@ impl Game {
             hide_check: None,
             hide_ease: None,
             rest: Default::default(),
+            played: Default::default(),
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -599,6 +603,7 @@ impl Game {
             hide_check: None,
             hide_ease: None,
             rest: Default::default(),
+            played: Default::default(),
             hunter_out: Default::default(),
             focus: None,
             toast: String::new(),
@@ -982,6 +987,8 @@ impl Game {
 
     /// Builds the render meshes for the current floor if it changed (needs the GPU assets).
     pub fn sync_world(&mut self, assets: &Assets, content: &Content) {
+        // the lit props stay the ones nearest the runner (one distance check; the list is built again every few metres)
+        self.world.follow_lamps(&self.fac, &self.lights_on, content, self.p.pos);
         if self.world_dirty {
             let frame = self.inf.as_ref().map(|i| ChunkFrame { level: i.level, center: i.center });
             self.world.rebuild(&self.fac, &self.lights_on, frame, assets, content);
@@ -1175,8 +1182,8 @@ impl Game {
         } else if self.p.hidden.is_some() {
             self.update_hidden(dt, c, &prof, sounds);
             self.update_water_sink(dt, false);
-        } else if self.rest.lying() {
-            // lying on a bed or asleep in it: no move, no tools; the hunters carry on below (game/bed.rs)
+        } else if self.rest.resting() {
+            // seated, lying on a bed or asleep in it: no move, no tools; the hunters carry on below (game/bed.rs)
             self.update_rest(dt, c);
         } else {
             self.hide_check = None;

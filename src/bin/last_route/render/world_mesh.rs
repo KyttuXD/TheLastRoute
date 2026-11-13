@@ -43,6 +43,9 @@ pub struct WorldMeshes {
     /// lies wholly in the fog.
     pub bounds: Vec<(Vec3, Vec3)>,
     pub lamps: Vec<Lamp>,
+    /// Where (window cells) the lit props of `lamps` were last chosen around (`follow_lamps`); None until the runner is
+    /// known, and then the window's centre stands in.
+    lamps_at: Option<(f32, f32)>,
     /// The room doors of the floor, drawn each frame apart from `meshes` (which hold them shut) so their leaves swing.
     pub doors: Vec<DoorInstance>,
     /// The Infinite window's geometry by chunk part, kept while a part's chunk stays in (or just left) the window.
@@ -350,6 +353,21 @@ fn drawable_keys<T>(wanted: &[(PartKey, T)], built: impl Fn(&PartKey) -> bool) -
 }
 
 impl WorldMeshes {
+    /// Keeps the lit props of `lamps` the ones nearest the runner: once the runner (`at`, window cells) has walked the
+    /// data's distance (data/render/lamps.json `prop_reselect_distance`) from where they were last chosen, the list is
+    /// built again around it. One distance check a frame; the list itself is built only on that step.
+    pub fn follow_lamps(&mut self, f: &Facility, lights_on: &[bool], content: &Content, at: (f32, f32)) {
+        let reach = lamp_flicker::table().prop_reselect_distance();
+        if self.lamps_at.is_some_and(|p| (p.0 - at.0).hypot(p.1 - at.1) < reach) {
+            return;
+        }
+        self.lamps_at = Some(at);
+        self.lamps = lamps_near(f, lights_on, content, Some(at));
+        for l in &mut self.lamps {
+            l.pos.y += self.dy;
+        }
+    }
+
     /// Rebuilds the meshes for `f`. On the Infinite window (`frame`) only the chunk parts that are new, or whose
     /// neighbour chunks changed, are built; the rest are moved to the new window origin. Any other floor is
     /// built whole.
@@ -368,7 +386,7 @@ impl WorldMeshes {
             }
             self.level = f.level;
         }
-        self.lamps = lamps(f, lights_on, content);
+        self.lamps = lamps_near(f, lights_on, content, self.lamps_at);
         for l in &mut self.lamps {
             l.pos.y += self.dy;
         }
@@ -627,6 +645,9 @@ impl WorldMeshes {
         if self.dy != scope.dy {
             self.shift_y(scope.dy - self.dy);
         }
+        // a neighbour's lit props are chosen around its window's centre; should it become the active floor, the
+        // runner's first step there chooses them again (`follow_lamps`)
+        self.lamps_at = None;
         self.lamps = lamps(f, &[], content);
         for l in &mut self.lamps {
             l.pos.y += self.dy;
@@ -962,11 +983,47 @@ fn owns_lamp(s: &Stair) -> bool {
 /// Every room lamp takes its room's tint (`lamp_flicker` `room_tint`: its type, else its region). On a level 0
 /// Infinite window about a quarter of the rooms start dark (`room_starts_dark`, Godot's `default_room_light`), and the
 /// lamps of a dark room are left out of the list, as a switched-off room's lamps are zeroed.
+///
+/// The room lights, the safe zone's and the stairwells' are all kept. The lit props are then chosen within the floor's
+/// budget (`pick_prop_lights`): nearest the window's centre here, nearest the runner with [`lamps_near`].
 pub fn lamps(f: &Facility, lights_on: &[bool], content: &Content) -> Vec<Lamp> {
-    lamps_with(f, lights_on, content, &dark_rooms(f))
+    lamps_near(f, lights_on, content, None)
 }
 
-fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]) -> Vec<Lamp> {
+/// [`lamps`] with the lit props chosen nearest `near` (window cells: the runner) instead of the window's centre.
+pub fn lamps_near(f: &Facility, lights_on: &[bool], content: &Content, near: Option<(f32, f32)>) -> Vec<Lamp> {
+    lamps_with(f, lights_on, content, &dark_rooms(f), near)
+}
+
+/// One lit prop that may take a place in a floor's lamp list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LitProp {
+    /// Its index in `Facility::props`.
+    index: usize,
+    /// The squared distance (cells) from the point the list is built around.
+    dist2: f32,
+    /// A screen's glow (`Light::glow`), not a lamp.
+    glow: bool,
+}
+
+/// Which lit props keep their light, as prop indices in prop order. At most `budget` in all. The screen glows take
+/// at most `glow_budget` of that, the nearest first, so the real lamps always keep the rest; the lamps then fill what
+/// is left, the nearest first. A place no glow uses goes to a lamp, never the other way round.
+fn pick_prop_lights(lit: &[LitProp], budget: usize, glow_budget: usize) -> Vec<usize> {
+    let nearest = |glow: bool, n: usize| -> Vec<usize> {
+        let mut some: Vec<(f32, usize)> = lit.iter().filter(|l| l.glow == glow).map(|l| (l.dist2, l.index)).collect();
+        some.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        some.truncate(n);
+        some.into_iter().map(|s| s.1).collect()
+    };
+    let glows = nearest(true, glow_budget.min(budget));
+    let mut out = nearest(false, budget - glows.len());
+    out.extend(glows);
+    out.sort_unstable();
+    out
+}
+
+fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool], near: Option<(f32, f32)>) -> Vec<Lamp> {
     let mut out = vec![];
     let table = lamp_flicker::table();
     for (i, l) in f.room_lights.iter().enumerate() {
@@ -1005,19 +1062,27 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
     // each stairwell and ladder well carries a light, so its steps and rungs read in the dark. A flight has one light (Godot's
     // stairwell light): the lower level, which owns the flight, lights it; the upper level's record adds none
     out.extend(f.stairs.iter().filter(|s| owns_lamp(s)).map(|s| stairs::lamp(*s, WALL_HEIGHT)));
-    let mut budget = lamp_flicker::table().prop_budget(f.level);
-    for p in &f.props {
-        if budget == 0 {
-            break;
-        }
-        let Some(light) = content.props.get(&p.ptype).and_then(|d| d.light.clone()) else {
+    // the lit props: chosen once per list, around the runner (or the window's centre), never in prop order
+    let near = near.unwrap_or((f.cols as f32 * 0.5, f.rows as f32 * 0.5));
+    let room_of = |p: &Prop| f.room_at(p.cell.x as f64 + 0.5, p.cell.y as f64 + 0.5).filter(|i| !f.rooms[*i].lobby());
+    let mut lit: Vec<LitProp> = vec![];
+    for (index, p) in f.props.iter().enumerate() {
+        let Some(light) = content.props.get(&p.ptype).and_then(|d| d.light.as_ref()) else {
             continue;
         };
-        let room = f.room_at(p.cell.x as f64 + 0.5, p.cell.y as f64 + 0.5).filter(|i| !f.rooms[*i].lobby());
-        if room.is_some_and(|i| dark[i]) {
+        if room_of(p).is_some_and(|i| dark[i]) {
             continue;
         }
-        budget -= 1;
+        let (cx, cz) = p.cell.center();
+        let (dx, dz) = (cx + p.offset.0 - near.0, cz + p.offset.1 - near.1);
+        lit.push(LitProp { index, dist2: dx * dx + dz * dz, glow: light.glow });
+    }
+    for index in pick_prop_lights(&lit, table.prop_budget(f.level), table.prop_glow_budget()) {
+        let p = &f.props[index];
+        let Some(light) = content.props.get(&p.ptype).and_then(|d| d.light.as_ref()) else {
+            continue;
+        };
+        let room = room_of(p);
         let tint = match room {
             Some(i) => table.room_tint(&f.rooms[i].region, &f.rooms[i].rtype),
             None => table.room_tint(f.region_at(p.cell.x, p.cell.y), ""),
@@ -3547,7 +3612,7 @@ mod sewer_lamp_tests {
         for seed in ["dark-a", "dark-b", "dark-c"] {
             let f = level_0(seed);
             let dark = dark_rooms_with(&f, &q);
-            let all = lamps_with(&f, &[], &content, &dark);
+            let all = lamps_with(&f, &[], &content, &dark, None);
             for (i, r) in f.rooms.iter().enumerate() {
                 let inside = |l: &Lamp| {
                     l.pos.x > r.x as f32 + 1.0 && l.pos.x < (r.x + r.w) as f32 - 1.0 && l.pos.z > r.y as f32 + 1.0 && l.pos.z < (r.y + r.h) as f32 - 1.0
@@ -3608,6 +3673,60 @@ mod sewer_lamp_tests {
             let phases: HashSet<u32> = steady.iter().map(|l| l.flicker.phase.to_bits()).collect();
             assert!(phases.len() > steady.len() / 2, "lamps start at different phases");
         }
+    }
+
+    #[test]
+    fn lit_props_are_chosen_nearest_first_and_screen_glows_never_crowd_out_the_lamps() {
+        let lit = |index: usize, dist2: f32, glow: bool| LitProp { index, dist2, glow };
+        // twelve lamps in prop order, the far ones first: the budget keeps the ten nearest, not the first ten
+        let lamps_only: Vec<LitProp> = (0..12).map(|i| lit(i, (12 - i) as f32, false)).collect();
+        assert_eq!(pick_prop_lights(&lamps_only, 10, 4), (2..12).collect::<Vec<_>>());
+        // under the budget every lamp is kept, in prop order
+        assert_eq!(pick_prop_lights(&lamps_only[..5], 10, 4), vec![0, 1, 2, 3, 4]);
+        // six screens right beside the runner and twelve lamps further off: the glows take their four places at most
+        let mut mixed = lamps_only.clone();
+        mixed.extend((12..18).map(|i| lit(i, 0.1 * (i - 11) as f32, true)));
+        let got = pick_prop_lights(&mixed, 10, 4);
+        assert_eq!(got.len(), 10);
+        assert_eq!(got.iter().filter(|i| **i >= 12).copied().collect::<Vec<_>>(), vec![12, 13, 14, 15], "the four nearest glows");
+        assert_eq!(got.iter().filter(|i| **i < 12).copied().collect::<Vec<_>>(), (6..12).collect::<Vec<_>>(), "the six nearest lamps");
+        // a place no glow uses goes to a lamp, and a place no lamp uses does not go to a fifth glow
+        mixed.truncate(13);
+        assert_eq!(pick_prop_lights(&mixed, 10, 4).iter().filter(|i| **i < 12).count(), 9);
+        let glows_only: Vec<LitProp> = (0..8).map(|i| lit(i, i as f32, true)).collect();
+        assert_eq!(pick_prop_lights(&glows_only, 10, 4), vec![0, 1, 2, 3]);
+        // no glow place at all, and a budget smaller than the glow places
+        assert!(pick_prop_lights(&mixed, 10, 0).iter().all(|i| *i < 12));
+        assert_eq!(pick_prop_lights(&glows_only, 2, 4), vec![0, 1]);
+        assert!(pick_prop_lights(&mixed, 0, 4).is_empty());
+    }
+
+    #[test]
+    fn the_lit_props_follow_the_point_the_list_is_built_around() {
+        let content = Content::load();
+        let f = level_0("dark-a");
+        let budget = lamp_flicker::table().prop_budget(f.level);
+        // the room lights, the safe zone's and the stairwells' come first and are all kept, wherever the list is built
+        let fixed = f.room_lights.len() + usize::from(f.safe_zone.is_some()) + f.stairs.iter().filter(|s| owns_lamp(s)).count();
+        let lit_rooms = vec![false; f.rooms.len()];
+        let corners = [(2.0f32, 2.0f32), (f.cols as f32 - 2.0, f.rows as f32 - 2.0)];
+        let built: Vec<Vec<Lamp>> = corners.iter().map(|c| lamps_with(&f, &[], &content, &lit_rooms, Some(*c))).collect();
+        assert_eq!(built[0].len(), built[1].len(), "the same number of lit props wherever they are chosen");
+        assert!(built[0].len() >= fixed && built[0].len() <= fixed + budget);
+        for (a, b) in built[0][..fixed].iter().zip(&built[1][..fixed]) {
+            assert!(a.pos == b.pos && a.energy == b.energy, "the room lamps do not depend on the point");
+        }
+        // the lit props chosen around a corner lie nearer that corner than those chosen around the other one (a light
+        // sits within a metre of its prop's centre, hence the slack)
+        let reach = |list: &[Lamp], c: (f32, f32)| list[fixed..].iter().map(|l| (l.pos.x - c.0).hypot(l.pos.z - c.1)).sum::<f32>();
+        let slack = budget as f32;
+        assert!(reach(&built[0], corners[0]) <= reach(&built[1], corners[0]) + slack);
+        assert!(reach(&built[1], corners[1]) <= reach(&built[0], corners[1]) + slack);
+        // with no point the window's centre stands in
+        let centre = (f.cols as f32 * 0.5, f.rows as f32 * 0.5);
+        let plain = lamps_with(&f, &[], &content, &lit_rooms, None);
+        let around = lamps_with(&f, &[], &content, &lit_rooms, Some(centre));
+        assert!(plain.len() == around.len() && plain.iter().zip(&around).all(|(a, b)| a.pos == b.pos));
     }
 
     #[test]

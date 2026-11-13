@@ -66,7 +66,20 @@
 			"id": "normalTvConsole",
 			"models": [
 				"res://assets/props/mansion/normal_tv_console.bbmodel"
-			]
+			],
+			"light": {
+				"color": "bcd4ff",
+				"energy": 0.3,
+				"range": 3.2,
+				"flicker_hz": 1.6,
+				"flicker_depth": 0.16,
+				"glow": true,
+				"offset": [
+					0,
+					1.0,
+					-0.35
+				]
+			}
 		},
 		{
 			"id": "normalEntryBench",

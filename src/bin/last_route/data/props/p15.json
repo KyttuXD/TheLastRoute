@@ -118,7 +118,20 @@
 				"res://assets/props/blocky/tvWall_0.bbmodel",
 				"res://assets/props/blocky/tvWall_1.bbmodel",
 				"res://assets/props/blocky/tvWall_2.bbmodel"
-			]
+			],
+			"light": {
+				"color": "bcd4ff",
+				"energy": 0.34,
+				"range": 3.5,
+				"flicker_hz": 1.4,
+				"flicker_depth": 0.14,
+				"glow": true,
+				"offset": [
+					0,
+					1.2,
+					-0.35
+				]
+			}
 		},
 		{
 			"id": "cinemaSeats",

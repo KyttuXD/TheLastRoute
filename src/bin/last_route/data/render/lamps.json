@@ -6,6 +6,9 @@
     "level.-1": 40,
     "level.-2": 40
   },
+  "_prop_glow": "prop_glow_budget: how many of a floor's lit props may be screen glows (a prop light with `glow: true` in data/props/*.json: arcade cabinets, vending machines, TVs, consoles); they come out of prop_budget, never on top of it, and the real lamps keep the rest. Both groups are chosen nearest the runner (nearest the window's centre when a list is built without one), and chosen again once the runner has walked prop_reselect_distance metres.",
+  "prop_glow_budget": 4,
+  "prop_reselect_distance": 8.0,
   "room_flicker": {
     "maintenance": { "hz": 3.1, "depth": 0.1 }
   },

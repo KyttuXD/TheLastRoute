@@ -36,13 +36,39 @@
 			"id": "controlConsole",
 			"models": [
 				"res://assets/props/blocky/controlConsole.bbmodel"
-			]
+			],
+			"light": {
+				"color": "8fe6f0",
+				"energy": 0.26,
+				"range": 3.0,
+				"flicker_hz": 0.9,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					1.1,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "monitorWall",
 			"models": [
 				"res://assets/props/blocky/monitorWall.bbmodel"
-			]
+			],
+			"light": {
+				"color": "9fd0ff",
+				"energy": 0.3,
+				"range": 3.2,
+				"flicker_hz": 1.2,
+				"flicker_depth": 0.12,
+				"glow": true,
+				"offset": [
+					0,
+					0.0,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "divePod",
@@ -88,7 +114,20 @@
 			"id": "diveConsole",
 			"models": [
 				"res://assets/props/blocky/diveConsole.bbmodel"
-			]
+			],
+			"light": {
+				"color": "8fe6f0",
+				"energy": 0.24,
+				"range": 2.8,
+				"flicker_hz": 0.9,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					1.05,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "deconShower",

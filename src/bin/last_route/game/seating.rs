@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::sync::OnceLock;
 
 pub const SCHEMA: &str = "lr.seating/1";
-const TEXT: &str = include_str!("../data/seating.json");
+pub(super) const TEXT: &str = include_str!("../data/seating.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pose {

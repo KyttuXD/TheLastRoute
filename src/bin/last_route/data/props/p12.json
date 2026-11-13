@@ -34,7 +34,20 @@
 			"id": "vitalsMonitor",
 			"models": [
 				"res://assets/props/blocky/vitalsMonitor.bbmodel"
-			]
+			],
+			"light": {
+				"color": "7dffa8",
+				"energy": 0.22,
+				"range": 2.4,
+				"flicker_hz": 1.0,
+				"flicker_depth": 0.12,
+				"glow": true,
+				"offset": [
+					0,
+					1.7,
+					-0.2
+				]
+			}
 		},
 		{
 			"id": "nursesStation",

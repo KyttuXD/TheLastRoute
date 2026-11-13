@@ -1,0 +1,18 @@
+{
+  "schema": "lr.instruments/1",
+  "_note": "Playable stage instruments (game/instruments.rs; Godot game/config/music_props.gd PLAYABLE). kinds: prop type -> cue (the sound: audio cue music_<cue>), prompt (shown after the interact key), noise and noise_seconds (the runner's noise burst the hunters hear, in the units of walking 4.2 and sprinting 10.5; Godot's water splash is 3.0 for 1.2 s). cooldown_seconds: one play per instrument per this long, so a key cannot be mashed into a wall of noise. noise_enabled false leaves only the sound (Godot music_noise). reach: metres from the instrument's centre; aim_height: the height the crosshair is matched against.",
+  "cooldown_seconds": 0.6,
+  "noise_enabled": true,
+  "reach": 1.7,
+  "aim_height": 1.0,
+  "kinds": {
+    "micStand": { "cue": "mic", "prompt": "TAP THE MIC", "noise": 2.2, "noise_seconds": 1.4 },
+    "podiumMic": { "cue": "podium", "prompt": "TAP THE MIC", "noise": 1.2, "noise_seconds": 1.0 },
+    "drumKit": { "cue": "drums", "prompt": "PLAY THE DRUMS", "noise": 2.6, "noise_seconds": 2.0 },
+    "electricGuitarStand": { "cue": "electric", "prompt": "STRUM THE GUITAR", "noise": 2.0, "noise_seconds": 1.6 },
+    "acousticGuitarStand": { "cue": "acoustic", "prompt": "STRUM THE GUITAR", "noise": 1.2, "noise_seconds": 1.2 },
+    "bassGuitarStand": { "cue": "bass", "prompt": "PLUCK THE BASS", "noise": 1.8, "noise_seconds": 1.4 },
+    "keyboardStand": { "cue": "keys", "prompt": "PLAY A CHORD", "noise": 1.4, "noise_seconds": 1.2 },
+    "uprightPianoMusic": { "cue": "piano", "prompt": "PLAY THE PIANO", "noise": 1.6, "noise_seconds": 1.6 }
+  }
+}

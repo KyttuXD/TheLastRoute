@@ -14,6 +14,9 @@ pub struct Light {
     /// Zero for either is steady.
     pub flicker_hz: f32,
     pub flicker_depth: f32,
+    /// A screen's glow (an arcade cabinet, a TV), not a lamp: it takes one of the few glow places of a floor's lit
+    /// props (data/render/lamps.json `prop_glow_budget`), so screens never crowd out the lamps.
+    pub glow: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +62,7 @@ pub fn parse_file(v: &Value) -> Vec<PropDef> {
                 offset: (g(0, 0.0), g(1, 0.5), g(2, 0.0)),
                 flicker_hz: l["flicker_hz"].as_f64().unwrap_or(0.0).max(0.0) as f32,
                 flicker_depth: l["flicker_depth"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32,
+                glow: l["glow"].as_bool().unwrap_or(false),
             }
         });
         out.push(PropDef {

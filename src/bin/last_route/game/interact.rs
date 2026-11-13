@@ -91,6 +91,10 @@ pub enum Focus {
     Valve(usize),
     /// A bed to lie down on, by its index in `Facility::props` (game/bed.rs).
     Bed(usize),
+    /// A chair, couch, bench or stool to sit on, by its index in `Facility::props` (game/bed.rs).
+    Seat(usize),
+    /// A playable stage instrument, by its index in `Facility::props` (game/instruments.rs).
+    Instrument(usize),
 }
 
 /// Who does an interact effect: the player, or a bot by its `Npc::id` (game/npc.rs). The effects are shared.
@@ -246,16 +250,23 @@ impl Game {
                 consider((x + p.offset.0, z + p.offset.1), p.mount_y.map_or(1.0, |y| y as f32), INTERACT_REACH, Focus::Valve(i));
             }
         }
-        // beds (game/bed.rs; Godot `interaction_for` "lay"): the mattress, from the seating reach of data/seating.json
+        // the props in arm's reach, in Godot's `interaction_for` order: a stage instrument (game/instruments.rs), then
+        // a bed's mattress ("lay") and a seat's pan ("sit"), both from the seating reach of data/seating.json (game/bed.rs)
         let bed_reach = super::seating::seating().default_reach;
+        let music = super::instruments::rules();
+        let near = bed_reach.max(music.reach + 0.3);
         for (i, p) in self.fac.props.iter().enumerate() {
             let (x, z) = p.cell.center();
             let at = (x + p.offset.0, z + p.offset.1);
-            if pdist(at, self.p.pos) > bed_reach {
+            if pdist(at, self.p.pos) > near {
                 continue;
             }
-            if let Some((_, k)) = super::bed::seat_of(&p.ptype) {
+            if music.of(&p.ptype).is_some() {
+                consider(at, music.aim_height, music.reach, Focus::Instrument(i));
+            } else if let Some((_, k)) = super::bed::seat_of(&p.ptype) {
                 consider(at, k.height, bed_reach - 0.3, Focus::Bed(i));
+            } else if let Some((_, k)) = super::bed::sit_seat_of(&p.ptype) {
+                consider(at, k.height, bed_reach - 0.3, Focus::Seat(i));
             }
         }
         best.map(|b| b.1)
@@ -306,6 +317,8 @@ impl Game {
         let f = self.focus?;
         Some(match f {
             Focus::Bed(i) => super::bed::lie_prompt(&self.fac.props[i].ptype),
+            Focus::Seat(i) => super::bed::sit_prompt(&self.fac.props[i].ptype),
+            Focus::Instrument(i) => super::instruments::prompt(&self.fac.props[i].ptype),
             Focus::Relay(_) => "[E] RECOVER RELAY".into(),
             Focus::Battery(_) => "[E] TAKE BATTERY".into(),
             Focus::Pickup(i) => format!("[E] COLLECT {}", self.pickups[i].item.label()),
@@ -373,7 +386,7 @@ impl Game {
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Valve(i) => self.fac.props[i].cell.center(),
-            Focus::Bed(i) => self.bed_centre(i),
+            Focus::Bed(i) | Focus::Seat(i) | Focus::Instrument(i) => self.bed_centre(i),
             Focus::Shop(i) => self.hunters[i].pos,
             Focus::Door(i) => self.fac.doors().find(|d| d.0 == i).map_or(self.p.pos, |d| d.1),
         }
@@ -442,7 +455,7 @@ impl Game {
             Focus::LightSwitch(i) => {
                 self.lights_on[i] = !self.lights_on[i];
                 self.world.lamps =
-                    crate::render::world_mesh::lamps(&self.fac, &self.lights_on, content);
+                    crate::render::world_mesh::lamps_near(&self.fac, &self.lights_on, content, Some(self.p.pos));
                 self.say(if self.lights_on[i] {
                     "ROOM LIGHT ON"
                 } else {
@@ -461,6 +474,13 @@ impl Game {
             // the lying prompt then names the keys (`rest_prompt`)
             Focus::Bed(i) => {
                 self.lie_down(i);
+            }
+            // the seated prompt then names the key that stands up
+            Focus::Seat(i) => {
+                self.sit_down(i);
+            }
+            Focus::Instrument(i) => {
+                self.play_instrument(i);
             }
         }
     }

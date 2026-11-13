@@ -159,6 +159,8 @@ pub fn focus_json(g: &Game, f: Focus) -> Value {
         ),
         Focus::Valve(i) => ("valve", Some(i), g.fac.props[i].cell.center()),
         Focus::Bed(i) => ("bed", Some(i), g.fac.props[i].cell.center()),
+        Focus::Seat(i) => ("seat", Some(i), g.fac.props[i].cell.center()),
+        Focus::Instrument(i) => ("instrument", Some(i), g.fac.props[i].cell.center()),
     };
     json!({ "kind": kind, "index": index, "pos": pt(at), "distance": r2(crate::game::pdist(at, g.p.pos)) })
 }

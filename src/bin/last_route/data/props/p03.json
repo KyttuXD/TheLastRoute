@@ -108,7 +108,20 @@
 			"id": "vendingMachine",
 			"models": [
 				"res://assets/props/maze/vending_machine.bbmodel"
-			]
+			],
+			"light": {
+				"color": "e6f4ff",
+				"energy": 0.34,
+				"range": 3.4,
+				"flicker_hz": 0.4,
+				"flicker_depth": 0.06,
+				"glow": true,
+				"offset": [
+					0,
+					1.5,
+					-0.4
+				]
+			}
 		},
 		{
 			"id": "woodenChair",
@@ -194,7 +207,20 @@
 				"teal",
 				"burgundy"
 			],
-			"coordinated": true
+			"coordinated": true,
+			"light": {
+				"color": "a8ffc0",
+				"energy": 0.2,
+				"range": 2.2,
+				"flicker_hz": 1.4,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					0.35,
+					-0.25
+				]
+			}
 		},
 		{
 			"id": "retroComputerTower",
@@ -210,7 +236,20 @@
 				"teal",
 				"burgundy"
 			],
-			"coordinated": true
+			"coordinated": true,
+			"light": {
+				"color": "a8ffc0",
+				"energy": 0.2,
+				"range": 2.2,
+				"flicker_hz": 1.4,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					0.35,
+					-0.25
+				]
+			}
 		},
 		{
 			"id": "retroComputerDesktop",
@@ -226,7 +265,20 @@
 				"teal",
 				"burgundy"
 			],
-			"coordinated": true
+			"coordinated": true,
+			"light": {
+				"color": "ffc878",
+				"energy": 0.2,
+				"range": 2.2,
+				"flicker_hz": 1.4,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					0.35,
+					-0.25
+				]
+			}
 		},
 		{
 			"id": "retroComputerTerminal",
@@ -242,7 +294,20 @@
 				"teal",
 				"burgundy"
 			],
-			"coordinated": true
+			"coordinated": true,
+			"light": {
+				"color": "a8ffc0",
+				"energy": 0.2,
+				"range": 2.2,
+				"flicker_hz": 1.4,
+				"flicker_depth": 0.1,
+				"glow": true,
+				"offset": [
+					0,
+					0.35,
+					-0.25
+				]
+			}
 		},
 		{
 			"id": "diningTable",

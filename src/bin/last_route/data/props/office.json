@@ -42,7 +42,20 @@
 				"charcoal",
 				"teal"
 			],
-			"coordinated": true
+			"coordinated": true,
+			"light": {
+				"color": "9fffb8",
+				"energy": 0.26,
+				"range": 2.8,
+				"flicker_hz": 1.5,
+				"flicker_depth": 0.12,
+				"glow": true,
+				"offset": [
+					0,
+					1.05,
+					-0.3
+				]
+			}
 		},
 		{
 			"id": "officeCubiclePartition",

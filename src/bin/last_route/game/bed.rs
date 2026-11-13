@@ -6,8 +6,12 @@
 //! hidden: the body stays where it stood beside the bed (only the eye moves onto the pillow), so a save, the net sample
 //! and the hunters all read the standing spot, and a hunter catches a sleeper like anyone else.
 //! The numbers and the texts are the `bed` section of data/sleep.json.
+//!
+//! Seats (Godot `use_furniture` "sit") share the same rest: interact on a chair, couch, bench or stool sits, interact
+//! or a move key stands up. A seated runner is as visible and as catchable as a lying one, cannot sleep, and gets no
+//! stamina beyond the normal recovery. The seat rules are the `sit` section of data/seating.json.
 
-use super::seating::{seating, SeatKind, SeatState};
+use super::seating::{seating, Pose, SeatKind, SeatState};
 use super::sleep::{sleep_cfg, Sleep};
 use super::{pdist, Controls, Game};
 use crate::config::MAX_STAMINA;
@@ -122,18 +126,110 @@ pub fn rules() -> &'static BedRules {
     C.get_or_init(|| parse(TEXT).unwrap_or_else(|e| panic!("{e}")))
 }
 
+/// The kind of the first rule that matches a prop type (compared in lower case).
+fn kind_in<'a>(prop_rules: &'a [PropRule], ptype: &str) -> Option<&'a str> {
+    let lowered = ptype.to_lowercase();
+    prop_rules
+        .iter()
+        .find(|r| {
+            r.contains.as_deref().is_some_and(|w| lowered.contains(w))
+                || r.ends_with.as_deref().is_some_and(|w| lowered.ends_with(w))
+        })
+        .map(|r| r.kind.as_str())
+}
+
 impl BedRules {
     /// The seating kind a prop type lies on, None for a prop that is not a bed (Godot `interaction_for`: types ending
     /// in "Bed", plus bunks; "bedroomNightstand" and "bedroomBench" are not beds).
     pub fn kind_of(&self, ptype: &str) -> Option<&str> {
+        kind_in(&self.prop_rules, ptype)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SitText {
+    pub seated: String,
+    pub stood: String,
+}
+
+/// The `sit` section of data/seating.json.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SitRules {
+    pub prop_rules: Vec<PropRule>,
+    /// Prop types (lower case) that match a rule and are still no seat (the work benches).
+    pub not_seats: Vec<String>,
+    pub eye_above_seat: f32,
+    pub look_pitch: f32,
+    pub look_yaw_limit: f32,
+    pub look_pitch_down: f32,
+    pub look_pitch_up: f32,
+    pub stand_on_move: bool,
+    pub text: SitText,
+}
+
+pub fn parse_sit(src: &str) -> Result<SitRules, String> {
+    let v: Value = serde_json::from_str(src).map_err(|e| format!("seating.json: {e}"))?;
+    let s = &v["sit"];
+    let err = |what: &str| format!("seating.json: sit {what}");
+    let num = |key: &str| s.get(key).and_then(Value::as_f64).filter(|x| x.is_finite()).map(|x| x as f32).ok_or_else(|| err(&format!("'{key}' missing or not a number")));
+    let limit = |key: &str| num(key).and_then(|x| if x >= 0.0 { Ok(x.to_radians()) } else { Err(err(&format!("'{key}' must be at least 0"))) });
+    let line = |key: &str| s["text"].get(key).and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_string).ok_or_else(|| err(&format!("text '{key}' missing or empty")));
+    let word = |r: &Value, key: &str| r.get(key).and_then(Value::as_str).filter(|w| !w.is_empty()).map(str::to_lowercase);
+    let mut prop_rules = vec![];
+    for r in s["prop_rules"].as_array().ok_or_else(|| err("'prop_rules' missing"))? {
+        let rule = PropRule { contains: word(r, "contains"), ends_with: word(r, "ends_with"), kind: word(r, "kind").ok_or_else(|| err("prop rule 'kind' missing"))? };
+        if rule.contains.is_none() && rule.ends_with.is_none() {
+            return Err(err("prop rule needs 'contains' or 'ends_with'"));
+        }
+        if seating().kind(&rule.kind).map(|k| k.pose) != Some(Pose::Sit) {
+            return Err(err(&format!("prop rule kind '{}' is not a sit kind of seating.json", rule.kind)));
+        }
+        prop_rules.push(rule);
+    }
+    Ok(SitRules {
+        prop_rules,
+        not_seats: s["not_seats"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_lowercase).collect(),
+        eye_above_seat: num("eye_above_seat")?,
+        look_pitch: num("look_pitch")?,
+        look_yaw_limit: limit("look_yaw_limit_deg")?,
+        look_pitch_down: limit("look_pitch_down_deg")?,
+        look_pitch_up: limit("look_pitch_up_deg")?,
+        stand_on_move: s["stand_on_move"].as_bool().unwrap_or(false),
+        text: SitText { seated: line("seated")?, stood: line("stood")? },
+    })
+}
+
+pub fn sit_rules() -> &'static SitRules {
+    static C: OnceLock<SitRules> = OnceLock::new();
+    C.get_or_init(|| parse_sit(super::seating::TEXT).unwrap_or_else(|e| panic!("{e}")))
+}
+
+impl SitRules {
+    /// The seating kind a prop type is sat on, None for a prop that is no seat (Godot `interaction_for` "sit": a type
+    /// containing chair, couch, bench, stool or sofa, and the diner booth; the work benches are left out).
+    pub fn kind_of(&self, ptype: &str) -> Option<&str> {
         let lowered = ptype.to_lowercase();
-        self.prop_rules
-            .iter()
-            .find(|r| {
-                r.contains.as_deref().is_some_and(|w| lowered.contains(w))
-                    || r.ends_with.as_deref().is_some_and(|w| lowered.ends_with(w))
-            })
-            .map(|r| r.kind.as_str())
+        if self.not_seats.iter().any(|t| *t == lowered) {
+            return None;
+        }
+        kind_in(&self.prop_rules, ptype)
+    }
+}
+
+/// The seat (kind name and its data/seating.json entry) of a prop type that is sat on. A bed is never a seat.
+pub fn sit_seat_of(ptype: &str) -> Option<(&'static str, &'static SeatKind)> {
+    if rules().kind_of(ptype).is_some() {
+        return None;
+    }
+    let kind = sit_rules().kind_of(ptype)?;
+    seating().kind(kind).map(|k| (kind, k))
+}
+
+/// The interact prompt of a seat prop type ("[E] SIT": the label is the seat kind's).
+pub fn sit_prompt(ptype: &str) -> String {
+    match sit_seat_of(ptype) {
+        Some((_, k)) => format!("[E] {}", k.label),
+        None => String::new(),
     }
 }
 
@@ -151,7 +247,7 @@ pub fn lie_prompt(ptype: &str) -> String {
     }
 }
 
-/// The runner's rest on a bed: the pose (seating.rs), the sleeper (sleep.rs) and the pillow view.
+/// The runner's rest on a bed or a seat: the pose (seating.rs), the sleeper (sleep.rs) and the pillow or seat view.
 #[derive(Clone, Debug, Default)]
 pub struct Rest {
     seat: SeatState,
@@ -167,11 +263,23 @@ pub struct Rest {
     /// 0..1 of the dark screen while asleep.
     dark: f32,
     stir_cd: f32,
+    /// Seated: the move keys have been let go since sitting down, so the next press stands up (a runner that walked
+    /// into the seat with a key held is not stood up again at once).
+    move_armed: bool,
 }
 
 impl Rest {
-    pub fn lying(&self) -> bool {
+    /// On a bed or a seat: the pose holds the runner.
+    pub fn resting(&self) -> bool {
         self.seat.locked()
+    }
+
+    pub fn lying(&self) -> bool {
+        self.seat.seated().is_some_and(|s| s.pose == Pose::Lie)
+    }
+
+    pub fn sitting(&self) -> bool {
+        self.seat.seated().is_some_and(|s| s.pose == Pose::Sit)
     }
 
     pub fn asleep(&self) -> bool {
@@ -204,7 +312,7 @@ impl Game {
         let Some((kind, _)) = seat_of(&ptype) else {
             return false;
         };
-        if self.rest.lying() {
+        if self.rest.resting() {
             return false;
         }
         let r = rules();
@@ -237,6 +345,51 @@ impl Game {
             ease: 0.0,
             dark: 0.0,
             stir_cd: 0.0,
+            move_armed: false,
+        };
+        self.p.yaw = yaw;
+        self.p.pitch = r.look_pitch;
+        self.p.moving = false;
+        self.p.sprinting = false;
+        self.p.flashlight_on = false;
+        self.focus = None;
+        true
+    }
+
+    /// Interact on seat prop `i`: the runner sits, looking out of the seat's front (the prop's own facing: its local
+    /// -z turned by its quarter turns, as Godot's furniture point). The body stays where it stood, like on a bed; only
+    /// the eye goes to the seat. False when the prop is no seat, is out of the seating reach, or the runner already rests.
+    pub(super) fn sit_down(&mut self, i: usize) -> bool {
+        let Some((ptype, rotation)) = self.fac.props.get(i).map(|p| (p.ptype.clone(), p.rotation)) else {
+            return false;
+        };
+        let Some((kind, _)) = sit_seat_of(&ptype) else {
+            return false;
+        };
+        if self.rest.resting() {
+            return false;
+        }
+        let r = sit_rules();
+        let centre = self.bed_centre(i);
+        let turn = rotation as f32 * std::f32::consts::FRAC_PI_2;
+        let facing = (-turn.sin(), -turn.cos());
+        let body = [self.p.pos.0, self.p.height, self.p.pos.1];
+        let mut seat = SeatState::default();
+        let (anchor, yaw) = match seat.sit(seating(), kind, centre, facing, body, self.p.height) {
+            Some(s) => (s.anchor, s.yaw),
+            None => return false,
+        };
+        let stand = self.p.eye();
+        self.rest = Rest {
+            seat,
+            sleep: Sleep::default(),
+            from_off: (stand.x - self.p.pos.0, stand.y, stand.z - self.p.pos.1),
+            eye_off: (anchor[0] - self.p.pos.0, anchor[1] + r.eye_above_seat, anchor[2] - self.p.pos.1),
+            base_yaw: yaw,
+            ease: 0.0,
+            dark: 0.0,
+            stir_cd: 0.0,
+            move_armed: false,
         };
         self.p.yaw = yaw;
         self.p.pitch = r.look_pitch;
@@ -252,9 +405,9 @@ impl Game {
         self.rest = Rest::default();
     }
 
-    /// The eye while the runner lies on a bed (view-relative, like `Player::eye`), None when it does not.
+    /// The eye while the runner lies on a bed or sits (view-relative, like `Player::eye`), None when it does not.
     pub(super) fn rest_eye(&self) -> Option<Vec3> {
-        if !self.rest.lying() {
+        if !self.rest.resting() {
             return None;
         }
         let t = self.rest.ease.clamp(0.0, 1.0);
@@ -267,8 +420,11 @@ impl Game {
         ))
     }
 
-    /// The prompt while the runner lies or sleeps, None when it does not.
+    /// The prompt while the runner sits, lies or sleeps, None when it does not.
     pub(super) fn rest_prompt(&self) -> Option<String> {
+        if self.rest.sitting() {
+            return Some(sit_rules().text.seated.clone());
+        }
         if !self.rest.lying() {
             return None;
         }
@@ -279,21 +435,28 @@ impl Game {
         Some(line.replace("{fatigue}", &fatigue.to_string()))
     }
 
-    /// Holds the look of a lying runner around the bed's length (Godot `_clamp_rest_look`).
+    /// Holds the look of a lying runner around the bed's length and of a seated one around the seat's facing (Godot
+    /// `_clamp_rest_look`).
     pub(super) fn rest_clamp_look(&mut self) {
-        if !self.rest.lying() {
+        if !self.rest.resting() {
             return;
         }
-        let r = rules();
+        let (yaw_limit, down, up) = if self.rest.lying() {
+            let r = rules();
+            (r.look_yaw_limit, r.look_pitch_down, r.look_pitch_up)
+        } else {
+            let r = sit_rules();
+            (r.look_yaw_limit, r.look_pitch_down, r.look_pitch_up)
+        };
         let base = self.rest.base_yaw;
-        self.p.yaw = base + wrap_angle(self.p.yaw - base).clamp(-r.look_yaw_limit, r.look_yaw_limit);
-        self.p.pitch = self.p.pitch.clamp(-r.look_pitch_down, r.look_pitch_up);
+        self.p.yaw = base + wrap_angle(self.p.yaw - base).clamp(-yaw_limit, yaw_limit);
+        self.p.pitch = self.p.pitch.clamp(-down, up);
     }
 
     /// Every frame, before the look: a grab, a down, a hiding spot, a ladder or the run's end takes the runner off the
     /// bed, and the drowsiness steps (it rises awake and falls asleep: data/sleep.json).
     pub(super) fn rest_tick(&mut self, dt: f32) {
-        if self.rest.lying()
+        if self.rest.resting()
             && (self.escape.is_some()
                 || self.downed.is_some()
                 || self.p.hidden.is_some()
@@ -322,7 +485,9 @@ impl Game {
         self.say(line);
     }
 
-    /// One frame of a runner lying on a bed: it does not move. Interact gets up; jump sleeps or wakes; a move key wakes.
+    /// One frame of a runner on a seat or a bed: it does not move. Seated, interact stands up and so does a move key
+    /// pressed after sitting (data/seating.json `stand_on_move`); there is no sleep and no stamina beyond the recovery.
+    /// Lying, interact gets up; jump sleeps or wakes; a move key wakes.
     /// Asleep the screen darkens, the stamina refills faster and the drowsiness falls; the sleeper wakes rested, or with
     /// a jolt when a hunter comes near or chases it (game/sleep.rs `Sleep::step`), or when something stuns it.
     pub(super) fn update_rest(&mut self, dt: f32, c: &Controls) {
@@ -353,7 +518,21 @@ impl Game {
             },
         );
         if c.interact && !stunned {
+            let seated = self.rest.sitting();
             self.get_up();
+            if seated {
+                self.say(&sit_rules().text.stood);
+            }
+            return;
+        }
+        if self.rest.sitting() {
+            self.rest.dark = 0.0;
+            if c.fwd == 0.0 && c.strafe == 0.0 {
+                self.rest.move_armed = true;
+            } else if self.rest.move_armed && sit_rules().stand_on_move && !stunned {
+                self.get_up();
+                self.say(&sit_rules().text.stood);
+            }
             return;
         }
         if !self.rest.asleep() {
@@ -459,9 +638,160 @@ mod tests {
 
     fn tick(g: &mut Game, c: &Controls) {
         g.rest_tick(DT);
-        if g.rest.lying() {
+        if g.rest.resting() {
             g.update_rest(DT, c);
         }
+    }
+
+    /// A run with a single seat 0.8 m in front of the runner (along +z, its front toward the runner), the runner
+    /// looking at its pan, and no hunter awake.
+    fn seat_game(room: &str, ptype: &str) -> (Game, usize, Content, Catalog) {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(Difficulty::Standard, 7, room, 0, &content, &catalog);
+        g.ensure_hunters(&content);
+        for h in g.hunters.iter_mut() {
+            h.active = false;
+        }
+        let cell = crate::world::Cell::new(g.p.pos.0.floor() as i32, g.p.pos.1.floor() as i32);
+        g.p.pos = cell.center();
+        let mut seat = bed_prop(ptype, cell, (0.0, 0.8));
+        seat.id = "TEST:SEAT".to_string();
+        seat.half = (0.4, 0.4);
+        g.fac.props.push(seat);
+        let i = g.fac.props.len() - 1;
+        let (_, k) = sit_seat_of(ptype).unwrap();
+        g.p.yaw = std::f32::consts::PI;
+        g.p.pitch = (k.height - g.p.eye().y).atan2(0.8);
+        g.p.stun = 0.0;
+        (g, i, content, catalog)
+    }
+
+    #[test]
+    fn the_shipped_sit_rules_parse_and_name_the_seats_godot_names() {
+        let r = parse_sit(crate::game::seating::TEXT).expect("the sit section parses");
+        assert_eq!(&r, sit_rules());
+        for (seat, kind) in [
+            ("officeChair", "chair"),
+            ("woodenChair", "chair"),
+            ("waitingChairs", "chair"),
+            ("loungeCouch", "couch"),
+            ("loungeCouchWide", "couch"),
+            ("mallBench", "bench"),
+            ("gothicBedroomBench", "bench"),
+            ("dinerBooth", "bench"),
+            ("vanityStool", "stool"),
+        ] {
+            assert_eq!(sit_seat_of(seat).map(|s| s.0), Some(kind), "{seat}");
+            assert_eq!(sit_prompt(seat), "[E] SIT", "{seat}");
+        }
+        // the work benches, the beds and plain furniture are no seats
+        for other in ["labBench", "pottingBench", "singleBed", "prisonBunk", "officeDesk", "bedsideLamp", "micStand"] {
+            assert!(sit_seat_of(other).is_none(), "{other} is not a seat");
+            assert_eq!(sit_prompt(other), "");
+        }
+        // Godot: SIT_EYE_ABOVE_SEAT .83, SIT_YAW_LIMIT 75 degrees, SIT_PITCH -0.95..0.6
+        assert!((r.eye_above_seat - 0.83).abs() < 1e-6);
+        assert!((r.look_yaw_limit - 75f32.to_radians()).abs() < 1e-4);
+        assert!((r.look_pitch_down - 0.95).abs() < 0.01 && (r.look_pitch_up - 0.6).abs() < 0.01);
+        assert!(parse_sit("{}").is_err());
+        assert!(parse_sit(&crate::game::seating::TEXT.replace("\"eye_above_seat\": 0.83,", "")).is_err(), "the numbers are required data");
+    }
+
+    #[test]
+    fn a_seat_in_reach_offers_to_sit_and_a_seated_runner_is_offered_to_stand() {
+        let (mut g, i, content, catalog) = seat_game("ROOM-BED-7", "officeChair");
+        assert_eq!(g.find_focus(), Some(Focus::Seat(i)));
+        g.focus = Some(Focus::Seat(i));
+        assert_eq!(g.focus_prompt().as_deref(), Some("[E] SIT"));
+        g.interact(Focus::Seat(i), &content, &catalog, &Sounds::default());
+        assert!(g.rest.sitting() && g.rest.resting() && !g.rest.lying() && !g.rest.asleep());
+        assert_eq!(g.focus_prompt().as_deref(), Some(sit_rules().text.seated.as_str()));
+        // jump does not put a seated runner to sleep
+        g.meters.drowsiness = 50.0;
+        press_jump(&mut g);
+        assert!(g.rest.sitting() && !g.rest.asleep());
+        // a seated runner cannot sit or lie on something else
+        assert!(!g.sit_down(i) && !g.lie_down(i));
+        // interact stands up
+        tick(&mut g, &Controls { interact: true, ..Controls::default() });
+        assert!(!g.rest.resting());
+        assert_eq!(g.message, sit_rules().text.stood);
+        // a seat out of the seating reach offers nothing
+        g.fac.props[i].offset = (0.0, seating().default_reach + 1.0);
+        assert_ne!(g.find_focus(), Some(Focus::Seat(i)));
+        assert!(!g.sit_down(i), "out of reach");
+    }
+
+    #[test]
+    fn a_seated_runner_does_not_move_and_the_eye_goes_to_the_seat() {
+        let (mut g, i, content, catalog) = seat_game("ROOM-BED-7", "officeChair");
+        let stand = g.eye();
+        assert!(g.sit_down(i));
+        let at = g.p.pos;
+        // the seat faces the runner (its front is -z), so the seated look is back the way the runner came
+        assert!(wrap_angle(g.p.yaw).abs() < 1e-4, "yaw {}", g.p.yaw);
+        for _ in 0..60 {
+            g.step(DT, &Controls::default(), &content, &catalog, &Sounds::default());
+        }
+        assert!(g.rest.sitting());
+        assert_eq!(g.p.pos, at, "the body stays put");
+        let eye = g.eye();
+        let (_, k) = sit_seat_of("officeChair").unwrap();
+        assert!((eye.y - (g.p.height + k.height + sit_rules().eye_above_seat)).abs() < 1e-4, "seated eye height {}", eye.y);
+        assert!(eye.y < stand.y);
+        assert!(pdist((eye.x, eye.z), g.bed_centre(i)) <= 0.2, "the eye is over the seat");
+        // the look is held around the seat's facing
+        g.p.yaw += 3.0;
+        g.p.pitch = -1.5;
+        g.rest_clamp_look();
+        assert!(wrap_angle(g.p.yaw - g.rest.base_yaw).abs() <= sit_rules().look_yaw_limit + 1e-4);
+        assert!(g.p.pitch >= -sit_rules().look_pitch_down - 1e-4);
+        // sitting gives no stamina beyond the normal recovery
+        g.p.stamina = 10.0;
+        g.p.stim_crash = 0.0;
+        for _ in 0..60 {
+            tick(&mut g, &Controls::default());
+        }
+        assert!((g.p.stamina - 10.0 - STAMINA_RECOVERY).abs() < 0.2, "stamina rose {}", g.p.stamina - 10.0);
+        // a move key stands the runner up, on the spot it stood on
+        g.step(DT, &Controls { fwd: 1.0, ..Controls::default() }, &content, &catalog, &Sounds::default());
+        assert!(!g.rest.resting());
+        assert_eq!(g.p.pos, at);
+        assert_eq!(g.eye(), g.p.eye());
+    }
+
+    #[test]
+    fn a_move_key_held_while_sitting_down_does_not_stand_the_runner_up_until_it_is_pressed_again() {
+        let (mut g, i, _, _) = seat_game("ROOM-BED-7", "mallBench");
+        assert!(g.sit_down(i));
+        let walk = Controls { fwd: 1.0, ..Controls::default() };
+        for _ in 0..30 {
+            tick(&mut g, &walk);
+        }
+        assert!(g.rest.sitting(), "the key that walked the runner here does not stand it up");
+        tick(&mut g, &Controls::default());
+        tick(&mut g, &walk);
+        assert!(!g.rest.resting(), "let go and pressed again, it does");
+        assert_eq!(g.message, sit_rules().text.stood);
+    }
+
+    #[test]
+    fn a_seated_runner_is_not_hidden_and_a_catch_takes_it_off_the_seat() {
+        let (mut g, i, _, _) = seat_game("ROOM-IMMUNE-7", "officeChair");
+        g.room_teammates = 1;
+        assert!(g.sit_down(i));
+        assert!(g.p.hidden.is_none(), "sitting is not hiding");
+        // a hunter's grab (the escape struggle) ends the rest
+        g.escape = Some(Escape { remaining: 1.0, progress: 0, hunter: 0 });
+        g.rest_tick(DT);
+        assert!(!g.rest.resting());
+        g.escape = None;
+        // so does being taken down
+        assert!(g.sit_down(i));
+        assert!(g.go_down(0), "a seated runner is caught like any runner");
+        assert!(g.runner_downed());
+        g.rest_tick(DT);
+        assert!(!g.rest.resting());
     }
 
     fn press_jump(g: &mut Game) {
