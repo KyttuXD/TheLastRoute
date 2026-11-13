@@ -149,10 +149,21 @@ pub fn legacy_level0() -> bool {
 
 /// Builds one chunk: level 0 from the Godot layout (`route::live::chunk`), unless
 /// `KYTTU_LEGACY_CHUNKS=1`; every other level from `legacy_chunk`.
+///
+/// A level-0 chunk of the Godot layout then gets the Rust-only prop pass (`prop_facing::dress`: props turn their
+/// backs to walls, a hashed share turns 45 degrees, and wide halls get wall-side props). It runs here, once per
+/// built chunk and after `route::live::from_layout`, so the generator's own output (what the golden tests read through
+/// `route::layout` and `route::live`) is unchanged. The pass is a pure function of the seed and the chunk, so the
+/// host and the guests build the same props.
 pub fn chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -> (Facility, Fixtures) {
     if k.level == 0 && !legacy_level0() {
-        if let Some(pair) = super::route::live::chunk(seed, k, cat) {
-            return pair;
+        let coord = super::route::layout::Coord::new(k.cx, 0, k.cy);
+        if let Some(lay) = super::route::layout::chunk_layout(seed, coord) {
+            let (mut f, fix) = super::route::live::from_layout(seed, k, &lay, cat);
+            let locks = super::prop_facing::Locks::of_layout(&lay);
+            let safe = super::route::live::is_live_safe_chunk(seed, k.cx, k.cy);
+            super::prop_facing::dress(&mut f, &fix, seed, k, lay.region, &locks, safe);
+            return (f, fix);
         }
     }
     legacy_chunk(seed, k, cat, loot)

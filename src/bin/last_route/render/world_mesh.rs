@@ -1110,7 +1110,7 @@ fn lamps_with(f: &Facility, lights_on: &[bool], content: &Content, dark: &[bool]
         let area = crate::render::surfaces::area_light(room.map_or("", |i| f.rooms[i].rtype.as_str()));
         let (cx, cz) = p.cell.center();
         let (x, z) = (cx + p.offset.0, cz + p.offset.1);
-        let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
+        let yaw = p.yaw();
         let off = Mat3::from_rotation_y(yaw) * vec3(light.offset.0, 0.0, light.offset.2);
         let y = visual_y(&p.ptype, fixture_ceiling(f, p.cell), p.mount_y.unwrap_or(0.0) as f32) + light.offset.1;
         let pos = vec3(x + off.x, y, z + off.z);
@@ -2113,7 +2113,8 @@ fn build_raw_meshes(
         let lift = f.terrain().map_or(0.0, |t| t.floor_at(x, z));
         let hung = fixture_ceiling(f, p.cell);
         let mut y = lift + visual_y(&p.ptype, hung, p.mount_y.unwrap_or(0.0) as f32);
-        let yaw = p.rotation as f32 * std::f32::consts::FRAC_PI_2;
+        // quarter turns, plus an eighth for a diagonal prop (`Prop::yaw`, world/prop_facing.rs)
+        let yaw = p.yaw();
         // the model's drawn turn: a room door keeps the gameplay yaw, every other prop gets the half turn
         let visual_yaw = prop_visual_yaw(yaw, p.door.is_some());
         let model = prop_model_key(f, p, assets, content).and_then(|k| assets.models.get(k));

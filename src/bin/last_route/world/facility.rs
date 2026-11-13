@@ -110,7 +110,29 @@ pub struct Prop {
 /// way: it has no model, never swings, never blocks and has no prompt.
 pub const ROOM_ARCH: &str = "roomArch";
 
+/// Added to `Prop::rotation` for a prop turned 45 degrees past its quarter turn (`world::prop_facing`). `rotation` is
+/// then `4 + quarter turn`: every reader that takes it modulo 2 or 4, or multiplies it by a quarter turn, still sees
+/// the quarter turn, and only `Prop::yaw` (the drawn turn) adds the eighth.
+pub const DIAGONAL: i32 = 4;
+
 impl Prop {
+    /// The quarter turns of the prop, 0..4 (0 faces north, the map's -z; 1 west; 2 south; 3 east).
+    pub fn quarter(&self) -> i32 {
+        self.rotation.rem_euclid(4)
+    }
+
+    /// Whether the prop stands 45 degrees past its quarter turn (`DIAGONAL`).
+    pub fn is_diagonal(&self) -> bool {
+        self.rotation.rem_euclid(2 * DIAGONAL) >= DIAGONAL
+    }
+
+    /// The prop's gameplay yaw in radians: its quarter turns, plus an eighth of a turn when it is diagonal. The drawn
+    /// model and the prop's light offset turn by this.
+    pub fn yaw(&self) -> f32 {
+        let eighth = if self.is_diagonal() { std::f32::consts::FRAC_PI_4 } else { 0.0 };
+        self.quarter() as f32 * std::f32::consts::FRAC_PI_2 + eighth
+    }
+
     /// The doorway of a room door that has a leaf (it swings, blocks and is drawn); `None` for a room arch, which
     /// keeps `door` for its doorway (door clearance) only, and for every other prop.
     pub fn leaf_door(&self) -> Option<DoorDraw> {

@@ -1,0 +1,27 @@
+{
+	"schema": "lr.prop_facing/1",
+	"_note": "The prop facing pass (world/prop_facing.rs), run once when a level-0 chunk is built, after the Godot-ported generator and its golden-checked output (docs/PROP_FACING.md). North is the map's -z (cell y - 1): rotation 0. A solid floor prop beside a wall turns its back to the wall and faces the longest open run; a prop of a dressing set with no wall beside it faces north. Type lists match a prop type when the lower-case type contains the entry. keep_types are never touched (beds, lockers, hiding props, doors, plumbing, anything whose use reads its facing). symmetric_types have no front, so they are never re-faced but may still take a diagonal. run_cap is how many cells an open run is counted to. wall_gap is how far a deep prop's back stays off the wall face (Godot's 5 cm: the centre moves out by half depth - (0.5 - wall_gap) when that is positive). diagonal: free_types standing clear of every wall, outside furnished-room templates, turn 45 degrees on a hashed share free_chance; corner_types in a corner (walls behind two sides) face diagonally out of it on corner_chance, moved out of the corner by at most max_corner_shift metres so the turned model stays out of the walls. never_types are never diagonal (seats: sitting reads quarter turns). A non-square collider becomes the bounding box of the turned box; a square or round one is kept.",
+	"enabled": true,
+	"run_cap": 12,
+	"wall_gap": 0.05,
+	"square_tolerance": 0.05,
+	"keep_types": [
+		"bed", "bunk", "cot", "crib", "gurney", "locker", "wardrobe", "closet", "door", "stall", "toilet", "urinal",
+		"sink", "shower", "bathtub", "vanity", "mirror", "curtain", "drapes", "fireplace", "staircase", "stair", "planter",
+		"freezer", "booth", "sewer", "inferno", "lavavent", "sign", "frame", "portrait", "whiteboard", "screen", "monitorwall",
+		"operatingtable", "autopsytable", "morgue", "turnstile", "fence", "railing", "counter"
+	],
+	"symmetric_types": [
+		"barrel", "plant", "palm", "fern", "vase", "column", "pillar", "globe", "stool", "lamp", "trashbin", "biohazardbin", "sanitarybin", "compostbins", "statue", "rug",
+		"carpet", "fountain", "ivstand", "pedestal", "roundtable", "coffeetable", "candelabra", "tree"
+	],
+	"diagonal": {
+		"enabled": true,
+		"free_chance": 0.3,
+		"corner_chance": 1.0,
+		"max_corner_shift": 0.35,
+		"free_types": ["crate", "barrel", "plant", "palm", "fern", "cart", "trolley", "coffeetable", "pedestaltable", "sidetable", "boxes", "vase", "globe", "statue"],
+		"corner_types": ["crate", "barrel", "plant", "palm", "fern", "vase", "lamp", "statue", "globe", "watercooler", "boxes"],
+		"never_types": ["chair", "couch", "bench", "sofa", "stool", "dinerbooth", "desk", "shelf", "shelving", "rack", "piano"]
+	}
+}
