@@ -536,6 +536,173 @@ pub fn heartbeat_danger(
     danger
 }
 
+/// When the `chase_start` cue may play again, from data/audio/cues.json `chase_start`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChaseCueRules {
+    /// Seconds a hunter must have gone without pursuing the runner before its next pursuit is a new chase.
+    pub rearm_seconds: f64,
+    /// Cells within which a hunter counts as touching a runner it cannot capture (admin god mode).
+    pub immune_touch_range: f64,
+}
+
+impl Default for ChaseCueRules {
+    fn default() -> Self {
+        ChaseCueRules { rearm_seconds: 6.0, immune_touch_range: 2.0 }
+    }
+}
+
+impl ChaseCueRules {
+    /// The `chase_start` block of a cues.json text; a missing or bad value keeps the default.
+    pub fn parse(text: &str) -> ChaseCueRules {
+        let d = ChaseCueRules::default();
+        let v: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
+        let c = &v["chase_start"];
+        let num = |key: &str, d: f64| c[key].as_f64().filter(|x| x.is_finite() && *x >= 0.0).unwrap_or(d);
+        ChaseCueRules {
+            rearm_seconds: num("rearm_seconds", d.rearm_seconds),
+            immune_touch_range: num("immune_touch_range", d.immune_touch_range),
+        }
+    }
+
+    /// The embedded data's rules.
+    pub fn get() -> ChaseCueRules {
+        static R: std::sync::OnceLock<ChaseCueRules> = std::sync::OnceLock::new();
+        *R.get_or_init(|| {
+            let text = crate::content::embedded::data_under("audio/cues.json").next().map(|x| x.1).unwrap_or("{}");
+            ChaseCueRules::parse(text)
+        })
+    }
+}
+
+/// Decides when `chase_start` plays. The cue is the frame the runner BECOMES pursued (no hunter pursued it the frame
+/// before), and only when one of the hunters now pursuing has not pursued the runner for `rearm_seconds` (or never
+/// has): a hunter that drops the runner and picks it up again sooner is still the same chase. A hunter touching a
+/// runner it cannot capture never starts the cue, but its pursuit is remembered, so it stays silent afterwards too.
+///
+/// One frame is `begin(dt)`, one `note` per hunter, then `end()`. The clock is the game's own (the sum of `dt`), so a
+/// paused game does not re-arm the cue. A hunter's key is allocated the first time it pursues, never per frame.
+#[derive(Debug, Default)]
+pub struct ChaseCueGate {
+    clock: f64,
+    /// Hunter key -> the clock at the last frame it pursued the runner.
+    last_pursuit: std::collections::HashMap<String, f64>,
+    was_pursued: bool,
+    any: bool,
+    fresh: bool,
+}
+
+impl ChaseCueGate {
+    /// Starts a frame `dt` seconds after the last one.
+    pub fn begin(&mut self, dt: f64) {
+        self.clock += dt.max(0.0);
+        self.any = false;
+        self.fresh = false;
+    }
+
+    /// One hunter this frame: whether it pursues the runner, and whether it touches a runner it cannot capture.
+    pub fn note(&mut self, rules: &ChaseCueRules, key: &str, pursuing: bool, touching_immune: bool) {
+        if !pursuing {
+            return;
+        }
+        self.any = true;
+        match self.last_pursuit.get_mut(key) {
+            Some(last) => {
+                if self.clock - *last >= rules.rearm_seconds && !touching_immune {
+                    self.fresh = true;
+                }
+                *last = self.clock;
+            }
+            None => {
+                if !touching_immune {
+                    self.fresh = true;
+                }
+                self.last_pursuit.insert(key.to_string(), self.clock);
+            }
+        }
+    }
+
+    /// Ends the frame: (the runner is pursued, the cue plays now).
+    pub fn end(&mut self) -> (bool, bool) {
+        let fire = self.any && !self.was_pursued && self.fresh;
+        self.was_pursued = self.any;
+        (self.any, fire)
+    }
+}
+
+#[cfg(test)]
+mod chase_cue_gate_tests {
+    use super::*;
+
+    const DT: f64 = 1.0 / 60.0;
+
+    /// Runs `seconds` of frames with one hunter; `pursuing(frame)` says whether it pursues. Returns the cues played.
+    fn run(gate: &mut ChaseCueGate, rules: &ChaseCueRules, seconds: f64, touching: bool, pursuing: impl Fn(usize) -> bool) -> usize {
+        let mut fired = 0;
+        for f in 0..(seconds / DT).round() as usize {
+            gate.begin(DT);
+            gate.note(rules, "h", pursuing(f), touching);
+            if gate.end().1 {
+                fired += 1;
+            }
+        }
+        fired
+    }
+
+    #[test]
+    fn the_data_has_a_rearm_time_of_a_few_seconds() {
+        let r = ChaseCueRules::get();
+        assert!(r.rearm_seconds >= 2.0 && r.rearm_seconds <= 30.0, "rearm_seconds {}", r.rearm_seconds);
+        assert!(r.immune_touch_range > 0.0);
+        assert_eq!(ChaseCueRules::parse("{}"), ChaseCueRules::default());
+        assert_eq!(ChaseCueRules::parse(r#"{"chase_start":{"rearm_seconds":"x","immune_touch_range":-1}}"#), ChaseCueRules::default());
+        assert_eq!(ChaseCueRules::parse(r#"{"chase_start":{"rearm_seconds":3.5}}"#).rearm_seconds, 3.5);
+    }
+
+    #[test]
+    fn a_steady_chase_plays_the_cue_once() {
+        let (mut g, r) = (ChaseCueGate::default(), ChaseCueRules::default());
+        assert_eq!(run(&mut g, &r, 10.0, false, |_| true), 1);
+    }
+
+    #[test]
+    fn losing_and_regaining_the_same_target_within_the_cooldown_stays_silent() {
+        let (mut g, r) = (ChaseCueGate::default(), ChaseCueRules::default());
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 1, "the chase starts");
+        // the state flaps: six frames chasing, six frames not, for ten seconds
+        assert_eq!(run(&mut g, &r, 10.0, false, |f| (f / 6) % 2 == 0), 0, "a flapping chase is one chase");
+        // lost for half the rearm time, then found again
+        assert_eq!(run(&mut g, &r, r.rearm_seconds * 0.5, false, |_| false), 0);
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 0, "found again inside the cooldown: no cue");
+    }
+
+    #[test]
+    fn a_new_chase_after_the_cooldown_plays_the_cue_again() {
+        let (mut g, r) = (ChaseCueGate::default(), ChaseCueRules::default());
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 1);
+        assert_eq!(run(&mut g, &r, r.rearm_seconds + 0.5, false, |_| false), 0);
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 1, "a chase after the cooldown is a new chase");
+    }
+
+    #[test]
+    fn a_hunter_touching_an_immune_runner_never_starts_the_cue() {
+        let (mut g, r) = (ChaseCueGate::default(), ChaseCueRules::default());
+        // ten seconds of a chase that flaps every sense tick against a god-mode runner
+        assert_eq!(run(&mut g, &r, 10.0, true, |f| (f / 6) % 2 == 0), 0);
+        // the touch ends and the hunter keeps chasing: still the same chase
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 0);
+    }
+
+    #[test]
+    fn another_hunter_starting_its_own_chase_is_not_silenced_by_the_first() {
+        let (mut g, r) = (ChaseCueGate::default(), ChaseCueRules::default());
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| true), 1);
+        assert_eq!(run(&mut g, &r, 1.0, false, |_| false), 0);
+        g.begin(DT);
+        g.note(&r, "other", true, false);
+        assert_eq!(g.end(), (true, true), "a hunter that never chased the runner starts a new chase");
+    }
+}
+
 /// How far a hunter's step (and the hunter cues heard like one: sniff, knock) carries, from data/audio/cues.json
 /// `hunter_step` (Godot main_3d.gd 1729-1735: 9 cells, panned over 4.5, 0.09 at her feet).
 #[derive(Clone, Copy, Debug, PartialEq)]

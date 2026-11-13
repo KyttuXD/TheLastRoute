@@ -54,6 +54,8 @@ pub struct HunterAudio<'a> {
 }
 
 /// (nearest runner-targeting active hunter distance, pursued) for the heartbeat and the chase cue.
+// the game reads these through `chase_cue_frame`; this plain form is what the tests compare against
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn runner_danger_inputs(pos: (f32, f32), hunters: &[HunterAudio]) -> (Option<f64>, bool) {
     let mut nearest = f32::INFINITY;
     let mut pursued = false;
@@ -68,6 +70,80 @@ pub fn runner_danger_inputs(pos: (f32, f32), hunters: &[HunterAudio]) -> (Option
         }
     }
     (nearest.is_finite().then_some(nearest as f64), pursued)
+}
+
+/// One frame of the chase cue: [`runner_danger_inputs`], plus whether `chase_start` plays now. Each pursuing hunter is
+/// noted in `gate` (audio/cues/rules.rs `ChaseCueGate`), so a hunter that loses the runner and finds it again inside
+/// the data's `rearm_seconds` is the same chase, and a hunter touching a runner it cannot capture (`runner_immune`:
+/// admin god mode) never starts the cue. Returns (nearest hunter distance, pursued, play the cue).
+pub fn chase_cue_frame(
+    gate: &mut rules::ChaseCueGate,
+    cue: &rules::ChaseCueRules,
+    dt: f32,
+    pos: (f32, f32),
+    hunters: &[HunterAudio],
+    runner_immune: bool,
+) -> (Option<f64>, bool, bool) {
+    let mut nearest = f32::INFINITY;
+    gate.begin(dt as f64);
+    // the same hunters as `runner_danger_inputs` (those that target the runner), read in place: no list per frame
+    for h in hunters.iter().filter(|h| h.targets_runner) {
+        if !h.active {
+            continue;
+        }
+        let d = ((h.pos.0 - pos.0).powi(2) + (h.pos.1 - pos.1).powi(2)).sqrt();
+        nearest = nearest.min(d);
+        let pursuing = h.chasing && !h.stunned && (h.direct_visible || d <= CHASE_CUE_RANGE);
+        gate.note(cue, h.id, pursuing, runner_immune && (d as f64) <= cue.immune_touch_range);
+    }
+    let (pursued, fire) = gate.end();
+    (nearest.is_finite().then_some(nearest as f64), pursued, fire)
+}
+
+/// Tells the sound whether the runner cannot be captured this frame (admin god mode): a hunter touching it then never
+/// starts the chase cue. Call before [`update`]; a new floor (`reset`) clears it.
+pub fn set_runner_capture_immune(on: bool) {
+    WORLD.with(|w| w.borrow_mut().runner_immune = on);
+}
+
+#[cfg(test)]
+mod chase_cue_frame_tests {
+    use super::*;
+
+    fn h(pos: (f32, f32), chasing: bool) -> HunterAudio<'static> {
+        HunterAudio {
+            id: "glyra", pos, active: true, chasing, idle: false, direct_visible: true,
+            winded: false, stunned: false, in_vent: false, nyxie_empty_wake: false,
+            glyra_humming: false, targets_runner: true,
+        }
+    }
+
+    #[test]
+    fn the_frame_agrees_with_the_danger_inputs_and_fires_once() {
+        let (mut gate, cue) = (rules::ChaseCueGate::default(), rules::ChaseCueRules::default());
+        let list = [h((3.0, 0.0), true)];
+        let (near, pursued) = runner_danger_inputs((0.0, 0.0), &list);
+        assert_eq!(chase_cue_frame(&mut gate, &cue, 1.0 / 60.0, (0.0, 0.0), &list, false), (near, pursued, true));
+        assert_eq!(chase_cue_frame(&mut gate, &cue, 1.0 / 60.0, (0.0, 0.0), &list, false), (near, pursued, false));
+    }
+
+    /// A hunter on top of a god-mode runner whose chase flaps every sense tick: no cue in ten seconds. The same flap
+    /// far from the runner (out of touch) plays it once.
+    #[test]
+    fn a_flapping_hunter_on_a_god_mode_runner_is_silent() {
+        let cue = rules::ChaseCueRules::default();
+        for (pos, immune, want) in [((0.5, 0.0), true, 0), ((0.5, 0.0), false, 1), ((8.0, 0.0), true, 1)] {
+            let mut gate = rules::ChaseCueGate::default();
+            let mut fired = 0;
+            for f in 0..600 {
+                let list = [h(pos, (f / 6) % 2 == 0)];
+                if chase_cue_frame(&mut gate, &cue, 1.0 / 60.0, (0.0, 0.0), &list, immune).2 {
+                    fired += 1;
+                }
+            }
+            assert_eq!(fired, want, "hunter at {pos:?}, runner immune {immune}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +177,10 @@ mod runner_only_tests {
 struct WorldState {
     gaits: Vec<HunterGait>,
     was_active: HashMap<String, bool>,
-    was_pursued: bool,
+    /// When the chase cue may play (data/audio/cues.json `chase_start`).
+    chase_gate: rules::ChaseCueGate,
+    /// The runner cannot be captured this frame (`set_runner_capture_immune`).
+    runner_immune: bool,
     clock: HunterStepClock,
     /// The music box tune that is playing: what the run was started for, and the box clock at the last frame.
     box_run: Option<RunClock>,
@@ -299,7 +378,8 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             e.pump();
             let now = e.now_usec();
             let mut stepping: Option<(usize, f32)> = None;
-            let (nearest, pursued) = runner_danger_inputs(l.pos, hunters);
+            let (nearest, pursued, chase_cue) =
+                chase_cue_frame(&mut w.chase_gate, &rules::ChaseCueRules::get(), dt, l.pos, hunters, w.runner_immune);
             for (i, h) in hunters.iter().enumerate() {
                 let d = ((h.pos.0 - l.pos.0).powi(2) + (h.pos.1 - l.pos.1).powi(2)).sqrt();
                 let was = w.was_active.get(h.id).copied().unwrap_or(false);
@@ -348,11 +428,11 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
             if !hunters.iter().any(|h| h.id == "glyra") {
                 e.set_loop("glyra_hum", Bus::Hunters, None, Vec::new);
             }
-            if pursued && !w.was_pursued {
+            // the runner became pursued by a hunter that starts a new chase (not one re-acquiring it inside the cooldown)
+            if chase_cue {
                 e.play(&rules::chase_start());
                 super::tts::note_cue("chase_start");
             }
-            w.was_pursued = pursued;
             let danger = rules::heartbeat_danger(
                 nearest,
                 pursued,

@@ -1,6 +1,11 @@
 {
 	"schema": "lr.cues/1",
 	"note": "Extra one-shot cues the Godot project has no dedicated Sound method for, built from the same tone / thump / noise primitives as sound.gd. Component keys: kind (tone|thump|noise), hz, dur, vol, delay, wave (tone only), rate (noise only). The call intensity multiplies vol. An optional file on a cue names an embedded asset under assets/audio/ (none ship: the Godot project has no sound files). Events say how a game event plays a cue; scaled=true plays it at the caller volume like a hunter step.",
+	"chase_start": {
+		"rearm_seconds": 6.0,
+		"immune_touch_range": 2.0,
+		"_note": "When the chase_start cue may play again (audio/cues/rules.rs ChaseCueGate). It plays when the runner becomes pursued, and only for a hunter that has not pursued the runner in the last rearm_seconds: a hunter that loses the runner and finds it again sooner is the same chase and stays silent. A hunter within immune_touch_range cells of a runner it cannot capture (admin god mode) never starts the cue."
+	},
 	"hunter_step": {
 		"range": 9.0,
 		"pan_span": 4.5,

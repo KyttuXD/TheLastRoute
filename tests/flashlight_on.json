@@ -1,0 +1,227 @@
+{
+  "suite": "flashlight_on",
+  "description": "Play with the flashlight ON: the battery drains (faster on a sprint) and stops at empty; the light stays on down and up a stair flight, through a spiral and a switchback, in the sewers and across a window recentre; another hotbar slot puts it away and [F] takes it out again; a locker puts it away; a hunter that cannot capture (god mode) leaves it on. The stair and sewer walks are the cases of stairs_walk.json and sewers.json with the light on: the same path results. Sitting, lying, sleeping and the hunters' sight of a lit runner are unit tests (game/flashlight_on_tests.rs).",
+  "ported_from": "meters.json (battery), stairs_walk.json, sewers.json, infinite.json (window recentre), interactables.json (locker), flashlight_chase.json; game/items.rs select and toggle_flashlight, game/player.rs lamp drain",
+  "defaults": { "seed": 12345, "difficulty": "standard", "mode": "finite", "no_target": true },
+  "tests": [
+    {
+      "name": "the lit battery drains steadily, dies at zero and stays at zero",
+      "steps": [
+        { "expect": [ { "path": "player.flashlight_on", "value": false }, { "path": "hotbar.slots.0.item", "value": "flashlight" } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 }, { "path": "player.lamp", "op": "<", "value": 97 }, { "path": "player.lamp", "op": ">", "value": 94 } ] },
+        { "cmd": "admin", "name": "set", "lamp": 0.05 },
+        { "cmd": "step", "frames": 30, "observe": false },
+        { "expect": [
+          { "path": "player.flashlight_on", "value": false }, { "path": "player.lamp", "value": 0 },
+          { "any": "events", "where": [ { "path": "type", "value": "message" }, { "path": "text", "value": "FLASHLIGHT DEAD" } ] } ] },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "expect": [ { "path": "player.lamp", "value": 0 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 2, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": false }, { "path": "player.lamp", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "the battery does not drain with the light off",
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 60, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "player", "save_as": "off" },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "player.lamp", "var": "off.player.lamp" }, { "path": "player.flashlight_on", "value": false } ] }
+      ]
+    },
+    {
+      "name": "sprinting with the light on drains the battery faster than standing",
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "step", "frames": 150, "act": { "move": [0, 1], "hold": { "sprint": true } }, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 97.6 }, { "path": "player.lamp", "op": ">", "value": 96.4 } ] }
+      ]
+    },
+    {
+      "name": "a battery recharges the lit flashlight and [F] takes it out again",
+      "steps": [
+        { "cmd": "admin", "name": "give", "item": "battery", "expect": [ { "path": "last.given", "value": 1 } ] },
+        { "cmd": "admin", "name": "set", "lamp": 50 },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] },
+        { "cmd": "act", "act": { "pulse": ["slot_2"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "hotbar.selected", "value": 1 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["tool_use"] } },
+        { "cmd": "step", "frames": 1, "observe": false },
+        { "expect": [ { "path": "player.lamp", "op": "approx", "value": 75, "tol": 2 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "another hotbar slot puts the light away; coming back does not switch it on, [F] does",
+      "steps": [
+        { "cmd": "admin", "name": "give", "item": "battery", "expect": [ { "path": "last.given", "value": 1 } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] },
+        { "cmd": "act", "act": { "pulse": ["slot_2"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "hotbar.selected", "value": 1 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "player", "save_as": "away" },
+        { "cmd": "step", "frames": 120, "observe": false },
+        { "expect": [ { "path": "player.lamp", "var": "away.player.lamp" } ] },
+        { "cmd": "act", "act": { "pulse": ["slot_1"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "hotbar.selected", "value": 0 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] },
+        { "cmd": "act", "act": { "pulse": ["slot_1"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "a locker puts the light away and it stays off after leaving",
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "locker", "index": 0 },
+        { "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "interact", "kind": "HIDING_SPOT" },
+        { "expect": [ { "path": "player.hidden", "value": 0 }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "player", "save_as": "in" },
+        { "cmd": "step", "frames": 60, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": false }, { "path": "player.lamp", "var": "in.player.lamp" } ] },
+        { "cmd": "interact" },
+        { "expect": [ { "path": "player.hidden", "op": "missing" }, { "path": "player.flashlight_on", "value": false } ] },
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "light on: walking forward down a flight reaches level -1 at depth 2",
+      "start_run": { "mode": "infinite", "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "player.y", "op": "approx", "value": -5, "tol": 0.1 }, { "path": "player.climbing", "value": false },
+          { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "light on: the storey changes mid-flight and the light stays on through the change",
+      "start_run": { "mode": "infinite", "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900, "stop_on_level_change": true },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "step", "frames": 30, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "light on: walking forward up from level -1 returns to level 0",
+      "start_run": { "mode": "infinite", "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_up" },
+        { "cmd": "walk_flight", "dir": "up", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": 0 }, { "path": "player.y", "op": "approx", "value": 0, "tol": 0.1 }, { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "light on: a level-0 spiral (seed 129) walks down and its foot leads out to the sewer tunnel",
+      "start_run": { "mode": "infinite", "seed": 129, "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "spiral" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "player.y", "op": "approx", "value": -5, "tol": 0.1 } ] },
+        { "cmd": "goto", "x": 83.5, "z": 76.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 83.5, "z": 70.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "expect": [ { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "light on: a level-0 switchback (seed 102) leads out of its foot",
+      "start_run": { "mode": "infinite", "seed": 102, "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "to": "stairs_down" },
+        { "cmd": "stairs_report", "expect": [ { "path": "last.stairs_report.flights.0.shape", "value": "switchback" } ] },
+        { "cmd": "walk_flight", "dir": "down", "frames": 900 },
+        { "expect": [ { "path": "run.level", "value": -1 } ] },
+        { "cmd": "goto", "x": 51.5, "z": 76.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "cmd": "goto", "x": 51.5, "z": 70.5, "max_frames": 900, "expect": [ { "path": "last.arrived", "value": true } ] },
+        { "expect": [ { "path": "player.flashlight_on", "value": true } ] }
+      ]
+    },
+    {
+      "name": "light on: level -1 stays the upper sewer while walking",
+      "start_run": { "mode": "infinite", "seed": "BRAVO", "level": -1, "god": true, "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "step", "frames": 90, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -1 }, { "path": "run.depth", "value": 2 }, { "path": "run.active", "value": true },
+          { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": ">", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "light on: level -2 stays the lower sewer while walking",
+      "start_run": { "mode": "infinite", "seed": "BRAVO", "level": -2, "god": true, "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "step", "frames": 90, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "run.level", "value": -2 }, { "path": "run.depth", "value": 3 }, { "path": "run.active", "value": true },
+          { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": ">", "value": 0 } ] }
+      ]
+    },
+    {
+      "name": "light on: the window recentres and the light stays on",
+      "start_run": { "mode": "infinite", "no_target": true },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "teleport", "x": 96.5, "z": 67.5 },
+        { "cmd": "step", "frames": 2, "observe": false },
+        { "expect": [ { "path": "run.window_center", "value": [1, 0] }, { "path": "run.chunks_visited", "op": ">=", "value": 9 }, { "path": "player.pos.0", "op": "<", "value": 90 },
+          { "path": "player.flashlight_on", "value": true }, { "path": "hotbar.selected", "value": 0 } ] },
+        { "cmd": "step", "frames": 120, "act": { "move": [0, 1] }, "observe": false },
+        { "expect": [ { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 100 } ] }
+      ]
+    },
+    {
+      "name": "light on, god mode: a hunter that reaches the runner captures nothing and the light stays on",
+      "start_run": { "seed": 1, "god": true, "no_target": false },
+      "steps": [
+        { "cmd": "act", "act": { "pulse": ["flashlight"] } },
+        { "cmd": "step", "frames": 1, "observe": false, "expect": [ { "path": "player.flashlight_on", "value": true } ] },
+        { "cmd": "admin", "name": "wake", "index": 0 },
+        { "cmd": "admin", "name": "hunter_to", "index": 0, "near": 1.2 },
+        {
+   "cmd": "act",
+   "act": {
+    "move": [
+     0,
+     -1
+    ]
+   }
+  },
+  { "cmd": "step_until", "expect": [ { "any": "hunters", "where": [ { "path": "state", "value": "chase" } ] } ], "max_frames": 120, "check_every": 1, "observe": false },
+        { "cmd": "step", "frames": 300, "observe": false },
+        { "expect": [ { "path": "run.active", "value": true }, { "path": "run.escape", "op": "missing" }, { "path": "player.flashlight_on", "value": true }, { "path": "player.lamp", "op": "<", "value": 100 } ] }
+      ]
+    }
+  ]
+}
