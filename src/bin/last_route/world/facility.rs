@@ -105,6 +105,19 @@ pub struct Prop {
     pub crawl_under: bool,
 }
 
+/// The prop type of a room arch (`_room_door_props`, streamed_route_generator.gd:5101): a three-cell doorway with no
+/// leaf. Godot spawns a door only for `PropModelCatalog.ROOM_DOOR_TYPES`, which leaves the arch out, so it is an open
+/// way: it has no model, never swings, never blocks and has no prompt.
+pub const ROOM_ARCH: &str = "roomArch";
+
+impl Prop {
+    /// The doorway of a room door that has a leaf (it swings, blocks and is drawn); `None` for a room arch, which
+    /// keeps `door` for its doorway (door clearance) only, and for every other prop.
+    pub fn leaf_door(&self) -> Option<DoorDraw> {
+        self.door.filter(|_| self.ptype != ROOM_ARCH)
+    }
+}
+
 /// The prop type of a sewer sluice gate (`world::route::sewer`).
 pub const SLUICE_GATE: &str = "sewerSluiceGate";
 
@@ -680,6 +693,10 @@ impl Facility {
         f.place_pickups();
         f.build_hunter_grid();
         f.hunter_spawn = f.place_hunter_spawn(&from_start);
+        // last, so every seeded placement above saw the same props as Godot's: the removed types (the mirrors) go
+        if f.remove_listed_props(cat) > 0 {
+            f.rebuild_grids();
+        }
         f
     }
 
@@ -917,6 +934,17 @@ impl Facility {
                 && (c.y as f32 + 0.5 - py).abs() < p.half.1 + 0.5;
             p.cell != c && !reaches
         });
+    }
+
+    /// The removed-props post-pass: drops every prop whose type the catalogue lists as removed (data/rooms/catalog.json
+    /// `removed_props`: the mirrors) and returns how many went. It runs when a floor's or chunk's props become live,
+    /// AFTER the generators have placed everything, so the seeded placement (checked against Godot) is unchanged and
+    /// only the listed props are missing. Nothing else refers to these props (they are not doors, valves, seats, hiding
+    /// places or surfaces), and the prop indices are rebuilt by `rebuild_grids`: call it afterwards.
+    pub fn remove_listed_props(&mut self, cat: &Catalog) -> usize {
+        let before = self.props.len();
+        self.props.retain(|p| !cat.is_removed_prop(&p.ptype));
+        before - self.props.len()
     }
 
     /// Recomputes the solid-prop index and the hunters' walkable grid after edits.
@@ -1978,18 +2006,18 @@ impl Facility {
         self.door_state.get(&cell).map_or(true, |s| s.want_open)
     }
 
-    /// The prop index and centre of every room door.
+    /// The prop index and centre of every room door that has a leaf (a room arch is an open way, not a door).
     pub fn doors(&self) -> impl Iterator<Item = (usize, (f32, f32))> + '_ {
         self.props
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| p.door.map(|d| (i, Self::door_slab(p, d).0)))
+            .filter_map(|(i, p)| p.leaf_door().map(|d| (i, Self::door_slab(p, d).0)))
     }
 
     /// The point of door `i`'s slab nearest to `from` (what the runner faces when standing flush against the leaf).
     pub fn door_nearest(&self, i: usize, from: (f32, f32)) -> Option<(f32, f32)> {
         let p = self.props.get(i)?;
-        let (c, h) = Self::door_slab(p, p.door?);
+        let (c, h) = Self::door_slab(p, p.leaf_door()?);
         Some(((from.0).clamp(c.0 - h.0, c.0 + h.0), (from.1).clamp(c.1 - h.1, c.1 + h.1)))
     }
 
@@ -2078,7 +2106,7 @@ impl Facility {
     /// cells moved (new cell = old cell + shift); a door the new window does not have is dropped.
     pub fn restore_door_swing(&mut self, swing: &DoorSwing, shift: (i32, i32)) {
         for p in &self.props {
-            let Some(d) = p.door else { continue };
+            let Some(d) = p.leaf_door() else { continue };
             let old = Cell { x: p.cell.x - shift.0, y: p.cell.y - shift.1 };
             let Some(&(_, open, want_open)) = swing.iter().find(|(c, _, _)| *c == old) else { continue };
             let (centre, half) = Self::door_slab(p, d);
@@ -2092,7 +2120,7 @@ impl Facility {
     /// The first call registers every door closed (open, when a body already stands in its sweep).
     pub fn update_doors(&mut self, openers: &[(f32, f32)], bodies: &[(f32, f32)], dt: f32) {
         for p in &self.props {
-            let Some(d) = p.door else { continue };
+            let Some(d) = p.leaf_door() else { continue };
             let (c, half) = Self::door_slab(p, d);
             let s = self.door_state.entry(p.cell).or_insert_with(|| {
                 let held = bodies.iter().any(|b| Self::in_door_sweep(c, half, *b));
@@ -3005,6 +3033,25 @@ mod tests {
     use super::*;
     use crate::content::regions::parse_file;
 
+    #[test]
+    fn a_finite_floor_has_no_mirror_and_the_pass_takes_only_the_listed_types() {
+        let cat = Catalog::load();
+        // the bathrooms still list the mirror (the generator places it, as Godot does); the floor does not keep it
+        assert!(cat.types.iter().any(|t| t.props.iter().any(|p| cat.is_removed_prop(p))));
+        for n in 0..6 {
+            let mut f = Facility::generate(&format!("MIRROR-{n}"), &Options::default(), &cat);
+            assert!(!f.props.iter().any(|p| cat.is_removed_prop(&p.ptype)), "MIRROR-{n}: a mirror is on the floor");
+            let kept: Vec<String> = f.props.iter().map(|p| p.id.clone()).collect();
+            let first = f.props[0].clone();
+            f.props.insert(1, Prop { id: "m1".into(), ptype: "bathroomMirror".into(), ..first.clone() });
+            f.props.push(Prop { id: "m2".into(), ptype: "standingMirror".into(), ..first });
+            assert_eq!(f.remove_listed_props(&cat), 2);
+            assert_eq!(f.props.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), kept);
+            f.rebuild_grids();
+            assert_eq!(f.remove_listed_props(&cat), 0);
+        }
+    }
+
     fn door_floor() -> Facility {
         let cat = Catalog::load();
         let mut f = Facility::generate("DOOR-1", &Options::default(), &cat);
@@ -3050,6 +3097,30 @@ mod tests {
         other.restore_door_swing(&swing, (7, 7));
         other.update_doors(&[], &[(1e6, 1e6)], 0.0);
         assert_eq!(other.door_open_amount(other.props.last().unwrap().cell), 0.0);
+    }
+
+    /// The invisible door: a room arch has a doorway but no leaf and no model, so it is never a door to use. It is
+    /// not listed, never registered, never blocks and cannot be toggled; the same prop as a room door is all of those.
+    #[test]
+    fn a_room_arch_is_an_open_way_not_a_door() {
+        let mut f = door_floor();
+        let cell = f.props.last().unwrap().cell;
+        let (cx, cy) = cell.center();
+        let n = f.props.len() - 1;
+        f.props[n].ptype = ROOM_ARCH.into();
+        assert!(f.props[n].door.is_some() && f.props[n].leaf_door().is_none());
+        assert!(f.doors().all(|(i, _)| i != n), "an arch takes no prompt");
+        assert_eq!(f.door_nearest(n, (cx, cy)), None);
+        f.update_doors(&[], &[], 0.0);
+        f.update_doors(&[], &[], 1.0);
+        assert_eq!(f.door_in_way(cx, cy, 0.3), None, "an arch never blocks");
+        assert_eq!(f.door_centre(cell), None);
+        assert_eq!(f.toggle_door(cell, &[]), None);
+        // the same prop as a door: listed, registered shut and in the way
+        f.props[n].ptype = "normalRoomDoor".into();
+        assert!(f.doors().any(|(i, _)| i == n));
+        f.update_doors(&[], &[], 0.0);
+        assert_eq!(f.door_in_way(cx, cy, 0.3), Some(cell));
     }
 
     /// A door nobody ticked is open floor; once ticked it is closed and blocks. A body beside it (the runner) does

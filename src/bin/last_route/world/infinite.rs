@@ -377,6 +377,7 @@ pub fn legacy_chunk(seed: &str, k: ChunkKey, cat: &Catalog, loot: &LootTables) -
     }
     drop(_chunk_links_perf);
     f.level = k.level;
+    f.remove_listed_props(cat);
     let _chunk_grid_perf = crate::app::perf::section("chunk grid");
     f.rebuild_grids();
     drop(_chunk_grid_perf);

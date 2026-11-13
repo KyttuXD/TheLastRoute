@@ -28,6 +28,8 @@ pub struct Catalog {
     wall_backed: HashSet<String>,
     walkable: HashSet<String>,
     centerpiece: HashSet<String>,
+    /// Prop types that are placed and then dropped (`removed_props`, see `Facility::remove_listed_props`).
+    removed: HashSet<String>,
 }
 
 fn strs(v: &Value) -> Vec<String> {
@@ -103,6 +105,7 @@ impl Catalog {
             wall_backed: set("wall_backed"),
             walkable: set("walkable_structures"),
             centerpiece: set("centerpiece_types"),
+            removed: set("removed_props"),
         }
     }
 
@@ -114,6 +117,11 @@ impl Catalog {
         } else {
             v
         }
+    }
+
+    /// True for a prop type the game never shows (data/rooms/catalog.json `removed_props`: the mirrors).
+    pub fn is_removed_prop(&self, t: &str) -> bool {
+        self.removed.contains(t)
     }
 
     pub fn is_solid(&self, t: &str) -> bool {

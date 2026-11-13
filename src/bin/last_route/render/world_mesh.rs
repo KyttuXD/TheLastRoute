@@ -1289,6 +1289,13 @@ fn door_xf(f: &Facility, p: &Prop, d: DoorDraw, fit: &door::DoorFit, h: f32) -> 
     door::door_transform(vec3(x + d.offset[0], y, z + d.offset[1]), yaw, fit.sx, fit.sy, prop_scale::draw_scale(&p.ptype))
 }
 
+/// The stand-in for a room door with no model: a slab `span` cells along the wall (the door's local X), as tall as the
+/// hunter's opening and as deep as a door frame, in a plain dark wood. (size, colour).
+fn fallback_door_slab(span: i32) -> (Vec3, Color) {
+    let size = vec3(span.max(1) as f32, door::TARGET_OPENING, 2.0 * door::FRAME_HALF_DEPTH);
+    (size, Color::new(0.33, 0.24, 0.17, 1.0))
+}
+
 /// Every room door of `f` that has a model, for the per-frame leaf draw.
 fn door_instances(f: &Facility, assets: &Assets, content: &Content) -> Vec<DoorInstance> {
     f.props
@@ -2054,6 +2061,11 @@ fn build_raw_meshes(
                     * Mat4::from_scale(Vec3::splat(scale)),
             };
             model.add_to(&mut authored, xf, WHITE);
+        } else if let Some(d) = p.leaf_door() {
+            // a room door whose model is missing or does not parse still blocks and takes the prompt: a plain shut
+            // slab across its doorway stands in for it, so no door is ever invisible
+            let (size, colour) = fallback_door_slab(d.span);
+            plain.cube(vec3(x, lift + size.y * 0.5, z), size, yaw, colour, 0.0);
         }
     }
     // emissive lamp fixtures for the switchable room lights
@@ -3801,6 +3813,65 @@ mod ladder_arrival_tests {
         }
         assert!(hatches > 100, "only {hatches} hatches in the sweep");
         assert!(problems.is_empty(), "{} problems in {hatches} hatches:\n{}", problems.len(), problems.join("\n"));
+    }
+
+    /// The invisible doors: a room arch (`roomArch`) was a door for gameplay (it took the prompt, shut and blocked) but
+    /// has no model, so nothing was drawn. Over many level 0 windows, every door the game lets the runner use is one
+    /// of the six door types with an embedded model, an arch is never one of them, and every door's cell lies in
+    /// exactly one part's fixture box (the part that builds its frame and publishes its leaves).
+    #[test]
+    fn every_usable_door_of_a_window_has_a_model_and_one_part() {
+        use crate::world::facility::ROOM_ARCH;
+        use crate::world::route::grid::ROOM_DOOR_TABLE;
+        let content = Content::load();
+        let (cat, loot) = (Catalog::load(), LootTables::default());
+        let (mut doors, mut problems) = (0, vec![]);
+        for (seed, text) in world_seeds() {
+            for centre in CENTRES {
+                let mut cache = HashMap::new();
+                let (f, _) = window(&seed, centre, 0, &cat, &loot, &mut cache);
+                let frame = ChunkFrame { level: 0, center: centre };
+                let rects: Vec<(i32, i32, i32, i32)> = window_parts(&f, frame).iter().filter_map(|(_, pick)| pick.fixtures).collect();
+                let usable: HashSet<usize> = f.doors().map(|(i, _)| i).collect();
+                for (i, p) in f.props.iter().enumerate().filter(|(_, p)| p.door.is_some()) {
+                    let ctx = format!("{text} {centre:?}: {} ({}) at {:?}", p.id, p.ptype, p.cell);
+                    if p.ptype == ROOM_ARCH {
+                        if usable.contains(&i) || p.leaf_door().is_some() {
+                            problems.push(format!("{ctx}: an arch is an open way, not a door"));
+                        }
+                        continue;
+                    }
+                    doors += 1;
+                    if !usable.contains(&i) {
+                        problems.push(format!("{ctx}: a room door the runner cannot use"));
+                    }
+                    if !ROOM_DOOR_TABLE.iter().any(|(_, single, double)| p.ptype == *single || p.ptype == *double) {
+                        problems.push(format!("{ctx}: not a door type of the room-door table"));
+                    }
+                    let models = content.props.get(&p.ptype).map(|d| d.models.as_slice()).unwrap_or(&[]);
+                    if models.is_empty() || models.iter().any(|m| !m.starts_with("pack:") && crate::content::embedded::asset(m).is_none()) {
+                        problems.push(format!("{ctx}: no embedded model ({models:?})"));
+                    }
+                    let parts = rects.iter().filter(|r| cell_in_rects(p.cell, &[**r])).count();
+                    if parts != 1 {
+                        problems.push(format!("{ctx}: its cell lies in {parts} fixture boxes"));
+                    }
+                }
+            }
+        }
+        assert!(doors > 100, "only {doors} doors in the sweep");
+        assert!(problems.is_empty(), "{} problems in {doors} doors:\n{}", problems.len(), problems.join("\n"));
+    }
+
+    /// A door whose model is missing is drawn as a slab that fills its doorway, never as nothing.
+    #[test]
+    fn a_door_without_a_model_gets_a_slab_across_its_doorway() {
+        for span in 1..=3 {
+            let (size, colour) = fallback_door_slab(span);
+            assert_eq!(size.x, span as f32, "span {span}");
+            assert!(size.y >= door::TARGET_OPENING && size.z > 0.0 && colour.a == 1.0, "span {span}: {size:?}");
+        }
+        assert_eq!(fallback_door_slab(0).0.x, 1.0, "never a flat slab");
     }
 }
 

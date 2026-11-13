@@ -4,7 +4,8 @@
 	"step": { "gain": 0.5, "range": 6.0 },
 	"sniff": { "gain": 0.5, "range": 5.0 },
 	"breath": { "gain": 0.6, "range": 2.5 },
-	"hum": { "gain": 0.5, "max_distance": 9.0 },
+	"_hum_note": "Glyra's hum is the low line (C4 to A4 sines) under the music box tune. gain 0 = off (the loop is not started at all); it was 0.5 until 2026-11-12, when the bass under the music box was removed by request.",
+	"hum": { "gain": 0.0, "max_distance": 9.0 },
 	"creature": { "skitter_gain": 0.5, "crackle_gain": 0.5 },
 	"heartbeat": { "calm_gain": 0.7 }
 }

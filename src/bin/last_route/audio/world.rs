@@ -337,7 +337,8 @@ pub fn update(dt: f32, l: &Listener, hunters: &[HunterAudio]) {
                 if h.id == "glyra" {
                     let tune = HunterAmbient::get();
                     let hum = Emitter3D { max_distance: tune.hum_max_distance.unwrap_or(HUM.max_distance), ..HUM };
-                    let gains = (h.active && h.glyra_humming).then(|| {
+                    // a hum gain of 0 in the data turns the hum off: the loop is stopped, not played silently
+                    let gains = (h.active && h.glyra_humming && tune.hum_gain > 0.0).then(|| {
                         let g = hum.gains_from([h.pos.0, 0.0, h.pos.1], l.eye, l.right, l.up, l.forward);
                         (g.0 * tune.hum_gain, g.1 * tune.hum_gain)
                     });

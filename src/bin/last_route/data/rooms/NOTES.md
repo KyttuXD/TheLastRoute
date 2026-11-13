@@ -740,3 +740,7 @@ Notes:
 - Whether the shipped engine is a single- or double-precision build. I assumed the default single-precision build. With `precision=double`, Vector2 would be f64 and section 2 would not apply.
 - Whether Godot 4.7's `sort_array.h` matches the master copy quoted above. I expect it does, and the outcome is equivalent for strict comparators.
 - Nothing else. All catalog data is const and was parsed mechanically from source.
+
+## Removed props (`removed_props`, Rust only)
+
+`catalog.json` `removed_props` lists prop types the Rust game never shows (the mirrors: `bathroomMirror`, `standingMirror`). The generators still place them, so the seeded placement stays equal to Godot's; `Facility::remove_listed_props` drops them when a finite floor (`Facility::generate`), a live level-0 chunk (`route::live::from_layout`) or a legacy chunk (`infinite::legacy_chunk`) is finished. Take a type out of the list to bring it back.

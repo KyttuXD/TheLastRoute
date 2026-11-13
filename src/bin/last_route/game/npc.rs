@@ -4942,7 +4942,14 @@ mod tests {
         let (mut g, _) = run_game(Difficulty::Standard, 7, "ROOM-TEST-7");
         let start = g.npcs[0].at;
         let dt = 1.0 / 60.0;
-        let chasing_5m = vec![((start.0 + 5.0, start.1), true)];
+        // 5 m away with no line to the bot, so only the threat range can alarm it (a hunter in plain sight alarms a
+        // bot whatever the range)
+        let blind = (0..36)
+            .map(|k| (k as f32 * 10.0).to_radians())
+            .map(|a| (start.0 + 5.0 * a.cos(), start.1 + 5.0 * a.sin()))
+            .find(|&p| !g.fac.has_line_of_sight(start, p))
+            .expect("a spot 5 m from the bot behind a wall");
+        let chasing_5m = vec![(blind, true)];
         let wide = tuning_with(|v| v["threat"]["range"] = Value::from(14.0));
         let narrow = tuning_with(|v| v["threat"]["range"] = Value::from(1.0));
         let mut presses = vec![];

@@ -5856,5 +5856,10 @@
   ],
   "prop_types_missing_from_footprint_table": [
     "bunkBed"
+  ],
+  "_removed_props_note": "Not from room_catalog.gd: prop types the Rust game never shows. The generators still place them (the placement is checked against Godot and its seeded draws must not shift), then Facility::remove_listed_props drops them when a floor or chunk becomes live. Take a type out of this list to bring it back.",
+  "removed_props": [
+    "bathroomMirror",
+    "standingMirror"
   ]
 }

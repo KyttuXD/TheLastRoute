@@ -96,6 +96,13 @@ mod tests {
     }
 
     #[test]
+    fn glyras_hum_is_off_and_a_gain_brings_it_back() {
+        // the hum was the bass under the music box tune; the data turns it off (gain 0 is a valid value, not a bad one)
+        assert_eq!(HunterAmbient::get().hum_gain, 0.0);
+        assert_eq!(HunterAmbient::parse(r#"{"hum": {"gain": 0.5}}"#).hum_gain, 0.5);
+    }
+
+    #[test]
     fn a_missing_file_or_bad_value_keeps_todays_loudness() {
         assert_eq!(HunterAmbient::parse("{}"), HunterAmbient::default());
         assert_eq!(HunterAmbient::parse("not json"), HunterAmbient::default());

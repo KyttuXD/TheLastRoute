@@ -39,7 +39,7 @@
 		"music_box_jam": [
 			{ "kind": "tone", "hz": 311, "dur": 0.3, "vol": 0.05, "delay": 0.0, "wave": "saw" },
 			{ "kind": "tone", "hz": 330, "dur": 0.3, "vol": 0.04, "delay": 0.0, "wave": "saw" },
-			{ "kind": "thump", "hz": 70, "dur": 0.2, "vol": 0.08, "delay": 0.05 },
+			{ "kind": "thump", "hz": 70, "dur": 0.2, "vol": 0.0, "delay": 0.05, "_note": "the 70 Hz thump is off (vol was 0.08): no bass in the music box sounds" },
 			{ "kind": "noise", "hz": 1200, "dur": 0.15, "vol": 0.05, "delay": 0.1, "rate": 0.9 }
 		],
 		"vent_open": [

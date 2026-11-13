@@ -198,6 +198,8 @@ pub fn from_layout(seed: &str, k: ChunkKey, lay: &ChunkLayout, cat: &Catalog) ->
 
     f.hunter_spawn = f.start;
     let _ = f.apply_maze_variant(seed, k);
+    // the removed prop types (the mirrors) go here, after the layout (which the Godot goldens check) placed them
+    f.remove_listed_props(cat);
     // the hole, prop and hunter grids the heater pick below reads
     f.level = k.level;
     f.rebuild_grids();
@@ -606,6 +608,8 @@ mod tests {
                     .unwrap_or(&[])
                     .iter()
                     .filter(|p| p.solid && !navigation::walk_over(navigation::footprint(p.collider_size, p.blocker_size)))
+                    // the removed types (the mirrors) are in the layout and not in the live chunk
+                    .filter(|p| !cat().is_removed_prop(p.prop_type))
                     .count();
                 let kept = f.props.iter().filter(|p| p.solid).count();
                 if f.stairs.is_empty() {
@@ -867,6 +871,50 @@ mod tests {
                     );
                     assert!(s.id.starts_with(&format!("{cx}:0:{cz}:HUNTER:")), "{}", s.id);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn no_live_chunk_has_a_mirror_and_the_pass_takes_only_the_mirrors() {
+        let removed = |p: &Prop| cat().is_removed_prop(&p.ptype);
+        assert!(cat().is_removed_prop("bathroomMirror") && cat().is_removed_prop("standingMirror"));
+        assert!(!cat().is_removed_prop("locker"));
+        for world in WORLDS.iter().copied().chain(["7", "31337", "123456789"]) {
+            for (cx, cz) in CHUNKS {
+                let k = ChunkKey { cx, cy: cz, level: 0 };
+                let Some(lay) = layout::chunk_layout(world, Coord::new(cx, 0, cz)) else {
+                    continue;
+                };
+                let (mut f, _) = from_layout(world, k, &lay, cat());
+                assert!(!f.props.iter().any(|p| removed(p)), "{world} {cx},{cz}: a mirror is live");
+                // the layout (what the Godot goldens compare) still holds its mirrors: put them back as the adapter
+                // makes them, plus one of each type, and the pass takes exactly those and nothing else
+                let kept: Vec<String> = f.props.iter().map(|p| p.id.clone()).collect();
+                let mut back: Vec<Prop> = lay
+                    .region_props
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|p| cat().is_removed_prop(p.prop_type))
+                    .map(|p| prop_of_layout(p, &lay.rooms))
+                    .collect();
+                if let Some(first) = f.props.first().cloned() {
+                    for t in ["bathroomMirror", "standingMirror"] {
+                        back.push(Prop { id: format!("test-{t}"), ptype: t.to_string(), door: None, ..first.clone() });
+                    }
+                }
+                let added = back.len();
+                // mixed in, not only at the end
+                for (n, p) in back.into_iter().enumerate() {
+                    let at = (n * 3).min(f.props.len());
+                    f.props.insert(at, p);
+                }
+                assert_eq!(f.remove_listed_props(cat()), added, "{world} {cx},{cz}");
+                let after: Vec<String> = f.props.iter().map(|p| p.id.clone()).collect();
+                assert_eq!(after, kept, "{world} {cx},{cz}: the pass changed more than the mirrors");
+                f.rebuild_grids();
+                assert_eq!(f.remove_listed_props(cat()), 0);
             }
         }
     }

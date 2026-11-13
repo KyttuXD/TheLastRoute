@@ -681,7 +681,11 @@ mod tests {
     /// flat strip of the atlas, so the back of a door reads as wood. Doors only; no other model changed.)
     /// (684 -> 683 on 2026-11-07: the black wolf spider was removed from the game, so its model left the set; digest recomputed.)
     /// (digest moved on 2026-11-08: re-recorded with the deliberate 1e-4 quantisation, for cross-platform float stability.)
-    const GOLDEN_ALL: (usize, u64) = (684, 0x24ceabe019e5c267);
+    /// (digest moves on 2026-11-12: the eight horses of the two carousel models, props/carnival/carousel_centerpiece and
+    /// props/maze/carnival_carousel, were turned a quarter turn about their poles to face along the ride, not outward.
+    /// Only those two models differ and the count stays 684. RE-RECORD the value below with print_golden_digests: the
+    /// edit pass that turned them could not run it.)
+    const GOLDEN_ALL: (usize, u64) = (684, 0x367f8c594b627e08);
 
     /// The shape of a model read with the game's UV rule.
     fn shape_now(path: &str, j: &serde_json::Value) -> Option<Shape> {
@@ -724,6 +728,62 @@ mod tests {
         assert_eq!(digest(&a), digest(&b));
         b.min.x += 0.01;
         assert_ne!(digest(&a), digest(&b));
+    }
+
+    /// The horses of both carousel models stand along the ride (across the radius), all the same way round, not facing
+    /// outward: a horse's body is longer across the radius than along it, and its head leads its body sideways with the
+    /// same turn sense on all eight. The models hold this as each horse element's `origin` (its pole) and `rotation`.
+    #[test]
+    fn the_carousel_horses_face_along_the_ride_not_outward() {
+        let models = all_models();
+        for (path, head) in [
+            ("props/carnival/carousel_centerpiece.bbmodel", "HorseNeck_"),
+            ("props/maze/carnival_carousel.bbmodel", "HorseHead_"),
+        ] {
+            let (_, j) = models.iter().find(|(p, _)| *p == path).unwrap_or_else(|| panic!("{path} is not embedded"));
+            let els = j["elements"].as_array().expect("elements");
+            // the placed points of every element whose name starts with `prefix`, by the loader's rule (`place`)
+            let points = |prefix: &str| -> Vec<Vec3> {
+                let mut out = vec![];
+                for e in els.iter().filter(|e| e["name"].as_str().is_some_and(|n| n.starts_with(prefix))) {
+                    let (origin, rot) = (v3(&e["origin"]), rot_of(e));
+                    let mut local: Vec<Vec3> = vec![];
+                    if let Some(vs) = e["vertices"].as_object() {
+                        local.extend(vs.values().map(|v| v3(v) + origin));
+                    } else {
+                        let (f, t) = (v3(&e["from"]), v3(&e["to"]));
+                        for k in 0..8 {
+                            local.push(vec3(
+                                if k & 1 == 0 { f.x } else { t.x },
+                                if k & 2 == 0 { f.y } else { t.y },
+                                if k & 4 == 0 { f.z } else { t.z },
+                            ));
+                        }
+                    }
+                    out.extend(local.into_iter().map(|p| rot * (p - origin) + origin));
+                }
+                out
+            };
+            let centre = |ps: &[Vec3]| ps.iter().fold(Vec3::ZERO, |a, p| a + *p) / ps.len().max(1) as f32;
+            let mut senses = vec![];
+            for n in 0..8 {
+                let body = points(&format!("HorseBody_{n}"));
+                let head_points = points(&format!("{head}{n}"));
+                assert!(!body.is_empty() && !head_points.is_empty(), "{path}: horse {n} is missing a part");
+                let c = centre(&body);
+                let radial = vec3(c.x, 0.0, c.z).normalize();
+                let tangent = vec3(-radial.z, 0.0, radial.x);
+                let span = |axis: Vec3| -> f32 {
+                    let along = body.iter().map(|p| (*p - c).dot(axis));
+                    along.clone().fold(f32::MIN, f32::max) - along.fold(f32::MAX, f32::min)
+                };
+                assert!(span(tangent) > span(radial) * 1.5, "{path}: horse {n} stands along the radius");
+                let lead = centre(&head_points) - c;
+                assert!(lead.dot(tangent).abs() > lead.dot(radial).abs() * 3.0, "{path}: horse {n} looks outward or inward");
+                senses.push(lead.dot(tangent) > 0.0);
+            }
+            assert!(senses.iter().all(|s| *s == senses[0]), "{path}: the horses do not all face the same way round: {senses:?}");
+        }
     }
 
     /// The 26 A to Z hunters, the spiders and every prop draw exactly as before the void fix: same corners, same UVs.

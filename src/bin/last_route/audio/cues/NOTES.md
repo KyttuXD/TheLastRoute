@@ -116,6 +116,10 @@ the exit path), so the port's current `lift` sound has no source equivalent.
 
 ## The music box tune and its wind-down (`music_box.rs`)
 
+- **No bass (2026-11-12, by request).** Glyra's hum (`glyra_hum`, C4 to A4 sines under the tune) is off: `hum.gain` is 0 in
+  `data/audio/hunter_ambient.json` and `world::update` does not start the loop at gain 0. The 70 Hz thump of
+  `music_box_jam` is `vol` 0 in `data/audio/cues.json`. Set either back to bring it back (they were 0.5 and 0.08).
+
 - `music_box_tune`: **no longer the original's cue** (the golden in `tests.rs` was updated on purpose). It is Night
   Watch's Masked Hours tune (KyttusLab `games/night-watch/src/modes/mask/mask-data.js` `TUNE`, played by `mask.js`): 13
   sine notes, 659 587 523 587 659 659 659 587 587 587 659 784 784 Hz (E D C D E E E D D D E G G), 380 ms apart at full
