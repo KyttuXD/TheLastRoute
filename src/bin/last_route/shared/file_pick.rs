@@ -464,12 +464,88 @@ mod imp {
         start_dir_from(home, &|d| d.is_dir())
     }
 
-    /// Linux has no dialog of its own: it needs the desktop portal (a session bus) or zenity.
+    /// Linux has no dialog of its own: the game asks `zenity` (GNOME and most desktops) or `kdialog` (KDE) to show one.
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
     pub fn available() -> bool {
-        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty());
-        let zenity = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join("zenity").is_file()));
-        bus || zenity
+        dialog_program().is_some()
+    }
+
+    /// The dialog program found on the PATH: zenity first, then kdialog.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
+    fn dialog_program() -> Option<&'static str> {
+        let path = std::env::var_os("PATH")?;
+        ["zenity", "kdialog"].into_iter().find(|name| std::env::split_paths(&path).any(|d| d.join(name).is_file()))
+    }
+
+    /// The command line of a dialog program for one request: (program, arguments). The chosen paths come back on
+    /// standard output, one a line.
+    #[cfg(any(test, any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
+    pub fn dialog_command(program: &str, title: &str, exts: &[String], multiple: bool, directory: bool, start: Option<&Path>) -> Vec<String> {
+        let mut args: Vec<String> = vec![];
+        let start = start.map(|d| format!("{}/", d.display())).unwrap_or_default();
+        if program == "kdialog" {
+            args.push("--title".into());
+            args.push(title.into());
+            if directory {
+                args.push("--getexistingdirectory".into());
+                args.push(if start.is_empty() { ".".into() } else { start });
+            } else {
+                if multiple {
+                    args.push("--multiple".into());
+                    args.push("--separate-output".into());
+                }
+                args.push("--getopenfilename".into());
+                args.push(if start.is_empty() { ".".into() } else { start });
+                if !exts.is_empty() {
+                    let globs: Vec<String> = exts.iter().map(|e| format!("*.{e}")).collect();
+                    args.push(format!("Accepted files ({})", globs.join(" ")));
+                }
+            }
+        } else {
+            args.push("--file-selection".into());
+            args.push(format!("--title={title}"));
+            if directory {
+                args.push("--directory".into());
+            }
+            if multiple {
+                args.push("--multiple".into());
+                args.push("--separator=\n".into());
+            }
+            if !start.is_empty() {
+                args.push(format!("--filename={start}"));
+            }
+            if !exts.is_empty() && !directory {
+                // both cases of each extension: the filter is case-sensitive
+                let globs: Vec<String> = exts.iter().flat_map(|e| [format!("*.{e}"), format!("*.{}", e.to_uppercase())]).collect();
+                args.push(format!("--file-filter=Accepted files | {}", globs.join(" ")));
+            }
+        }
+        args
+    }
+
+    /// The Linux dialog: the dialog program runs on a thread of its own and the frame loop polls for its answer, so
+    /// nothing blocks the game. (This replaced the `rfd` crate here, which did the same through zenity.)
+    #[cfg(all(not(lr_macos_legacy), any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
+    fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
+        let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<PathBuf>>>();
+        let program = dialog_program();
+        let args = program.map(|p| dialog_command(p, title(directory), &extensions_of(&kind), multiple, directory, start_dir().as_deref()));
+        std::thread::spawn(move || {
+            let answer = program.zip(args).and_then(|(p, args)| {
+                let out = std::process::Command::new(p).args(args).stderr(std::process::Stdio::null()).output().ok()?;
+                if !out.status.success() {
+                    return None;
+                }
+                let paths: Vec<PathBuf> = String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect();
+                (!paths.is_empty()).then_some(paths)
+            });
+            let _ = tx.send(answer);
+        });
+        Dialog(Box::new(move || match rx.try_recv() {
+            Ok(answer) => Some(answer),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+        }))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
@@ -489,7 +565,7 @@ mod imp {
     /// is shown without a nested run loop, so nothing is drawn from inside the GL view's display (macOS: a sheet on the
     /// main window; Windows and Linux: the dialog runs on a thread of its own). A synchronous `pick_file` on macOS runs
     /// AppKit's modal loop inside the frame callback, which aborted the game in `CA::Transaction::commit`.
-    #[cfg(not(lr_macos_legacy))]
+    #[cfg(all(not(lr_macos_legacy), not(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))))]
     fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
         use std::future::Future;
         use std::pin::Pin;
@@ -656,6 +732,22 @@ mod tests {
         use std::cell::Cell;
         use std::path::{Path, PathBuf};
         use std::rc::Rc;
+
+        #[test]
+        fn the_linux_dialog_programs_get_the_title_the_filter_and_the_start_folder() {
+            use super::super::imp::dialog_command;
+            let exts = vec!["png".to_string()];
+            let z = dialog_command("zenity", "Choose a file", &exts, true, false, Some(Path::new("/home/u/Pictures")));
+            assert_eq!(z[0], "--file-selection");
+            assert!(z.contains(&"--title=Choose a file".to_string()) && z.contains(&"--multiple".to_string()));
+            assert!(z.contains(&"--separator=\n".to_string()), "one path a line");
+            assert!(z.contains(&"--filename=/home/u/Pictures/".to_string()));
+            assert!(z.contains(&"--file-filter=Accepted files | *.png *.PNG".to_string()));
+            let folder = dialog_command("zenity", "Choose a folder", &exts, false, true, None);
+            assert!(folder.contains(&"--directory".to_string()) && !folder.iter().any(|a| a.starts_with("--file-filter")));
+            let k = dialog_command("kdialog", "Choose a file", &exts, false, false, None);
+            assert_eq!(k, ["--title", "Choose a file", "--getopenfilename", ".", "Accepted files (*.png)"]);
+        }
 
         fn temp(name: &str) -> PathBuf {
             let dir = std::env::temp_dir().join(format!("lr_file_pick_{name}_{}", crate::shared::task::process_id()));

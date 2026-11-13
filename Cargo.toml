@@ -40,9 +40,11 @@ tiny_http = { version = "0.12", optional = true }
 lr_update = { path = "crates/lr_update" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
-# The system file dialog behind the SKIN tab's PICK A PNG (shared/file_pick.rs): the Windows and macOS open panels. The browser
-# build has its own chooser in the page (packaging/web/index.html), so rfd is not compiled for wasm32. xdg-portal is
-# the Linux backend (portal or zenity, found at run time); the wayland window-handle feature is not needed.
+
+# The system file dialog behind the SKIN tab's PICK A PNG (shared/file_pick.rs): the Windows and macOS open panels only.
+# Linux asks zenity or kdialog itself (which is all rfd did there), the browser build has its own chooser in the page,
+# and the legacy Mac build calls AppKit's panel directly.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 # LR Story's browser saves (src/bin/lr_story/save.rs): the page's localStorage through quad-storage. Native saves use a file.
