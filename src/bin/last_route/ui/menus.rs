@@ -51,6 +51,8 @@ pub enum Action {
     CreateAccount { name: String, password: String },
     /// SIGN OUT: the app revokes the session and clears the profile name.
     SignOut,
+    /// SWITCH PROFILE: the app starts the game again on the profile screen (app/instance.rs, docs/PROFILES.md).
+    SwitchProfile,
 }
 
 /// Which room the lobby is showing: the solo room of CREATE ROOM, a room this player hosts, or one it joined.
@@ -66,6 +68,21 @@ pub enum RoomMode {
 /// build has no desktop to quit to, so it offers none of them and the page stays open.
 pub const QUIT_OFFERED: bool = !cfg!(target_arch = "wasm32");
 
+/// Whether the title offers SWITCH PROFILE. The browser build has no folders, so it has no profiles (docs/PROFILES.md).
+pub const PROFILES_OFFERED: bool = !cfg!(target_arch = "wasm32");
+
+/// The SWITCH PROFILE label (data/ui/profiles.json). The browser build never shows the button.
+fn profiles_label() -> &'static str {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::ui::profile_screen::labels().switch_label.as_str()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        ""
+    }
+}
+
 /// The title's buttons. ADMIN shows for the admin's account only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TitleEntry {
@@ -77,6 +94,8 @@ pub enum TitleEntry {
     Account,
     Admin,
     Quit,
+    /// SWITCH PROFILE: back to the profile screen (`Action::SwitchProfile`). Last, after QUIT.
+    Profiles,
 }
 
 /// What pressing a title button does. PUBLIC ROUTE asks the app to join or open the public room.
@@ -89,6 +108,7 @@ pub fn title_entry_action(entry: TitleEntry) -> Action {
         TitleEntry::Account => Action::Go(Screen::Account),
         TitleEntry::Admin => Action::Go(Screen::Admin),
         TitleEntry::Quit => Action::Go(Screen::Quit),
+        TitleEntry::Profiles => Action::SwitchProfile,
     }
 }
 
@@ -103,7 +123,11 @@ pub fn title_entries(username: &str) -> Vec<TitleEntry> {
         TitleEntry::Settings,
         TitleEntry::Admin,
         TitleEntry::Quit,
+        TitleEntry::Profiles,
     ];
+    if !PROFILES_OFFERED {
+        v.retain(|e| *e != TitleEntry::Profiles);
+    }
     if !crate::ui::admin::is_admin_owner(username) {
         v.retain(|e| *e != TitleEntry::Admin);
     }
@@ -420,6 +444,7 @@ pub fn draw_title(a: &Assets, ui: &mut Ui, username: &str, active: bool) -> Acti
             TitleEntry::Account => (account, 6.0, Kind::Secondary),
             TitleEntry::Admin => ("ADMIN", 5.0, Kind::Secondary),
             TitleEntry::Quit => ("QUIT", 6.0, Kind::Secondary),
+            TitleEntry::Profiles => (profiles_label(), 6.0, Kind::Secondary),
         })
         .collect();
     let row_h = items
@@ -2475,6 +2500,7 @@ mod tests {
                 TitleEntry::Account,
                 TitleEntry::Settings,
                 TitleEntry::Quit,
+                TitleEntry::Profiles,
             ]
         );
     }
@@ -2492,6 +2518,7 @@ mod tests {
                     TitleEntry::Settings,
                     TitleEntry::Admin,
                     TitleEntry::Quit,
+                    TitleEntry::Profiles,
                 ]
             );
         }
@@ -2503,6 +2530,7 @@ mod tests {
         assert!(matches!(title_entry_action(TitleEntry::Create), Action::Go(Screen::Create)));
         assert!(matches!(title_entry_action(TitleEntry::Join), Action::Go(Screen::Join)));
         assert!(matches!(title_entry_action(TitleEntry::Quit), Action::Go(Screen::Quit)));
+        assert!(matches!(title_entry_action(TitleEntry::Profiles), Action::SwitchProfile));
         for name in ["ALICE", "KYTTU"] {
             for e in title_entries(name) {
                 assert!(!matches!(title_entry_action(e), Action::None), "{e:?} does something");

@@ -13,6 +13,8 @@ pub mod checkpoint;
 pub mod clock;
 pub mod file_pick;
 pub mod font_subset;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod profiles;
 pub mod safe_room;
 pub mod skin_cache;
 #[cfg(test)]

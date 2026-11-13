@@ -8,8 +8,9 @@ use std::sync::Mutex;
 
 static CACHE: Mutex<Option<BTreeMap<String, Vec<String>>>> = Mutex::new(None);
 
-/// Env var that moves `profile.json` into another folder, so screen checks can use a scratch
-/// profile instead of the player's own file. Unset or empty keeps the per-user folder.
+/// Env var that names the folder for `profile.json`, so screen checks can use a scratch profile instead of the
+/// player's own file. Unset or empty keeps the per-user folder. Since the profiles of docs/PROFILES.md it moves
+/// every user file, not only this one: `app/instance.rs` points `paths::user_dir` at the same folder at start.
 pub const PROFILE_DIR_ENV: &str = "LR_PROFILE_DIR";
 
 /// The profile file: under `dir_override` when set and non-empty, otherwise `user_default`.

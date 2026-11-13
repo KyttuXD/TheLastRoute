@@ -152,7 +152,13 @@ fn main() {
     {
         app::platform::attach_console();
     }
+    // the profile first: it decides which folder the log, the settings and every other user file live in
+    // (app/instance.rs, docs/PROFILES.md)
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = app::instance::select();
     app::log::init();
+    #[cfg(not(target_arch = "wasm32"))]
+    app::instance::log_start();
     // `--validate-pack DIR`: load a pack folder the way the game does and print every problem; no window opens
     if std::env::args().any(|a| a == "--validate-pack") {
         let code = match arg("--validate-pack").filter(|d| !d.starts_with("--")) {
@@ -175,7 +181,17 @@ fn main() {
         macroquad::Window::from_config(window_conf(None), headless::window::run());
         return;
     }
+    // the profile screen is its own short process: it starts the game again on the picked profile
+    #[cfg(not(target_arch = "wasm32"))]
+    if let app::instance::Start::Picker(picker) = start {
+        macroquad::Window::from_config(window_conf(None), ui::profile_screen::run(picker));
+        app::log::flush();
+        return;
+    }
     macroquad::Window::from_config(window_conf(stress.as_ref().map(|c| c.vsync)), amain(stress, capture));
+    // the window closed: the profile is free for the next instance
+    #[cfg(not(target_arch = "wasm32"))]
+    app::instance::release();
 }
 
 async fn amain(stress: Option<app::stress::Config>, capture: Option<app::capture::Capture>) {

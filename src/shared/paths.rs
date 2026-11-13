@@ -9,7 +9,34 @@ use std::path::PathBuf;
 /// device id are never written, and their reads find nothing.
 pub const WRITES_TO_DISK: bool = !cfg!(target_arch = "wasm32");
 
+/// The folder of the profile this process runs on, when it is not the root folder: `profiles/<name>/` under the root
+/// (`shared/profiles.rs` in the game), or the folder `LR_PROFILE_DIR` names. Set once at start, before any user file
+/// is read (the game's `app/instance.rs`); `None` is the root folder, which is the DEFAULT profile.
+static PROFILE_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Points every user file at `dir` (a profile folder), or back at the root folder with `None`.
+pub fn set_profile_dir(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = PROFILE_DIR.write() {
+        *slot = dir;
+    }
+}
+
+/// The profile folder set with [`set_profile_dir`], if any.
+pub fn profile_dir() -> Option<PathBuf> {
+    PROFILE_DIR.read().ok().and_then(|slot| slot.clone())
+}
+
+/// The folder every per-user file lives in: the chosen profile's folder, or the root folder ([`root_user_dir`]).
 pub fn user_dir() -> Option<PathBuf> {
+    if !WRITES_TO_DISK {
+        return None;
+    }
+    profile_dir().or_else(root_user_dir)
+}
+
+/// The root per-user folder of this system, whatever profile is chosen: it holds the DEFAULT profile's files, the
+/// `profiles.json` index and the `profiles/` folder.
+pub fn root_user_dir() -> Option<PathBuf> {
     if !WRITES_TO_DISK {
         return None;
     }

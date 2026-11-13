@@ -30,6 +30,8 @@ pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod gfx;
 pub mod bindings;
 pub mod frame_cap;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod instance;
 pub mod mouse_lock;
 pub mod log;
 pub mod pacing;
@@ -765,6 +767,11 @@ pub async fn run(
         }
         perf::frame(get_frame_time());
         perf::handle_keys();
+        // SHIFT held as the title first shows: back to the profile screen (app/instance.rs)
+        #[cfg(not(target_arch = "wasm32"))]
+        if instance::shift_wants_picker() && instance::restart_to_picker() {
+            break;
+        }
         if let Some(st) = stress_run.as_mut() {
             if st.frame(get_frame_time(), playing.as_ref()) {
                 st.finish();
@@ -2432,6 +2439,17 @@ pub async fn run(
                     if menus::QUIT_OFFERED {
                         settings.save();
                         break;
+                    }
+                }
+                Action::SwitchProfile => {
+                    // the game starts again on the profile screen (app/instance.rs); this process ends like QUIT
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        settings.save();
+                        if instance::restart_to_picker() {
+                            break;
+                        }
+                        flash(&mut ui, &crate::ui::profile_screen::labels().restart_failed);
                     }
                 }
                 Action::None => {}

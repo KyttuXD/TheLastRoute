@@ -16,6 +16,8 @@ pub mod teammate_markers;
 pub mod inventory;
 pub mod menus;
 pub mod pause;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod profile_screen;
 pub mod report;
 pub mod skin_preview;
 pub mod mods_tab;
