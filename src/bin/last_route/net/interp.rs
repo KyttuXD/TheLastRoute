@@ -31,6 +31,9 @@ pub struct Rules {
     pub max_extrapolation_s: f32,
     /// A jump longer than this (metres), or onto another floor, is a teleport and is not glided.
     pub snap_distance_m: f32,
+    /// Two samples with heights more than this apart (metres) are a teleport too (a ladder snap, a respawn on another
+    /// storey). A floor label that changes while the height runs on (a runner walking a flight of stairs) is not.
+    pub snap_height_m: f32,
     /// Two samples further apart than this are not glided between: the figure holds, then appears at the later one.
     pub gap_hold_s: f32,
     pub buffer_len: usize,
@@ -60,6 +63,7 @@ impl Default for Rules {
             jitter_factor: 1.5,
             max_extrapolation_s: 0.15,
             snap_distance_m: 8.0,
+            snap_height_m: 2.5,
             gap_hold_s: 0.5,
             buffer_len: 8,
             remote_timeout_s: 2.0,
@@ -98,6 +102,7 @@ impl Rules {
             jitter_factor: num("jitter_factor", d.jitter_factor, 0.0)?,
             max_extrapolation_s: num("max_extrapolation_s", d.max_extrapolation_s, 0.0)?,
             snap_distance_m: num("snap_distance_m", d.snap_distance_m, 0.0)?,
+            snap_height_m: num("snap_height_m", d.snap_height_m, 0.0)?,
             gap_hold_s: num("gap_hold_s", d.gap_hold_s, 0.0)?,
             buffer_len: num("buffer_len", d.buffer_len as f32, 2.0)? as usize,
             remote_timeout_s: num("remote_timeout_s", d.remote_timeout_s, 0.1)?,
@@ -226,7 +231,7 @@ impl Track {
             if render >= *tb {
                 continue;
             }
-            let teleport = a.depth != b.depth || (b.x - a.x).hypot(b.y - a.y) > rules.snap_distance_m;
+            let teleport = !same_floor(a, b, rules) || (b.x - a.x).hypot(b.y - a.y) > rules.snap_distance_m;
             if teleport || (tb - ta) as f32 > rules.gap_hold_s {
                 // a jump or a long silence is not a walk: hold, then appear at the later sample
                 return Some(if teleport { *b } else { *a });
@@ -237,7 +242,7 @@ impl Track {
         // past the newest sample: carry on at the measured speed for a short while, then hold
         let (tn, n) = self.buf.back()?;
         let ahead = ((render - tn) as f32).min(rules.max_extrapolation_s).max(0.0);
-        let (vx, vz) = clamp_velocity_pair(self.velocity(), rules.max_speed_mps);
+        let (vx, vz) = clamp_velocity_pair(self.velocity(rules), rules.max_speed_mps);
         let mut s = *n;
         s.x += vx * ahead;
         s.y += vz * ahead;
@@ -245,7 +250,7 @@ impl Track {
     }
 
     /// The newest sample's velocity: what it says, else (an older client) the step from the sample before it.
-    fn velocity(&self) -> (f32, f32) {
+    fn velocity(&self, rules: &Rules) -> (f32, f32) {
         let Some((tn, n)) = self.buf.back() else { return (0.0, 0.0) };
         if !n.moving {
             return (0.0, 0.0);
@@ -254,12 +259,22 @@ impl Track {
             return (n.vx, n.vz);
         }
         match self.buf.iter().rev().nth(1) {
-            Some((tp, p)) if p.depth == n.depth && tn - tp > 1e-3 && tn - tp < 0.5 => {
+            Some((tp, p)) if same_floor(p, n, rules) && tn - tp > 1e-3 && tn - tp < 0.5 => {
                 let dt = (tn - tp) as f32;
                 ((n.x - p.x) / dt, (n.y - p.y) / dt)
             }
             _ => (0.0, 0.0),
         }
+    }
+}
+
+/// Whether a runner walked from sample `a` to sample `b` (no ladder snap, fall through a shaft or respawn between them).
+/// With a height on both, the heights decide: a runner on a flight of stairs changes its floor label (`depth`) while its
+/// height runs on, and that is a walk to glide, not a jump to snap. Without heights (an older client) the label decides.
+pub fn same_floor(a: &Sample, b: &Sample, rules: &Rules) -> bool {
+    match (a.h, b.h) {
+        (Some(ha), Some(hb)) => (hb - ha).abs() <= rules.snap_height_m,
+        _ => a.depth == b.depth,
     }
 }
 
@@ -477,8 +492,37 @@ mod tests {
         t.push(1.0, at(1, 0.0, 0.0), &r);
         let mut up = at(2, 0.5, 0.0);
         up.depth = 2;
+        up.h = Some(10.0);
         t.push(1.05, up, &r);
         assert_eq!(t.shown(1.0 + t.delay(&r) as f64 + 0.01, &r).unwrap().depth, 2);
+    }
+
+    #[test]
+    fn a_runner_on_a_flight_of_stairs_glides_through_the_floor_label_change() {
+        let r = Rules::default();
+        // the height runs on from 4.9 to 5.1 while the label goes from floor 0 to floor 1
+        let mut t = Track::new(&r);
+        let mut below = at(1, 0.0, 0.0);
+        below.depth = 0;
+        below.h = Some(4.9);
+        let mut above = at(2, 0.2, 0.0);
+        above.depth = 1;
+        above.h = Some(5.1);
+        t.push(1.0, below, &r);
+        t.push(1.05, above, &r);
+        let mid = t.shown(1.0 + t.delay(&r) as f64 + 0.025, &r).unwrap();
+        assert!((mid.x - 0.1).abs() < 1e-3 && (mid.h.unwrap() - 5.0).abs() < 1e-3, "glided, not snapped: {} {:?}", mid.x, mid.h);
+        assert!(same_floor(&below, &above, &r));
+        // an older client sends no height: its floor label still snaps
+        let (mut old_a, mut old_b) = (below, above);
+        old_a.h = None;
+        old_b.h = None;
+        assert!(!same_floor(&old_a, &old_b, &r));
+        // a ladder snap or a respawn a storey away is still a teleport, whatever the label says
+        let mut far = above;
+        far.depth = 0;
+        far.h = Some(below.h.unwrap() + r.snap_height_m + 0.1);
+        assert!(!same_floor(&below, &far, &r));
     }
 
     #[test]

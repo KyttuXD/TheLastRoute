@@ -464,6 +464,105 @@ pub fn parse_snapshot(o: &Map<String, Value>) -> Option<Snapshot> {
     Some(Snapshot { hunters, relays_sabotaged })
 }
 
+/// The key of a world event that sets lasting world state (a valve's turn count, a chunk's shut-off, a burst pipe, a
+/// safe room's status): the events a runner who was not there to hear them must still be told. None for an event that is
+/// only a moment (a hunter's state change, a grab, a door, a charge). Two events with one key say the same thing about
+/// the same object, so only the later one matters.
+pub fn state_key(event: &Map<String, Value>) -> Option<String> {
+    let text = |k: &str| event.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+    match event.get("what").and_then(Value::as_str)? {
+        // a shut-off and a turn of one valve do different things (PipeNetwork::apply): each keeps its own latest event
+        super::valve_events::VALVE => {
+            let shut = event.get("shut").and_then(Value::as_bool).unwrap_or(false);
+            text("valve_id").map(|id| format!("v{}|{id}", u8::from(shut)))
+        }
+        super::valve_events::BURST => text("flow_id").map(|id| format!("b|{id}")),
+        crate::shared::safe_room::EVENT => text("room_id").map(|id| format!("s|{id}")),
+        _ => None,
+    }
+}
+
+/// Most state events a [`StateLog`] keeps (a memory bound, about 250 KB of small objects at the very most; a route has
+/// far fewer valves, pipes and safe rooms in reach). The oldest is dropped past it.
+pub const STATE_LOG_MAX: usize = 1024;
+
+/// Host: the lasting world state of the running route as the latest event per [`state_key`], in the order each was last
+/// sent. A runner that joins (or joins again) during the route is sent these after its snapshot, so its valves, burst
+/// pipes and safe rooms match the host's; replaying them is harmless (`valve_events`). Events with no key are not kept.
+#[derive(Debug, Default)]
+pub struct StateLog {
+    entries: Vec<(String, Map<String, Value>)>,
+}
+
+impl StateLog {
+    /// Keeps `event` when it sets lasting state: it replaces the earlier event of its key and moves to the end, so a
+    /// replay runs in the order things last happened. Returns whether it was kept.
+    pub fn record(&mut self, event: &Map<String, Value>) -> bool {
+        let Some(key) = state_key(event) else { return false };
+        if let Some(at) = self.entries.iter().position(|(k, _)| *k == key) {
+            self.entries.remove(at);
+        } else if self.entries.len() >= STATE_LOG_MAX {
+            self.entries.remove(0);
+        }
+        self.entries.push((key, event.clone()));
+        true
+    }
+
+    /// The kept events, oldest first.
+    pub fn events(&self) -> impl Iterator<Item = &Map<String, Value>> {
+        self.entries.iter().map(|(_, e)| e)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// A new route (or none): nothing of the old one is replayed.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Adds the sending window's origin (the absolute cell of its (0, 0)) to every frame entry that has none, so a guest in
+/// another streamed window moves the hunter's cells into its own (`Game::apply_hunter_frame` reads `origin`; a guest
+/// too old to know the key ignores it). An entry that already says its origin keeps it.
+pub fn stamp_origin(frame: &mut [Value], origin: (i32, i32)) {
+    for entry in frame.iter_mut() {
+        if let Some(o) = entry.as_object_mut() {
+            if !o.contains_key("origin") {
+                o.insert("origin".into(), json!([origin.0, origin.1]));
+            }
+        }
+    }
+}
+
+/// Splits a hunter frame into parts whose JSON arrays are each at most `max_bytes` long, in order. A guest applies each
+/// entry on its own (by hunter id), so a frame sent as several messages shows the same hunters as one. An entry that is
+/// longer than `max_bytes` by itself is a part of its own. An empty frame gives no parts.
+pub fn split_frame(frame: Vec<Value>, max_bytes: usize) -> Vec<Vec<Value>> {
+    let mut parts: Vec<Vec<Value>> = Vec::new();
+    let mut used = 0usize;
+    for entry in frame {
+        // the entry, its comma, and the array's two brackets counted once per part
+        let size = serde_json::to_vec(&entry).map_or(0, |b| b.len()) + 1;
+        match parts.last_mut() {
+            Some(part) if used + size <= max_bytes => {
+                used += size;
+                part.push(entry);
+            }
+            _ => {
+                used = size + 2;
+                parts.push(vec![entry]);
+            }
+        }
+    }
+    parts
+}
+
 fn event<const N: usize>(what: &str, fields: [(&str, Value); N]) -> Map<String, Value> {
     let mut o = Map::new();
     o.insert("what".into(), json!(what));
@@ -759,5 +858,78 @@ mod tests {
         assert_eq!(notice(pounce.as_object().unwrap()).as_deref(), Some("NYXIE POUNCES"));
         let state = json!({"what": "hunter_state", "hunter_id": "aki", "state": "CHASE"});
         assert_eq!(notice(state.as_object().unwrap()), None, "state arrives in the frames, not as a notice");
+    }
+
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn only_events_that_set_lasting_state_have_a_state_key() {
+        let turn = obj(json!({"what": "stream_valve", "valve_id": "SEWER:0:-1:0:PROP:3", "effect": "flow", "shut": false, "turns": 1, "gate": ""}));
+        let shut = obj(json!({"what": "stream_valve", "valve_id": "SEWER:0:-1:0:PROP:3", "effect": "", "shut": true, "turns": 2, "gate": ""}));
+        assert!(state_key(&turn).is_some());
+        assert_ne!(state_key(&turn), state_key(&shut), "a shut-off and a turn of one valve are kept apart");
+        assert!(state_key(&obj(json!({"what": "stream_pipe_burst", "flow_id": "BRK:0:-1:0:9"}))).is_some());
+        assert!(state_key(&obj(json!({"what": "stream_safe_room", "room_id": "R:1:SAFE", "integrity": 2, "breached": false}))).is_some());
+        for moment in ["hunter_state", "hunter_grab", "hunter_door", "hunter_locker", "hunter_charge", "hunter_ability"] {
+            assert_eq!(state_key(&obj(json!({"what": moment, "hunter_id": "aki"}))), None, "{moment}");
+        }
+        assert_eq!(state_key(&obj(json!({"what": "stream_valve"}))), None, "no valve id, nothing to key");
+        assert_eq!(state_key(&Map::new()), None);
+    }
+
+    #[test]
+    fn the_state_log_keeps_the_latest_event_of_each_object_in_the_order_they_last_happened() {
+        let mut log = StateLog::default();
+        let turn = |valve: &str, turns: u32| obj(json!({"what": "stream_valve", "valve_id": valve, "effect": "flow", "shut": false, "turns": turns, "gate": ""}));
+        let burst = obj(json!({"what": "stream_pipe_burst", "flow_id": "BRK:0:-1:0:9"}));
+        assert!(log.record(&turn("SEWER:0:-1:0:PROP:3", 1)));
+        assert!(log.record(&burst));
+        assert!(!log.record(&obj(json!({"what": "hunter_door", "hunter_id": "aki"}))), "a moment is not kept");
+        assert!(log.record(&turn("SEWER:0:-1:0:PROP:3", 2)), "the same valve again");
+        let kept: Vec<&Map<String, Value>> = log.events().collect();
+        assert_eq!(kept.len(), 2, "one event per object");
+        assert_eq!(kept[0], &burst, "the burst now comes first");
+        assert_eq!(kept[1]["turns"], json!(2), "and the valve's latest turn last");
+        log.clear();
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn the_state_log_is_bounded() {
+        let mut log = StateLog::default();
+        for i in 0..STATE_LOG_MAX + 10 {
+            log.record(&obj(json!({"what": "stream_pipe_burst", "flow_id": format!("BRK:0:-1:0:{i}")})));
+        }
+        assert_eq!(log.len(), STATE_LOG_MAX);
+        assert_eq!(log.events().next().unwrap()["flow_id"], json!("BRK:0:-1:0:10"), "the oldest went first");
+    }
+
+    #[test]
+    fn a_frame_entry_without_an_origin_is_given_the_senders_and_one_with_an_origin_keeps_it() {
+        let mut frame = vec![json!({"index": 0, "id": "aki", "position": [1.0, 2.0]}), json!({"index": 1, "id": "bo", "origin": [5, 6]})];
+        stamp_origin(&mut frame, (-96, 64));
+        assert_eq!(frame[0]["origin"], json!([-96, 64]));
+        assert_eq!(frame[1]["origin"], json!([5, 6]));
+        assert_eq!(frame[0]["position"], json!([1.0, 2.0]), "the cells themselves are untouched");
+    }
+
+    #[test]
+    fn a_frame_too_long_for_one_message_is_split_into_parts_that_each_fit_and_lose_no_hunter() {
+        let frame: Vec<Value> = (0..40).map(|i| json!({"index": i, "id": format!("hunter_{i}"), "position": [1.5, 2.5], "state": "WANDER"})).collect();
+        let whole = serde_json::to_vec(&frame).unwrap().len();
+        let max = 400;
+        assert!(whole > max);
+        let parts = split_frame(frame.clone(), max);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            assert!(serde_json::to_vec(part).unwrap().len() <= max, "each part fits");
+        }
+        let joined: Vec<Value> = parts.into_iter().flatten().collect();
+        assert_eq!(joined, frame, "every hunter, in order");
+        assert_eq!(split_frame(frame.clone(), usize::MAX).len(), 1, "a frame that fits stays whole");
+        assert!(split_frame(Vec::new(), max).is_empty());
+        assert_eq!(split_frame(frame[..2].to_vec(), 1).len(), 2, "an entry too long by itself is a part of its own");
     }
 }

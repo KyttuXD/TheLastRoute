@@ -637,6 +637,12 @@ impl RouteCommand {
 const LOBBY_INBOX_MAX: usize = 32;
 /// Most accepted guest asks the host keeps between two takes by the app (a memory bound, not a tunable).
 const GUEST_REQUESTS_MAX: usize = 256;
+/// Most lasting-state world events a guest holds while it loads the route (a memory bound: the host replays at most
+/// [`hunter_events::STATE_LOG_MAX`], and the few that happen meanwhile follow).
+const HELD_EVENTS_MAX: usize = hunter_events::STATE_LOG_MAX + 64;
+/// What a `_hunters` or `_snapshot` message adds around its frame (the `data` / `state` keys, the name, the schema and
+/// the relay count), rounded up: a frame is sized against the link's payload less the packet header and this.
+const FRAME_ENVELOPE_BYTES: usize = 6 + 122;
 
 /// A settings difficulty index as Godot's `_selectable_difficulty_or_standard` reads it: 0 RELAXED, 1 STANDARD, 2 HARD.
 /// The index reads only those three (`ALL`), so 3 and any other value is STANDARD; Nightmare crosses the wire by its name
@@ -882,6 +888,17 @@ pub struct NetSession {
     /// Guest: whether the host is a server process (its last room message said so), not a runner. A room whose host
     /// was a server process is not handed to a runner the moment it goes (net/public_route.rs `Reform`).
     host_dedicated: bool,
+    /// Host: the absolute cell of this game's window (0, 0), from the last [`NetSession::publish_npcs`]. The hunter frame's
+    /// cells are this window's; a guest stands in its own window, so every frame entry is sent with this origin.
+    host_origin: Option<(i32, i32)>,
+    /// Host: the lasting world state of the running route (valves, burst pipes, safe rooms), replayed to a runner that
+    /// joins during the route ([`hunter_events::StateLog`]).
+    world_state: hunter_events::StateLog,
+    /// Guest: whether the last [`NetSession::tick`] carried a sample, which is when the app has a world to apply events to.
+    in_run: bool,
+    /// Guest: the lasting-state world events that arrived while this runner had no world yet (it was still loading the
+    /// route), handed to the app with the first sample's tick. Bounded by [`HELD_EVENTS_MAX`].
+    held_events: Vec<Map<String, Value>>,
     /// Guest: whether the host's room message (the roster with session ids) has arrived. A runner that joined as the host
     /// left has not been told who is in the room, so it does not know its place in line (`reform_plan`).
     room_seen: bool,
@@ -1256,6 +1273,10 @@ impl NetSession {
             player_peers: Vec::new(),
             host_dedicated: false,
             room_seen: false,
+            host_origin: None,
+            world_state: hunter_events::StateLog::default(),
+            in_run: false,
+            held_events: Vec::new(),
         }
     }
 
@@ -1335,6 +1356,8 @@ impl NetSession {
         if !self.is_host() {
             return;
         }
+        // the host's window this frame: the hunter frame's cells are in it (see `send_hunter_frame`)
+        self.host_origin = Some(origin);
         let now = Instant::now();
         // removes go out every frame (ids only); the bots' wire states are built only when a round of places is due
         let mut messages = self.npcs.host_removes(npcs.iter().map(|n| n.id));
@@ -1394,6 +1417,9 @@ impl NetSession {
         self.skin_slims.remove(&peer);
         self.pending_captures.remove(&peer);
         self.last_taser.remove(&peer);
+        // nothing more is sent to it, and what it never acknowledged is not resent for ever: over the UDP relay the
+        // resends would also keep its relay session alive, and a room's sessions are capped
+        self.coop.forget_peer(peer);
         self.guests.remove(&peer).map(|g| g.name)
     }
 
@@ -1665,6 +1691,8 @@ impl NetSession {
     /// Host: the route starts. Guests in the room enter it now; guests who join later get it on their join.
     pub fn start_run(&mut self, seed: &str, difficulty: &str) {
         self.run = Some((seed.to_string(), difficulty.to_string()));
+        // a new route: nothing of the last one's valves, pipes and safe rooms is replayed to a late joiner
+        self.world_state.clear();
         if self.is_host() {
             for peer in self.coop.peers() {
                 self.coop.send(peer, &start_message(&self.code, seed, difficulty));
@@ -1690,7 +1718,25 @@ impl NetSession {
         if !hunter_events::frames_on(rules, diff) || !self.hunter_tracker.frame_due(rules, now) {
             return;
         }
+        // a client host's frame is in its own window's cells: say which window, as a dedicated room's frame does, so a
+        // guest standing in another streamed window puts each hunter on the right cell
+        let mut frame = frame;
+        if let Some(origin) = self.host_origin {
+            hunter_events::stamp_origin(&mut frame, origin);
+        }
         let bytes = serde_json::to_vec(&frame).map_or(0, |b| b.len());
+        let room = self.frame_room();
+        if bytes > room {
+            // too long for one message on this link (a UDP relay datagram): sent as parts that each fit, not dropped.
+            // The parts are kept small enough for the unreliable channel, so a lost one costs those hunters one frame.
+            for part in hunter_events::split_frame(frame, room.min(rules.large_frame_over_bytes)) {
+                let message = Message::Hunters { data: part };
+                for peer in self.coop.peers() {
+                    self.coop.send(peer, &message);
+                }
+            }
+            return;
+        }
         let message = if bytes > rules.large_frame_over_bytes {
             Message::HuntersLarge { data: frame }
         } else {
@@ -1699,6 +1745,11 @@ impl NetSession {
         for peer in self.coop.peers() {
             self.coop.send(peer, &message);
         }
+    }
+
+    /// The longest hunter frame (its JSON array) one message carries on this room's link.
+    fn frame_room(&self) -> usize {
+        self.coop.link.max_payload().saturating_sub(FRAME_ENVELOPE_BYTES)
     }
 
     /// Host: sends the world events the game queued this frame (see [`hunter_events::Outbox`], which applied each kind's
@@ -1962,6 +2013,8 @@ impl NetSession {
             return;
         }
         for event in events {
+            // what sets lasting state is kept for the runners who join later (`join_state`)
+            self.world_state.record(&event);
             let message = Message::Event { event };
             for peer in self.coop.peers() {
                 self.coop.send(peer, &message);
@@ -1984,7 +2037,38 @@ impl NetSession {
 
     /// Host: the hunter state as the snapshot carries it: the last hunter frame and the sabotaged relay count.
     fn snapshot_message(&self) -> Message {
-        Message::Snapshot { state: hunter_events::snapshot_state(&self.hunters_now, self.relays_sabotaged) }
+        Message::Snapshot { state: hunter_events::snapshot_state(&self.snapshot_hunters(), self.relays_sabotaged) }
+    }
+
+    /// Host: the last hunter frame as a joiner is sent it, each entry with this host's window origin (see
+    /// [`NetSession::send_hunter_frame`]).
+    fn snapshot_hunters(&self) -> Vec<Value> {
+        let mut hunters = self.hunters_now.clone();
+        if let Some(origin) = self.host_origin {
+            hunter_events::stamp_origin(&mut hunters, origin);
+        }
+        hunters
+    }
+
+    /// Host: what a runner that registers during a route is sent after the route's start: the snapshot (the hunters and
+    /// the relay count), then the route's lasting world state in the order it last changed. A snapshot too long for one
+    /// message on this link goes without its hunters, which follow as reliable frames that each fit. Nothing while no
+    /// route runs.
+    fn join_state(&self) -> Vec<Message> {
+        if !self.is_host() || self.run.is_none() {
+            return Vec::new();
+        }
+        let room = self.frame_room();
+        let hunters = self.snapshot_hunters();
+        let mut out = Vec::new();
+        if serde_json::to_vec(&hunters).map_or(0, |b| b.len()) > room {
+            out.push(Message::Snapshot { state: hunter_events::snapshot_state(&[], self.relays_sabotaged) });
+            out.extend(hunter_events::split_frame(hunters, room).into_iter().map(|data| Message::HuntersLarge { data }));
+        } else {
+            out.push(Message::Snapshot { state: hunter_events::snapshot_state(&hunters, self.relays_sabotaged) });
+        }
+        out.extend(self.world_state.events().map(|event| Message::Event { event: event.clone() }));
+        out
     }
 
     /// Host: the snapshot a runner joining now is sent. Only while a route runs: with none there are no hunters to show.
@@ -1996,6 +2080,7 @@ impl NetSession {
     /// on until the next [`NetSession::start_run`].
     pub fn end_run(&mut self, reason: &str) {
         self.run = None;
+        self.world_state.clear();
         if self.is_host() {
             for peer in self.coop.peers() {
                 self.coop.send(peer, &Message::End { reason: reason.to_string() });
@@ -2012,9 +2097,19 @@ impl NetSession {
         for event in self.coop.poll() {
             self.on_session_event(event, now, &mut out);
         }
+        self.release_held_events(sample.is_some(), &mut out);
         self.prune(now, &mut out);
         self.send_due(sample, now);
         out
+    }
+
+    /// Guest: notes whether this runner has a world now (`in_run`: its tick carries a sample) and, when it has, hands the
+    /// app the lasting-state events that were held while it loaded, oldest first.
+    fn release_held_events(&mut self, in_run: bool, out: &mut Vec<NetEvent>) {
+        self.in_run = in_run;
+        if in_run && !self.held_events.is_empty() {
+            out.extend(self.held_events.drain(..).map(NetEvent::WorldEvent));
+        }
     }
 
     /// The name a peer's profile gave (a guest's own on the host, the host's on a guest); empty when none arrived yet.
@@ -2276,8 +2371,8 @@ impl NetSession {
                     self.coop.send(from, &start_message(&self.code, &seed, &difficulty));
                 }
                 self.send_profiles_to(from);
-                if let Some(snapshot) = self.join_snapshot() {
-                    self.coop.send(from, &snapshot);
+                for message in self.join_state() {
+                    self.coop.send(from, &message);
                 }
             }
             Message::WireProfile { profile } if self.is_host() => {
@@ -2407,6 +2502,17 @@ impl NetSession {
                 }
                 self.host_dedicated = rest.get("dedicated").and_then(Value::as_bool).unwrap_or(false);
                 self.room_seen = true;
+                // a host that lists session ids says who is in the room: a runner it no longer lists has left, and is not
+                // kept as DISCONNECTED for the idle time (an older host sends no ids, so nothing is dropped for it)
+                if rest.get("peers").and_then(Value::as_array).is_some() {
+                    let listed = &self.player_peers;
+                    let here = |peer: &u32| *peer == HOST_PEER_ID || listed.contains(peer);
+                    self.remotes.retain(|peer, _| here(peer));
+                    self.names.retain(|peer, _| here(peer));
+                    self.skins.retain(|peer, _| here(peer));
+                    self.peer_flags.retain(|peer, _| here(peer));
+                    self.skin_slims.retain(|peer, _| here(peer));
+                }
                 out.push(NetEvent::Seed(seed));
             }
             Message::Packs { packs } if !self.is_host() => {
@@ -2423,7 +2529,10 @@ impl NetSession {
                 }
             }
             // the host ended the route (Godot `_receive_end`): the run is over here too, the room stays open
-            Message::End { reason } if !self.is_host() => out.push(NetEvent::RouteEnded(reason)),
+            Message::End { reason } if !self.is_host() => {
+                self.held_events.clear();
+                out.push(NetEvent::RouteEnded(reason));
+            }
             // the host's hunters and world events (Godot `_hunters` and `_event`): display only, a guest never sends them
             Message::Hunters { data } | Message::HuntersLarge { data } if !self.is_host() => {
                 out.push(NetEvent::Hunters(data));
@@ -2446,8 +2555,18 @@ impl NetSession {
                 }
             }
             Message::ChatPayload { .. } if !self.is_host() => self.keep_chat(&message),
+            // a valve turn, a burst pipe or a safe room's status that arrives while this runner has no world yet (it is
+            // loading the route it was just sent) would be dropped by the app and never said again: it waits for the world
+            Message::Event { event } if !self.is_host() && !self.in_run && hunter_events::state_key(&event).is_some() => {
+                if self.held_events.len() >= HELD_EVENTS_MAX {
+                    self.held_events.remove(0);
+                }
+                self.held_events.push(event);
+            }
             Message::Event { event } if !self.is_host() => out.push(NetEvent::WorldEvent(event)),
             Message::Start { seed, rest, .. } if !self.is_host() => {
+                // a new route: what was held belonged to the last one
+                self.held_events.clear();
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
                 self.difficulty = difficulty_from_name(&difficulty).name().to_string();
                 out.push(NetEvent::Start { seed, difficulty });
@@ -2574,7 +2693,8 @@ impl NetSession {
                 self.last_taser.remove(&peer);
                 // the UDP relay never says a guest left: stop sending and resending to the dead session
                 self.coop.forget_peer(peer);
-                if let Some(guest) = self.guests.remove(&peer) {
+                // a session that never registered (only a stray packet was seen) never joined: it leaves without a notice
+                if let Some(guest) = self.guests.remove(&peer).filter(|g| !g.name.is_empty()) {
                     out.push(NetEvent::GuestLeft(guest.name));
                 }
             }
@@ -2609,8 +2729,9 @@ impl NetSession {
             if let Some((lt, last)) = &self.last_sent {
                 let dt = (t - lt) as f32;
                 let step = (s.x - last.x).hypot(s.y - last.y);
-                // a respawn, ladder snap or teleport is a jump, not a speed: it carries no velocity
-                if last.depth == s.depth && dt > 1e-3 && dt < 0.5 && step <= rules.snap_distance_m && step / dt <= rules.max_speed_mps {
+                // a respawn, ladder snap or teleport is a jump, not a speed: it carries no velocity (a floor label that
+                // changes on a flight of stairs is still a walk: `interp::same_floor`)
+                if interp::same_floor(last, &s, rules) && dt > 1e-3 && dt < 0.5 && step <= rules.snap_distance_m && step / dt <= rules.max_speed_mps {
                     s.vx = (s.x - last.x) / dt;
                     s.vz = (s.y - last.y) / dt;
                 }
@@ -2824,8 +2945,19 @@ pub(crate) mod tests {
         assert_eq!((s.seq, sent(&s).vx), (3, 0.0), "a teleport carries no velocity");
         let mut up = sample(0, 20.1, 0.0);
         up.depth = 2;
+        up.h = Some(10.0);
         s.send_due(Some(up), ms(102));
         assert_eq!((s.seq, sent(&s).vx), (4, 0.0), "another floor carries none either");
+        // a flight of stairs: the floor label changes while the height runs on, and the walk keeps its velocity
+        let mut walker = offline_session(false, "STAIRS");
+        let mut low = sample(0, 0.0, 0.0);
+        low.h = Some(4.9);
+        let mut high = sample(0, 0.17, 0.0);
+        high.depth = 2;
+        high.h = Some(5.1);
+        walker.send_due(Some(low), ms(0));
+        walker.send_due(Some(high), ms(34));
+        assert!((sent(&walker).vx - 5.0).abs() < 0.1, "stairs keep the speed: {}", sent(&walker).vx);
         s.send_due(Some(sample(0, 20.8, 0.0)), ms(104));
         assert_eq!(s.seq, 4, "an early send keeps the minimum gap");
         s.send_due(Some(sample(0, 20.8, 0.0)), ms(122));
@@ -4371,6 +4503,8 @@ mod owner_route_tests {
         for (k, v) in valve_events::turn_fields(&ev) {
             event.insert(k.into(), v);
         }
+        // the guest is in the route (its ticks carry a sample), so the event is handed over at once
+        guest.in_run = true;
         guest.on_message(HOST_PEER_ID, Message::Event { event: event.clone() }, now, &mut out);
         assert_eq!(out, vec![NetEvent::WorldEvent(event.clone())]);
         assert_eq!(valve_events::parse_turn(&event).map(|t| t.turns), Some(1));
@@ -4719,6 +4853,178 @@ mod skin_wire_tests {
         guest.on_message(HOST_PEER_ID, Message::WireProfile { profile: profile(json!({"peer_id": 7, "name": "A", "skin": hash, "skin_slim": true})) }, Instant::now(), &mut out);
         let views = guest.remotes_at(5.0, 1, (0, 0));
         assert_eq!((views[0].skin.as_str(), views[0].slim), (hash.as_str(), true));
+    }
+}
+
+/// The sync audit's fixes (docs/MULTIPLAYER_SYNC_AUDIT.md): what a late joiner is told, what a loading guest keeps, the
+/// window a client host's hunters are in, frames too long for a datagram, and who is still in the room.
+#[cfg(test)]
+mod sync_audit_tests {
+    use super::tests::{offline_session, sample};
+    use super::*;
+
+    fn obj(v: Value) -> Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    fn valve_turn(turns: u32) -> Map<String, Value> {
+        obj(json!({"what": "stream_valve", "valve_id": "SEWER:0:-1:0:PROP:3", "effect": "flow", "shut": false, "turns": turns, "gate": ""}))
+    }
+
+    fn room_message(peers: Option<Value>, players: Value) -> Message {
+        let mut rest = Map::new();
+        rest.insert("host".into(), json!("HOST"));
+        rest.insert("players".into(), players);
+        if let Some(peers) = peers {
+            rest.insert("peers".into(), peers);
+        }
+        Message::Room { code: "ABCDE".into(), seed: "ROOM-ABCDE-0123".into(), mode: 0, scale: 0, rest }
+    }
+
+    #[test]
+    fn a_client_hosts_hunters_are_sent_with_the_window_their_cells_are_in() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        // the app hands the host's window origin over with its NPCs, every frame
+        host.publish_npcs(&[], (-96, 64), &std::collections::BTreeSet::new());
+        let frame = vec![json!({"index": 0, "id": "aki", "state": "CHASE", "position": [1.0, 2.0]})];
+        host.send_hunter_frame(frame, Difficulty::Standard, None, now);
+        let Message::Snapshot { state } = host.snapshot_message() else { panic!("a snapshot") };
+        assert_eq!(state["hunters"][0]["origin"], json!([-96, 64]), "a guest in another window can place the hunter");
+        assert_eq!(state["hunters"][0]["position"], json!([1.0, 2.0]));
+        // a room whose frame already names its window (a dedicated room) keeps its own
+        let own = vec![json!({"index": 0, "id": "aki", "position": [1.0, 2.0], "origin": [32, 32]})];
+        host.send_hunter_frame(own, Difficulty::Standard, None, now);
+        let Message::Snapshot { state } = host.snapshot_message() else { panic!("a snapshot") };
+        assert_eq!(state["hunters"][0]["origin"], json!([32, 32]));
+    }
+
+    #[test]
+    fn a_runner_that_joins_during_a_route_is_sent_the_valves_pipes_and_safe_rooms_changed_before_it_came() {
+        let mut host = offline_session(true, "HOST");
+        assert!(host.join_state().is_empty(), "no route: nothing to tell");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        let burst = obj(json!({"what": "stream_pipe_burst", "flow_id": "BRK:0:-1:0:9"}));
+        let safe = obj(json!({"what": "stream_safe_room", "room_id": "R:1:SAFE", "integrity": 0, "breached": true}));
+        let door = obj(json!({"what": "hunter_door", "hunter_id": "aki", "action": "open"}));
+        // nobody is in the room yet: the events still count for whoever comes
+        host.send_world_events(vec![valve_turn(1), door, burst.clone(), valve_turn(2), safe.clone()]);
+        let sent = host.join_state();
+        assert!(matches!(sent[0], Message::Snapshot { .. }), "the snapshot first");
+        let events: Vec<Map<String, Value>> = sent[1..]
+            .iter()
+            .map(|m| match m {
+                Message::Event { event } => event.clone(),
+                other => panic!("{}", other.name()),
+            })
+            .collect();
+        assert_eq!(events, vec![burst, valve_turn(2), safe], "the latest state of each object, no passing moment");
+        // a guest never replays anything, and a new route starts clean
+        assert!(offline_session(false, "GUEST").join_state().is_empty());
+        host.end_run("ROUTE RESTARTING");
+        host.start_run("ROOM-ABCDE-4567", "STANDARD");
+        assert_eq!(host.join_state().len(), 1, "only the new route's snapshot");
+    }
+
+    #[test]
+    fn a_guest_still_loading_the_route_keeps_the_lasting_world_events_until_it_has_a_world() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "LATE");
+        let mut out = Vec::new();
+        let start = Message::Start { code: "ABCDE".into(), seed: "ROOM-ABCDE-0123".into(), mode: 0, scale: 0, rest: Map::new() };
+        guest.on_message(HOST_PEER_ID, start.clone(), now, &mut out);
+        out.clear();
+        let grab = obj(json!({"what": "hunter_grab", "phase": "start", "hunter_id": "aki"}));
+        guest.on_message(HOST_PEER_ID, Message::Event { event: valve_turn(1) }, now, &mut out);
+        guest.on_message(HOST_PEER_ID, Message::Event { event: grab.clone() }, now, &mut out);
+        assert_eq!(out, vec![NetEvent::WorldEvent(grab)], "a passing moment is not held; the valve turn waits");
+        out.clear();
+        guest.release_held_events(false, &mut out);
+        assert!(out.is_empty(), "still loading: still held");
+        guest.release_held_events(true, &mut out);
+        assert_eq!(out, vec![NetEvent::WorldEvent(valve_turn(1))], "the world is in: the turn is applied");
+        out.clear();
+        guest.release_held_events(true, &mut out);
+        assert!(out.is_empty(), "handed over once");
+        guest.on_message(HOST_PEER_ID, Message::Event { event: valve_turn(2) }, now, &mut out);
+        assert_eq!(out, vec![NetEvent::WorldEvent(valve_turn(2))], "in the route, an event is handed over at once");
+        // what was held for a route that was replaced is not applied to the next one
+        out.clear();
+        guest.release_held_events(false, &mut out);
+        guest.on_message(HOST_PEER_ID, Message::Event { event: valve_turn(3) }, now, &mut out);
+        guest.on_message(HOST_PEER_ID, start, now, &mut out);
+        out.clear();
+        guest.release_held_events(true, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_too_long_for_one_datagram_is_sent_as_messages_that_each_fit() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        let frame: Vec<Value> = (0..30)
+            .map(|i| json!({"index": i, "id": format!("hunter_{i}"), "position": [1.5, 2.5], "facing": [0.0, 1.0], "state": "WANDER", "active": true, "level": 0}))
+            .collect();
+        host.send_hunter_frame(frame.clone(), Difficulty::Standard, None, now);
+        let limit = host.coop.link.max_payload() - 6;
+        assert!(host.snapshot_message().encode().len() > limit, "the whole snapshot would not be sent");
+        let sent = host.join_state();
+        assert!(sent.len() > 2);
+        let mut hunters = Vec::new();
+        for (i, message) in sent.iter().enumerate() {
+            assert!(message.encode().len() <= limit, "message {i} fits the link");
+            match message {
+                Message::Snapshot { state } => assert_eq!(state["hunters"], json!([]), "the hunters follow"),
+                Message::HuntersLarge { data } => hunters.extend(data.iter().cloned()),
+                other => panic!("{}", other.name()),
+            }
+        }
+        assert_eq!(hunters, frame, "every hunter reaches the joiner, in order");
+    }
+
+    #[test]
+    fn a_guest_that_says_goodbye_is_dropped_from_the_session_peers_at_once() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(2, Guest { name: "G2".into(), last_seen: now });
+        host.coop.send(2, &start_message("ABCDE", "ROOM-ABCDE-0123", "STANDARD"));
+        assert!(host.coop.peers().contains(&2));
+        let mut out = Vec::new();
+        host.on_message(2, Message::PeerLeave, now, &mut out);
+        assert_eq!(out, vec![NetEvent::GuestLeft("G2".into())]);
+        assert!(!host.coop.peers().contains(&2), "nothing more is sent or resent to it");
+    }
+
+    #[test]
+    fn a_session_that_never_registered_times_out_without_a_left_notice() {
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.guests.insert(5, Guest { name: String::new(), last_seen: now });
+        let mut out = Vec::new();
+        host.prune(now + GUEST_IDLE + Duration::from_secs(1), &mut out);
+        assert!(out.is_empty() && host.guests.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn a_guest_forgets_a_runner_the_hosts_roster_no_longer_lists() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "GUEST");
+        let mut out = Vec::new();
+        guest.store_remote(HOST_PEER_ID, sample(1, 1.0, 1.0), now);
+        guest.store_remote(7, sample(1, 3.0, 4.0), now);
+        guest.names.insert(7, "SEVEN".into());
+        guest.skins.insert(7, SKIN_DEFAULT.into());
+        // an older host sends no session ids: nobody is dropped on its word
+        guest.on_message(HOST_PEER_ID, room_message(None, json!(["SEVEN"])), now, &mut out);
+        assert!(guest.remotes.contains_key(&7));
+        guest.on_message(HOST_PEER_ID, room_message(Some(json!([7])), json!(["SEVEN"])), now, &mut out);
+        assert!(guest.remotes.contains_key(&7) && guest.names.contains_key(&7), "still listed, still here");
+        guest.on_message(HOST_PEER_ID, room_message(Some(json!([])), json!([])), now, &mut out);
+        assert!(!guest.remotes.contains_key(&7) && !guest.names.contains_key(&7) && !guest.skins.contains_key(&7), "it left the room");
+        assert!(guest.remotes.contains_key(&HOST_PEER_ID), "the host is never dropped by its own roster");
+        assert!(guest.roster().iter().all(|e| e.peer != 7), "and it is not listed as DISCONNECTED");
     }
 }
 
