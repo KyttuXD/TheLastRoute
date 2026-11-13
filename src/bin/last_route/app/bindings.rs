@@ -400,14 +400,19 @@ impl Bindings {
         Self::from_json_in(rules(), v)
     }
 
+    /// Held: a key or mouse button of the action is down, or a touch button for it (app/touch.rs).
     pub fn down(&self, id: &str) -> bool {
         use macroquad::prelude::{is_key_down, is_mouse_button_down};
-        self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_down) || mouse_index(k).is_some_and(|i| is_mouse_button_down(mouse_button(i))))
+        // with touch controls on, every finger also raises a simulated left click: mouse buttons are not bindings then
+        let mouse = !super::touch::active();
+        super::touch::held(id) || self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_down) || (mouse && mouse_index(k).is_some_and(|i| is_mouse_button_down(mouse_button(i)))))
     }
 
+    /// Pressed this frame: a key or mouse button of the action, or a touch button for it (app/touch.rs).
     pub fn pressed(&self, id: &str) -> bool {
         use macroquad::prelude::{is_key_pressed, is_mouse_button_pressed};
-        self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_pressed) || mouse_index(k).is_some_and(|i| is_mouse_button_pressed(mouse_button(i))))
+        let mouse = !super::touch::active();
+        super::touch::tapped(id) || self.keys_ref(rules(), id).iter().any(|k| key_code(k).is_some_and(is_key_pressed) || (mouse && mouse_index(k).is_some_and(|i| is_mouse_button_pressed(mouse_button(i)))))
     }
 
     /// The text a prompt shows for the action (`PRESS [E]`): the first key as the player has it bound.

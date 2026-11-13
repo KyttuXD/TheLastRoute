@@ -362,7 +362,7 @@ New items from a read-only comparison of the Godot game folders with TODO.md. Ef
 - [ ] Port troll-mode advertisements for a chosen player: gentle and annoying profiles, a per-window cap, never shown while caught or in menus (effort M; game/admin/troll_ads.gd)
 - [x] Port the F2 screenshot: saves the whole game window to a dated PNG from any screen (effort S; game/autoload/screenshot.gd)
 - [ ] Port the single cursor owner: menus register named claims, and any claim frees the cursor so the camera cannot re-grab it under a menu (effort S; game/autoload/mouse_lock.gd) (2026-11-08: bindings, frame cap, cursor owner written, not built; app/mod.rs hooks left)
-- [ ] Port phone touch controls: on-screen D-pad, drag-to-look, touch buttons, and the phone and low-memory budgets with --touch and --lowmem (effort L; game/hud/touch_controls.gd)
+- [~] Port phone touch controls: on-screen D-pad, drag-to-look, touch buttons, and the phone and low-memory budgets with --touch and --lowmem (effort L; game/hud/touch_controls.gd) (2026-11-13: D-pad with double-tap sprint, drag-to-look, buttons, hotbar arrows and `--touch` are in app/touch.rs; still open: the floating stick, notch insets, the soft keyboard and the CHAT button, the phone and `--lowmem` budgets; see docs/ANDROID.md)
 - [ ] Port XR (OpenXR headset) mode: comfort and fade, gaze pointer, hand tracking, and the route and menu panels in 3D (effort L; game/xr/xr_comfort.gd)
 
 ## Known bugs (2026-11-03)

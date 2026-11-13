@@ -32,6 +32,7 @@
 pub use crate::shared::{assets, checkpoint, paths, skins};
 pub mod gfx;
 pub mod bindings;
+pub mod touch;
 pub mod frame_cap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod instance;
@@ -215,7 +216,8 @@ fn read_controls(
     bind: &bindings::Bindings,
 ) -> Controls {
     let mut c = Controls::default();
-    // every key below is the player's binding (data/controls.json defaults, CONTROLS tab changes)
+    // every key below is the player's binding (data/controls.json defaults, CONTROLS tab changes); a touch button presses
+    // its binding too (app/touch.rs, answered by the bindings)
     if bind.down("move_up") {
         c.fwd += 1.0;
     }
@@ -233,7 +235,9 @@ fn read_controls(
     c.jump = bind.pressed("jump");
     c.interact = bind.pressed("interact");
     c.interact_held = bind.down("interact");
-    c.use_item = grabbed && bind.pressed("use_item");
+    // the tool needs a grab on a desktop (the mouse is the tool's aim). With touch controls on, only the TOOL button is the
+    // press: the simulated left click every finger raises would otherwise fire it (the bindings skip mouse buttons then)
+    c.use_item = if touch::active() { touch::tapped("use_item") } else { grabbed && bind.pressed("use_item") };
     c.flashlight = bind.pressed("flashlight");
     c.taser = bind.pressed("taser");
     c.drop = bind.pressed("drop");
@@ -311,6 +315,8 @@ fn read_controls(
         stick.y += 1.0;
     }
     c.look += keyboard_look(stick, dt, sens);
+    // the touch controls' move, look and hotbar wheel (app/touch.rs; zero while they are off)
+    touch::apply(&mut c);
     c
 }
 
@@ -574,6 +580,8 @@ pub async fn run(
     update: Option<updater::UpdateHandle>,
     mut capture: Option<capture::Capture>,
 ) {
+    // phones (and `--touch` on a desktop) get the on-screen controls (app/touch.rs)
+    touch::init();
     // a stress run (`--stress`) opens its log before the load, so a bad --stress-log path fails at once
     let stress_on = stress_cfg.is_some();
     let stress_vsync = stress_cfg.as_ref().map(|c| c.vsync);
@@ -1671,7 +1679,7 @@ pub async fn run(
                 admin.input(g)
             };
             // a rebind waiting for a key (settings CONTROLS) keeps its Escape: it cancels the rebind, never the pause menu
-            if is_key_pressed(KeyCode::Escape)
+            if (is_key_pressed(KeyCode::Escape) || touch::tapped("pause"))
                 && !in_report
                 && !admin_esc
                 && !stress_on
@@ -1708,7 +1716,8 @@ pub async fn run(
                 in_report,
                 admin.is_open(),
                 map_open,
-                screenshot.is_none() && !stress_on && !update_screen.is_shown(),
+                // touch controls own the screen: a grabbed, hidden cursor would also hide the desktop stand-in finger
+                screenshot.is_none() && !stress_on && !update_screen.is_shown() && !touch::active(),
             );
             let click = is_mouse_button_pressed(MouseButton::Left) || is_mouse_button_pressed(MouseButton::Right);
             // no lock request until a click when the last close had no gesture to take the lock with
@@ -1771,6 +1780,15 @@ pub async fn run(
             if action.clear_last {
                 mouse_last = None;
             }
+            // the touches of this frame, before the controls read the actions they press: a menu takes every touch
+            let touch_focus = if pz.open || admin.is_open() || update_screen.is_shown() || chat_box.typing() || in_report {
+                touch::Focus::Menu
+            } else if map_open {
+                touch::Focus::Map
+            } else {
+                touch::Focus::Play
+            };
+            touch::frame(vec2(screen_width(), screen_height()), screen_dpi_scale(), get_time() as f32, touch_focus);
             // a stress run drives the run with its own input (app/stress.rs) and reads no keys or mouse
             let mut c = match stress_run.as_mut() {
                 Some(st) => st.controls(dt, g),
@@ -2100,6 +2118,8 @@ pub async fn run(
                     if !hud_hidden {
                         hud::draw_crosshair(g, grabbed);
                     }
+                    // drawn with the HUD hidden too: the controls take touches either way, so they must be visible
+                    touch::draw(!pz.open && !in_report);
                     // Hold O: player list overlay (Godot player_list; Tab/T are labels until inventory/chat UI land).
                     if !stress_on && !pz.open && !in_report && settings.bindings.down("player_list") {
                         let roster = net.as_ref().map(|n| n.roster()).unwrap_or_default();
