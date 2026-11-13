@@ -1,7 +1,8 @@
 {
   "schema": "lr.chunk_prewarm/1",
-  "_about": "Chunk-window prewarm (game/preload.rs `ChunkPrewarm`, hooked in Game::prewarm_chunks). margin_m: how close (metres) the runner gets to the edge of the middle chunk before the chunks beyond that edge are generated into the window cache. gap_frames: frames to wait after a step. chunks_per_step: chunks generated per step (the per-frame budget; 1 since 2026-11-12: a chunk takes about 5 ms on a fast PC and 25 ms on a 2008 Mac Pro, and two in a frame was a visible hitch). A frame that builds a window or a neighbour level skips its step. A chunk is a pure function of the seed, so prewarming never changes the world.",
-  "margin_m": 64.0,
+  "_about": "Chunk-window prewarm (game/preload.rs `ChunkPrewarm`, hooked in Game::prewarm_chunks). margin_m: how close (metres) the runner gets to the edge of the middle chunk before the chunks beyond that edge are generated into the window cache. gap_frames: frames to wait after a step. chunks_per_step: chunks generated per step (the per-frame budget; 1 since 2026-11-12: a chunk takes about 5 ms on a fast PC and 25 ms on a 2008 Mac Pro, and two in a frame was a visible hitch). A frame that builds a window or a neighbour level skips its step. A chunk is a pure function of the seed, so prewarming never changes the world. margin_m was 64 until 2026-11-12; over half a chunk (22.5) it means every edge, and the code then only looked at the west and north ones, so nothing was ready for a crossing east or south. ahead_margin_m: within this many metres of an edge, once the chunks beyond it are generated, the whole window beyond it is put together in a quiet frame, so the crossing frame only adopts it (0 turns this off).",
+  "margin_m": 22.0,
+  "ahead_margin_m": 12.0,
   "gap_frames": 1,
   "chunks_per_step": 1
 }

@@ -613,25 +613,29 @@ pub fn window(
 /// cache) turns the crossing's one long frame into a cache hit.
 pub fn approach_chunks(center: (i32, i32), level: i32, pos: (f32, f32), margin: f32) -> Vec<ChunkKey> {
     let (lo, hi) = (CHUNK as f32, (2 * CHUNK) as f32);
-    let step = |v: f32| {
+    // the edges within the margin on one axis, each with its distance. Both can be (a margin over half a chunk): until
+    // 2026-11-12 only the low edge was looked at then, so with the shipped 64 m nothing was ever generated ahead of a
+    // crossing to the east or the south.
+    let near = |v: f32| -> Vec<(i32, f32)> {
+        let mut edges = vec![];
         if v < lo + margin {
-            -1
-        } else if v >= hi - margin {
-            1
-        } else {
-            0
+            edges.push((-1, v - lo));
         }
+        if v >= hi - margin {
+            edges.push((1, hi - v));
+        }
+        edges
     };
-    let (sx, sy) = (step(pos.0), step(pos.1));
-    let mut steps = vec![];
-    if sx != 0 {
-        steps.push((sx, 0));
-    }
-    if sy != 0 {
-        steps.push((0, sy));
-    }
-    if sx != 0 && sy != 0 {
-        steps.push((sx, sy));
+    let (xs, ys) = (near(pos.0), near(pos.1));
+    // the straight steps, nearest edge first, then the diagonals
+    let mut straight: Vec<((i32, i32), f32)> =
+        xs.iter().map(|&(s, d)| ((s, 0), d)).chain(ys.iter().map(|&(s, d)| ((0, s), d))).collect();
+    straight.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut steps: Vec<(i32, i32)> = straight.into_iter().map(|(s, _)| s).collect();
+    for &(sx, _) in &xs {
+        for &(sy, _) in &ys {
+            steps.push((sx, sy));
+        }
     }
     let mut out: Vec<ChunkKey> = vec![];
     for (ax, ay) in steps {
@@ -647,6 +651,15 @@ pub fn approach_chunks(center: (i32, i32), level: i32, pos: (f32, f32), margin: 
         }
     }
     out
+}
+
+/// The window centre after the crossing a runner at window-local `pos` is about to make: the centre beyond the edge of
+/// the middle chunk it is nearest to, when that edge is within `margin` metres. None away from the edges.
+pub fn next_center(center: (i32, i32), pos: (f32, f32), margin: f32) -> Option<(i32, i32)> {
+    let (lo, hi) = (CHUNK as f32, (2 * CHUNK) as f32);
+    let edges = [((-1, 0), pos.0 - lo), ((1, 0), hi - pos.0), ((0, -1), pos.1 - lo), ((0, 1), hi - pos.1)];
+    let ((dx, dy), d) = edges.into_iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))?;
+    (d < margin).then_some((center.0 + dx, center.1 + dy))
 }
 
 /// A throwaway floor a Game holds before its first window is built.
@@ -686,6 +699,29 @@ mod tests {
         let mut got: Vec<(i32, i32)> = approach_chunks((4, -2), 0, pos, 8.0).iter().map(|k| (k.cx, k.cy)).collect();
         got.sort();
         assert_eq!(got, vec![(2, -3), (2, -2), (2, -1)]);
+    }
+
+    #[test]
+    fn a_margin_over_half_a_chunk_looks_both_ways_nearest_edge_first() {
+        // 5 m from the east edge with a 64 m margin: every edge is "near", and the east column comes first
+        let pos = (2.0 * CHUNK as f32 - 5.0, 1.5 * CHUNK as f32);
+        let want = approach_chunks((0, 0), 0, pos, 64.0);
+        assert_eq!(want.len(), 16, "the whole ring round the window");
+        assert!(want[..3].iter().all(|k| k.cx == 2), "the east column first: {:?}", &want[..3]);
+        assert!(want.iter().any(|k| k.cx == -2) && want.iter().any(|k| k.cy == 2) && want.iter().any(|k| k.cy == -2));
+    }
+
+    /// The centre a runner at window-local `pos` will have after its next crossing, when it is within `margin` of one
+    /// edge of the middle chunk.
+    #[test]
+    fn the_next_centre_is_the_one_beyond_the_nearest_edge() {
+        let c = CHUNK as f32;
+        assert_eq!(next_center((4, -2), (1.5 * c, 1.5 * c), 10.0), None, "the middle: no crossing in sight");
+        assert_eq!(next_center((4, -2), (2.0 * c - 3.0, 1.5 * c), 10.0), Some((5, -2)));
+        assert_eq!(next_center((4, -2), (c + 2.0, 1.5 * c), 10.0), Some((3, -2)));
+        assert_eq!(next_center((4, -2), (1.5 * c, c + 9.0), 10.0), Some((4, -3)));
+        // near a corner: the nearer edge
+        assert_eq!(next_center((0, 0), (2.0 * c - 2.0, 2.0 * c - 6.0), 10.0), Some((1, 0)));
     }
 
     #[test]

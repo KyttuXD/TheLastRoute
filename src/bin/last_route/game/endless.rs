@@ -140,6 +140,9 @@ pub struct InfState {
     cache: HashMap<ChunkKey, (Facility, Fixtures)>,
     /// Frames to wait before the next chunk is generated ahead of a window crossing (`prewarm_chunks`).
     prewarm_wait: u32,
+    /// The window beyond the edge the runner is about to cross, put together ahead of the crossing (`prewarm_chunks`);
+    /// `load_window` takes it when the level and the centre are the ones it was built for.
+    ahead: Option<Resident>,
     /// Claimed pickups by entity id (Godot's claimed_pickups, streamed_world_state.gd:11): the Godot
     /// id on level 0, `L<level>:<KIND>:<x>:<y>` (absolute cell) on the other levels.
     claimed: HashSet<String>,
@@ -678,6 +681,7 @@ impl InfState {
             center: (0, 0),
             cache: HashMap::new(),
             prewarm_wait: 0,
+            ahead: None,
             claimed: HashSet::new(),
             ids: live::WindowIds::default(),
             layout_pickups: HashMap::new(),
@@ -809,6 +813,10 @@ impl Game {
         // the storey's window is the resident one (`keep_stack`) when it was built for this centre, so the change to
         // that storey builds nothing on its frame; otherwise it is built here
         let ahead = inf.stack.take(inf.level).filter(|r| r.center == inf.center);
+        // or the window put together ahead of this crossing (a window for another centre or level is of no use now)
+        let (level, center) = (inf.level, inf.center);
+        let ahead = ahead.or_else(|| inf.ahead.take().filter(|r| r.level == level && r.center == center));
+        inf.ahead = None;
         let (fac, fix) = match ahead {
             Some(r) => (r.fac, r.fix),
             None => {
@@ -1015,10 +1023,29 @@ impl Game {
         inf.prewarm_wait = inf.prewarm_wait.saturating_sub(1);
         let wanted = infinite::approach_chunks(inf.center, inf.level, pos, cfg.margin_m);
         let step = super::preload::prewarm_step(&cfg, inf.prewarm_wait, &wanted, |k| inf.cache.contains_key(k));
+        let idle = step.is_empty() && inf.prewarm_wait == 0;
         for k in step {
             let made = infinite::chunk(&inf.seed, k, catalog, &content.loot);
             inf.cache.insert(k, made);
             inf.prewarm_wait = cfg.gap_frames;
+        }
+        // nothing left to generate: the window beyond the nearest edge is put together now, in a frame of its own, so
+        // the crossing frame only adopts it. A pure function of the seed and the chunks, so the world is the same.
+        if idle && cfg.ahead_margin_m > 0.0 {
+            match infinite::next_center(inf.center, pos, cfg.ahead_margin_m) {
+                Some(next) => {
+                    let have = inf.ahead.as_ref().is_some_and(|r| r.level == inf.level && r.center == next);
+                    let ready = (-1..=1).all(|dy| (-1..=1).all(|dx| inf.cache.contains_key(&ChunkKey { cx: next.0 + dx, cy: next.1 + dy, level: inf.level })));
+                    if !have && ready {
+                        let _ahead_perf = crate::app::perf::section("window ahead");
+                        let (fac, fix) = infinite::window(&inf.seed, next, inf.level, catalog, &content.loot, &mut inf.cache);
+                        inf.ahead = Some(Resident { level: inf.level, center: next, fac, fix });
+                        inf.prewarm_wait = cfg.gap_frames;
+                    }
+                }
+                // away from every edge the spare window is given back
+                None => inf.ahead = None,
+            }
         }
     }
 

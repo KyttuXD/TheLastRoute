@@ -118,6 +118,8 @@ pub struct ChunkPrewarm {
     pub margin_m: f32,
     pub gap_frames: u32,
     pub chunks_per_step: usize,
+    /// Metres from an edge of the middle chunk at which the window beyond it is built ahead of the crossing (0: never).
+    pub ahead_margin_m: f32,
 }
 
 /// Reads the prewarm numbers from the JSON text.
@@ -128,6 +130,8 @@ pub fn parse_prewarm(text: &str) -> Result<ChunkPrewarm, String> {
         margin_m: n("margin_m")? as f32,
         gap_frames: n("gap_frames")?.max(0.0) as u32,
         chunks_per_step: n("chunks_per_step")? as usize,
+        // older files have no key: nothing is built ahead
+        ahead_margin_m: v.get("ahead_margin_m").and_then(|x| x.as_f64()).unwrap_or(0.0).max(0.0) as f32,
     };
     if !(p.margin_m > 0.0) || p.chunks_per_step == 0 {
         return Err("margin_m and chunks_per_step must be above zero".into());
@@ -288,7 +292,7 @@ mod tests {
     }
 
     fn pcfg() -> ChunkPrewarm {
-        ChunkPrewarm { margin_m: 8.0, gap_frames: 2, chunks_per_step: 2 }
+        ChunkPrewarm { margin_m: 8.0, gap_frames: 2, chunks_per_step: 2, ahead_margin_m: 0.0 }
     }
 
     #[test]
