@@ -41,6 +41,11 @@ Not tried: OS X 10.5 itself, 10.7 to 10.11, any other Mac, sound, the network, a
    attached again once the window is shown.
 6. A thousand "autoreleased with no pool" lines: the legacy build now has autorelease pools.
 
+7. **The app replaced itself with the normal Mac build.** The updater took the website's Mac build, which needs
+   macOS 10.12. The legacy app now updates only from the `nightly-legacy` release (`app/updater.rs`
+   `mac_release_source`); on the Mac Pro it fetched `last_route-macos-legacy.zip` and started again as the legacy app.
+   A fresh download updates itself once on its first start (it has no record yet of which release it is).
+
 All of it is in `vendor/miniquad` behind `cfg(lr_macos_legacy)` (LAST_ROUTE_PATCHES.md items 9 and 10) and in
 `packaging/macos/legacy/`.
 

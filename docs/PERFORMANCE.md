@@ -72,10 +72,17 @@ triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
 - **Release profile for the legacy app:** no gain in the average there (116 fps, two runs, the same frame count
   both times, so something caps it near 116 to 120: the drawing side, not the program's own code). The worst 1% of
   frames rose from 8.8 to 9.4 fps. It stays, as every shipped build is a release build.
-- **Tried and undone:** building the neighbour levels one frame after a window of chunks arrives, to split the 150 ms
-  hitch. Two tests failed (code after a level change relies on the neighbours being there in the same frame).
-- What is left, in order: the hitch when a window of chunks arrives (80 to 150 ms on the Mac Pro, about every 45 m
-  walked), which needs that split done with care; fewer draw calls in the HUD.
+- **Chunk arrival hitches, first cut done:** timers showed the largest part of the 150 ms frame was not the window
+  move but the background prewarm generating two chunks (about 25 ms each on the Mac Pro) in the same frames. It now
+  makes one chunk a step and skips a frame that built a window or a neighbour level. On the Mac Pro, 30 second stress
+  flights, old and new build alternately, two each: frames over 100 ms went from 10 and 9 to 1 and 2; the worst
+  frame from 283 and 157 ms to 101 and 109 ms; the worst 1% from 7.2 and 8.2 fps to 9.3 and 8.9 fps. The average
+  did not change (the Mac was in use during part of the runs, so the averages scatter).
+- **Tried and undone:** building the neighbour levels one frame after the window move. Two tests failed (code
+  relies on a flight in reach having its neighbour level in the same frame).
+- What is left, in order: the window move itself (about 100 ms on the Mac Pro: the grid, the adopt step, the first
+  mesh part and the hunters' re-placement all in one frame), which needs the next window prepared ahead of the
+  crossing; fewer draw calls in the HUD.
 
 ## Not known yet
 
