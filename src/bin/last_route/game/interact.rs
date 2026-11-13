@@ -95,6 +95,8 @@ pub enum Focus {
     Seat(usize),
     /// A playable stage instrument, by its index in `Facility::props` (game/instruments.rs).
     Instrument(usize),
+    /// An arcade machine or carnival booth to play, by its index in `Facility::props` (game/instruments/amusements.rs).
+    Amusement(usize),
 }
 
 /// Who does an interact effect: the player, or a bot by its `Npc::id` (game/npc.rs). The effects are shared.
@@ -254,7 +256,8 @@ impl Game {
         // a bed's mattress ("lay") and a seat's pan ("sit"), both from the seating reach of data/seating.json (game/bed.rs)
         let bed_reach = super::seating::seating().default_reach;
         let music = super::instruments::rules();
-        let near = bed_reach.max(music.reach + 0.3);
+        let rides = super::instruments::amusements::rules();
+        let near = bed_reach.max(music.reach + 0.3).max(rides.reach + 0.3);
         for (i, p) in self.fac.props.iter().enumerate() {
             let (x, z) = p.cell.center();
             let at = (x + p.offset.0, z + p.offset.1);
@@ -263,6 +266,9 @@ impl Game {
             }
             if music.of(&p.ptype).is_some() {
                 consider(at, music.aim_height, music.reach, Focus::Instrument(i));
+            } else if rides.of(&p.ptype).is_some() {
+                // an arcade machine or a carnival booth (data/amusements.json)
+                consider(at, rides.aim_height, rides.reach, Focus::Amusement(i));
             } else if let Some((_, k)) = super::bed::seat_of(&p.ptype) {
                 consider(at, k.height, bed_reach - 0.3, Focus::Bed(i));
             } else if let Some((_, k)) = super::bed::sit_seat_of(&p.ptype) {
@@ -319,6 +325,7 @@ impl Game {
             Focus::Bed(i) => super::bed::lie_prompt(&self.fac.props[i].ptype),
             Focus::Seat(i) => super::bed::sit_prompt(&self.fac.props[i].ptype),
             Focus::Instrument(i) => super::instruments::prompt(&self.fac.props[i].ptype),
+            Focus::Amusement(i) => super::instruments::amusements::prompt(&self.fac.props[i].ptype),
             Focus::Relay(_) => "[E] RECOVER RELAY".into(),
             Focus::Battery(_) => "[E] TAKE BATTERY".into(),
             Focus::Pickup(i) => format!("[E] COLLECT {}", self.pickups[i].item.label()),
@@ -386,7 +393,7 @@ impl Game {
             Focus::LightSwitch(i) => self.fac.room_lights[i].switch_cell.center(),
             Focus::Vent(i) => self.fix.vents[i].center(),
             Focus::Valve(i) => self.fac.props[i].cell.center(),
-            Focus::Bed(i) | Focus::Seat(i) | Focus::Instrument(i) => self.bed_centre(i),
+            Focus::Bed(i) | Focus::Seat(i) | Focus::Instrument(i) | Focus::Amusement(i) => self.bed_centre(i),
             Focus::Shop(i) => self.hunters[i].pos,
             Focus::Door(i) => self.fac.doors().find(|d| d.0 == i).map_or(self.p.pos, |d| d.1),
         }
@@ -481,6 +488,10 @@ impl Game {
             }
             Focus::Instrument(i) => {
                 self.play_instrument(i);
+            }
+            // the result comes a moment later (`update_amusements`)
+            Focus::Amusement(i) => {
+                self.play_amusement(i);
             }
         }
     }
@@ -923,6 +934,8 @@ impl Game {
     pub(super) fn update_holds(&mut self, dt: f32, c: &super::Controls, _sounds: &Sounds) {
         self.update_valve_hold(dt, c.interact_held);
         self.update_box_wind(dt, c.interact_held);
+        // the arcade and booth results whose time has come (game/instruments/amusements.rs)
+        self.update_amusements();
         if let Some(choice) = c.shop_choice {
             self.shop_trade(choice);
         }

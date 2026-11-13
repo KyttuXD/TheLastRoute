@@ -88,7 +88,13 @@
 				"res://assets/props/maze/arcade_cabinet_amber.bbmodel",
 				"res://assets/props/maze/arcade_cabinet_burgundy.bbmodel",
 				"res://assets/props/maze/arcade_cabinet_teal.bbmodel",
-				"res://assets/props/maze/arcade_cabinet_ultraviolet.bbmodel"
+				"res://assets/props/maze/arcade_cabinet_ultraviolet.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_lime.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_sunset.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_mono.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_crimson.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_racer.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_blaster.bbmodel"
 			],
 			"light": {
 				"color": "5fe0ff",
@@ -107,7 +113,9 @@
 		{
 			"id": "arcadeCabinetCyanMagenta",
 			"models": [
-				"res://assets/props/maze/arcade_cabinet_cyan_magenta.bbmodel"
+				"res://assets/props/maze/arcade_cabinet_cyan_magenta.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_magenta_gold.bbmodel",
+				"res://assets/props/maze/arcade_cabinet_cyan_lime.bbmodel"
 			],
 			"light": {
 				"color": "ff5fd8",
@@ -150,7 +158,8 @@
 		{
 			"id": "arcadeTokenChanger",
 			"models": [
-				"res://assets/props/maze/arcade_token_changer.bbmodel"
+				"res://assets/props/maze/arcade_token_changer.bbmodel",
+				"res://assets/props/maze/arcade_ticket_redeemer.bbmodel"
 			],
 			"light": {
 				"color": "ffb347",

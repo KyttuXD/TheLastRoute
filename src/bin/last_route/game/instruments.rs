@@ -2,6 +2,9 @@
 //! mic or an instrument plays its short cue and makes a noise burst the hunters hear, like the water splash. One play
 //! per instrument per cooldown. The instruments, their prompts and the numbers are data/instruments.json.
 
+/// The arcade machines and carnival booths: the same press, with a result that comes a moment later.
+pub mod amusements;
+
 use super::Game;
 use crate::content::embedded;
 use serde_json::Value;
@@ -102,6 +105,8 @@ pub fn prompt(ptype: &str) -> String {
 #[derive(Clone, Debug, Default)]
 pub struct Played {
     last: Vec<(String, f32)>,
+    /// The arcade machines and booths in play (game/instruments/amusements.rs).
+    rides: amusements::State,
 }
 
 impl Game {

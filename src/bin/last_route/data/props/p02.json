@@ -83,7 +83,9 @@
 		{
 			"id": "prizeClawMachine",
 			"models": [
-				"res://assets/props/maze/prize_claw_machine.bbmodel"
+				"res://assets/props/maze/prize_claw_machine.bbmodel",
+				"res://assets/props/maze/prize_claw_machine_pink.bbmodel",
+				"res://assets/props/maze/prize_claw_machine_blue.bbmodel"
 			],
 			"light": {
 				"color": "ffd27a",
@@ -102,7 +104,8 @@
 		{
 			"id": "prizeCounter",
 			"models": [
-				"res://assets/props/maze/prize_counter.bbmodel"
+				"res://assets/props/maze/prize_counter.bbmodel",
+				"res://assets/props/maze/prize_plush_shelf.bbmodel"
 			]
 		},
 		{

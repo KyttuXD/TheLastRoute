@@ -1,0 +1,10 @@
+{
+  "schema": "lr.prop_axis_scale/1",
+  "_note": "Draw-only stretch per axis (model x = width, y = height, z = depth) for prop types whose converted original model does not fill the collider Godot derived from its blocky model (render/prop_scale.rs `axis_scale`; baked into the model's vertices once when it is loaded, render/prop_model.rs). It multiplies on top of the uniform data/render/prop_draw_scale.json value. Colliders, footprints, placement and the generator's seat heights do not read this file. Every model of a listed type is stretched; a value must be between 0.25 and 4.",
+  "types": {
+    "beachChair": [1.0, 0.6, 2.0],
+    "gothicHighbackChair": [0.75, 0.62, 1.0],
+    "loungeCouch": [1.75, 1.0, 1.55],
+    "loungeCouchWide": [1.35, 1.0, 1.65]
+  }
+}

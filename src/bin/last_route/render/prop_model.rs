@@ -139,6 +139,16 @@ fn soften(verts: &mut [Vertex]) {
     }
 }
 
+/// Stretches model-space vertices by `s` per axis, and turns the normals the way a stretched surface faces (by the
+/// inverse factors, then unit length); `normal.w`, the shader mode, is kept.
+fn stretch_verts(verts: &mut [Vertex], s: Vec3) {
+    for v in verts.iter_mut() {
+        v.position *= s;
+        let n = (v.normal.truncate() / s).normalize_or_zero();
+        v.normal = vec4(n.x, n.y, n.z, v.normal.w);
+    }
+}
+
 fn white_vertex(position: Vec3, uv: Vec2, normal: Vec3) -> Vertex {
     Vertex {
         position,
@@ -322,7 +332,7 @@ impl PropModel {
             m.faces().map(|(gi, face)| (gi.map(|i| (m.groups[i].name.as_str(), m.groups[i].origin)), face)),
             m.scale,
         )?;
-        let hinges = split
+        let hinges: Vec<Hinge> = split
             .hinges
             .into_iter()
             .map(|h| Hinge {
@@ -341,10 +351,22 @@ impl PropModel {
         if soft {
             soften(&mut body.verts);
         }
+        // a type with a draw-only stretch per axis (data/render/prop_axis_scale.json): baked in here, once per model
+        let (mut min, mut max) = (split.min, split.max);
+        let plain = split.door.is_none() && hinges.is_empty() && locker_door.is_none();
+        let stretch = j["name"]
+            .as_str()
+            .filter(|_| plain)
+            .and_then(|name| super::prop_scale::model_axis_scale(&format!("{scope}/{name}.bbmodel")));
+        if let Some(s) = stretch {
+            stretch_verts(&mut body.verts, Vec3::from(s));
+            min *= Vec3::from(s);
+            max *= Vec3::from(s);
+        }
         Some(PropModel {
             parts: body.into_part(&tex, key),
-            min: split.min,
-            max: split.max,
+            min,
+            max,
             door: split.door,
             hinges,
             locker_door,
@@ -680,7 +702,7 @@ mod tests {
     use std::cell::Cell;
 
     /// A unit box standing on the floor, as bare vertices (a model's parts, without a texture).
-    fn box_geometry() -> (Vec<Vertex>, Vec<u32>) {
+    pub(super) fn box_geometry() -> (Vec<Vertex>, Vec<u32>) {
         let c = [
             vec3(-0.5, 0.0, -0.5),
             vec3(0.5, 0.0, -0.5),
@@ -880,7 +902,7 @@ mod tests {
     const LUXURY_SINGLE: &str = include_str!("../assets/props/mansion/luxury_room_door.bbmodel");
     const LUXURY_DOUBLE: &str = include_str!("../assets/props/mansion/luxury_double_room_door.bbmodel");
 
-    fn json_vec(v: &serde_json::Value) -> Vec3 {
+    pub(super) fn json_vec(v: &serde_json::Value) -> Vec3 {
         let n = |i: usize| v[i].as_f64().unwrap_or(0.0) as f32;
         vec3(n(0), n(1), n(2))
     }
@@ -1013,6 +1035,8 @@ mod tests {
 #[cfg(test)]
 mod variant_tests {
     use super::*;
+    use super::tests::{box_geometry, json_vec};
+    use crate::content::embedded;
 
     fn names(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("props/maze/locker_{i}.bbmodel")).collect()
@@ -1031,6 +1055,137 @@ mod variant_tests {
             seen.insert(a);
         }
         assert_eq!(seen.len(), 3, "different instances spread over the variants");
+    }
+
+    /// The arcade and carnival types of the props pass: every variant their data lists is reached by some room key,
+    /// and a room keeps the one it was given (the pick is the stable hash of the key, nothing random).
+    #[test]
+    fn every_listed_variant_of_the_arcade_and_carnival_props_is_picked_by_some_room() {
+        let content = crate::content::Content::load();
+        for (ptype, at_least) in [
+            ("arcadeCabinet", 11),
+            ("arcadeCabinetCyanMagenta", 3),
+            ("arcadeTokenChanger", 2),
+            ("prizeClawMachine", 3),
+            ("prizeCounter", 2),
+            ("carnivalTicketBooth", 2),
+            ("popcornCart", 2),
+            ("ringTossStall", 2),
+            ("strengthTester", 2),
+            ("circusPedestal", 2),
+        ] {
+            let models = &content.props.get(ptype).unwrap_or_else(|| panic!("{ptype} is a prop type")).models;
+            assert!(models.len() >= at_least, "{ptype}: {} variants", models.len());
+            let mut seen = std::collections::HashSet::new();
+            for room in 0..400 {
+                let key = format!("C:{}:0:{}:ROOM:{}", room % 7, room / 7, room % 5);
+                let a = pick_variant(models, &key, |_| true).unwrap();
+                assert_eq!(Some(a), pick_variant(models, &key, |_| true), "{ptype}: stable for one room");
+                seen.insert(a);
+            }
+            assert_eq!(seen.len(), models.len(), "{ptype}: every variant is drawn somewhere");
+        }
+        // the three booths that shared a model each have their own now
+        let model = |t: &str| content.props[t].models.clone();
+        assert_ne!(model("shootingGallery"), model("whackAMole"));
+        assert!(!model("shootingGallery").iter().chain(&model("whackAMole")).any(|m| model("ringTossStall").contains(m)));
+        assert!(!model("duckPond").iter().any(|m| model("circusPedestal").contains(m)));
+    }
+
+    /// Every model the props pass added reads as a model with geometry (the game's reader, no graphics context), is
+    /// built from the one shared palette picture (so they all batch together), stays within the triangle budget of
+    /// the converted originals, and stands on the floor inside the box of the model it is a variant of.
+    #[test]
+    fn every_props_pass_model_parses_and_fits_the_model_it_stands_in_for() {
+        // (new model, the model whose place it takes or shares, metres of slack on each side)
+        let pairs = [
+            ("props/maze/arcade_cabinet_lime.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_sunset.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_mono.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_crimson.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_racer.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_blaster.bbmodel", "props/maze/arcade_cabinet_default.bbmodel"),
+            ("props/maze/arcade_cabinet_magenta_gold.bbmodel", "props/maze/arcade_cabinet_cyan_magenta.bbmodel"),
+            ("props/maze/arcade_cabinet_cyan_lime.bbmodel", "props/maze/arcade_cabinet_cyan_magenta.bbmodel"),
+            ("props/maze/prize_claw_machine_pink.bbmodel", "props/maze/prize_claw_machine.bbmodel"),
+            ("props/maze/prize_claw_machine_blue.bbmodel", "props/maze/prize_claw_machine.bbmodel"),
+            ("props/maze/arcade_ticket_redeemer.bbmodel", "props/maze/arcade_token_changer.bbmodel"),
+            ("props/maze/prize_plush_shelf.bbmodel", "props/maze/prize_counter.bbmodel"),
+            ("props/carnival/shooting_gallery.bbmodel", "props/carnival/ring_toss_stall.bbmodel"),
+            ("props/carnival/whack_a_mole.bbmodel", "props/carnival/ring_toss_stall.bbmodel"),
+            ("props/carnival/balloon_dart_stall.bbmodel", "props/carnival/ring_toss_stall.bbmodel"),
+            ("props/carnival/duck_pond.bbmodel", "props/carnival/circus_pedestal.bbmodel"),
+            ("props/carnival/circus_pedestal_blue.bbmodel", "props/carnival/circus_pedestal.bbmodel"),
+            ("props/carnival/carnival_ticket_booth_blue.bbmodel", "props/carnival/carnival_ticket_booth.bbmodel"),
+            ("props/carnival/cotton_candy_cart.bbmodel", "props/carnival/popcorn_cart.bbmodel"),
+            ("props/carnival/strength_tester_blue.bbmodel", "props/carnival/strength_tester.bbmodel"),
+        ];
+        // a model's document, its bounds in metres (cube corners and mesh vertices) and its drawn triangles
+        let read = |path: &str| -> (serde_json::Value, Vec3, Vec3, usize) {
+            let text = std::str::from_utf8(embedded::asset(path).unwrap_or_else(|| panic!("{path} is embedded"))).unwrap();
+            let j: serde_json::Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let (mut lo, mut hi, mut tris) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN), 0);
+            for e in j["elements"].as_array().unwrap_or_else(|| panic!("{path}: elements")) {
+                if e["type"].as_str() == Some("mesh") {
+                    for v in e["vertices"].as_object().into_iter().flat_map(|o| o.values()) {
+                        let p = (json_vec(v) + json_vec(&e["origin"])) / 16.0;
+                        lo = lo.min(p);
+                        hi = hi.max(p);
+                    }
+                    tris += e["faces"].as_object().map_or(0, |f| f.values().map(|x| x["vertices"].as_array().map_or(0, |k| k.len().saturating_sub(2))).sum());
+                } else {
+                    let (f, t) = (json_vec(&e["from"]) / 16.0, json_vec(&e["to"]) / 16.0);
+                    assert!(f.cmplt(t).all(), "{path}: {} has no volume", e["name"]);
+                    lo = lo.min(f);
+                    hi = hi.max(t);
+                    tris += e["faces"].as_object().map_or(0, |faces| faces.values().filter(|x| !x["texture"].is_null()).count() * 2);
+                }
+            }
+            (j, lo, hi, tris)
+        };
+        let mut palette: Option<String> = None;
+        for (new, old) in pairs {
+            let (j, lo, hi, tris) = read(new);
+            let (_, old_lo, old_hi, _) = read(old);
+            assert!(j["elements"].as_array().unwrap().iter().all(|e| e["type"].as_str() == Some("cube")), "{new}: cubes only");
+            assert!((100..=520).contains(&tris), "{new}: {tris} triangles");
+            assert!(lo.y.abs() < 1e-4, "{new}: stands on the floor, lowest point {}", lo.y);
+            let slack = 0.02;
+            assert!(lo.cmpge(old_lo - vec3(slack, 0.1, slack)).all() && hi.cmple(old_hi + Vec3::splat(slack)).all(), "{new}: {lo:?}..{hi:?} is outside {old}: {old_lo:?}..{old_hi:?}");
+            assert!((hi.y - old_hi.y).abs() < 0.05, "{new}: as tall as {old}");
+            // every drawn face samples inside the picture, and the picture is a PNG inside the file
+            let (w, h) = bbmodel::uv_space(&j, 0.0, 0.0);
+            assert!(w > 0.0 && h > 0.0, "{new}: uv space");
+            for e in j["elements"].as_array().unwrap() {
+                for f in e["faces"].as_object().unwrap().values().filter(|x| !x["texture"].is_null()) {
+                    let uv: Vec<f32> = f["uv"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
+                    assert!(uv.len() == 4 && uv[0] >= 0.0 && uv[2] <= w && uv[1] >= 0.0 && uv[3] <= h && uv[0] < uv[2] && uv[1] < uv[3], "{new}: {} uv {uv:?}", e["name"]);
+                }
+            }
+            let (file, bytes) = bbmodel::texture_bytes(&j, &|_| None).unwrap_or_else(|| panic!("{new}: no picture"));
+            assert!(file.is_none() && bytes.starts_with(&[0x89, b'P', b'N', b'G']), "{new}: its picture is a PNG inside the file");
+            let source = j["textures"][0]["source"].as_str().unwrap().to_string();
+            match &palette {
+                Some(p) => assert_eq!(p, &source, "{new}: the shared palette picture"),
+                None => palette = Some(source),
+            }
+        }
+    }
+
+    #[test]
+    fn a_stretch_scales_each_axis_and_keeps_flat_faces_flat() {
+        let (mut verts, _) = box_geometry();
+        let before: Vec<Vec3> = verts.iter().map(|v| v.position).collect();
+        stretch_verts(&mut verts, vec3(2.0, 0.5, 1.5));
+        for (v, b) in verts.iter().zip(&before) {
+            assert_eq!(v.position, *b * vec3(2.0, 0.5, 1.5));
+            let n = v.normal.truncate();
+            assert!(n.length() < 1e-6 || (n.length() - 1.0).abs() < 1e-5, "unit normals");
+            assert_eq!(v.normal.w, 1.0, "the shader mode is kept");
+        }
+        let mut one = [white_vertex(vec3(1.0, 1.0, 1.0), vec2(0.0, 0.0), vec3(0.0, 1.0, 0.0))];
+        stretch_verts(&mut one, vec3(3.0, 0.5, 1.0));
+        assert!((one[0].normal.truncate() - vec3(0.0, 1.0, 0.0)).length() < 1e-6, "an axis face still faces its axis");
     }
 
     #[test]

@@ -29,49 +29,54 @@
 		{
 			"id": "carnivalTicketBooth",
 			"models": [
-				"res://assets/props/carnival/carnival_ticket_booth.bbmodel"
+				"res://assets/props/carnival/carnival_ticket_booth.bbmodel",
+				"res://assets/props/carnival/carnival_ticket_booth_blue.bbmodel"
 			]
 		},
 		{
 			"id": "popcornCart",
 			"models": [
-				"res://assets/props/carnival/popcorn_cart.bbmodel"
+				"res://assets/props/carnival/popcorn_cart.bbmodel",
+				"res://assets/props/carnival/cotton_candy_cart.bbmodel"
 			]
 		},
 		{
 			"id": "ringTossStall",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.bbmodel"
+				"res://assets/props/carnival/ring_toss_stall.bbmodel",
+				"res://assets/props/carnival/balloon_dart_stall.bbmodel"
 			]
 		},
 		{
 			"id": "strengthTester",
 			"models": [
-				"res://assets/props/carnival/strength_tester.bbmodel"
+				"res://assets/props/carnival/strength_tester.bbmodel",
+				"res://assets/props/carnival/strength_tester_blue.bbmodel"
 			]
 		},
 		{
 			"id": "circusPedestal",
 			"models": [
-				"res://assets/props/carnival/circus_pedestal.bbmodel"
+				"res://assets/props/carnival/circus_pedestal.bbmodel",
+				"res://assets/props/carnival/circus_pedestal_blue.bbmodel"
 			]
 		},
 		{
 			"id": "shootingGallery",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.bbmodel"
+				"res://assets/props/carnival/shooting_gallery.bbmodel"
 			]
 		},
 		{
 			"id": "whackAMole",
 			"models": [
-				"res://assets/props/carnival/ring_toss_stall.bbmodel"
+				"res://assets/props/carnival/whack_a_mole.bbmodel"
 			]
 		},
 		{
 			"id": "duckPond",
 			"models": [
-				"res://assets/props/carnival/circus_pedestal.bbmodel"
+				"res://assets/props/carnival/duck_pond.bbmodel"
 			]
 		},
 		{
