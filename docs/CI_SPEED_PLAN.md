@@ -46,6 +46,21 @@ Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-server-
 
 Goal (KT, 2026-11-12): every job of a push done in under 5 minutes.
 
+Reached on the first run after these changes (commit d38dd05; the two test halves and the Intel build started with
+empty caches, so they should not get slower):
+
+| Job | Before | After |
+|---|---|---|
+| test | 7 min 32 s to 8 min 42 s | unit 4 min 30 s, suites 2 min 49 s (side by side) |
+| build windows | 5 min 41 s | 4 min 47 s |
+| build macos-intel | 8 min 59 s | 3 min 9 s |
+| build macos-arm64 | 4 min 35 s | 4 min 3 s |
+| build linux | 4 min 36 s | 2 min 31 s |
+| deploy-web | 3 min 7 s | 2 min 13 s |
+
+The margin is thin on two: the unit half (244 s of it is one `cargo test`, compile and run) and Windows. If the unit
+half grows past five minutes, the next step is to run its tests in two shards.
+
 ## Step timings on a push (run of 2026-11-12, commit 0b82938, warm caches)
 
 | Job | Whole job | Slowest steps |
