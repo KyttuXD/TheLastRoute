@@ -26,4 +26,4 @@ pub use crate::logging::*;
 
 pub use crate::{color_u8, DroppedFile};
 
-pub use image::ImageFormat;
+pub use crate::png_lite::ImageFormat;

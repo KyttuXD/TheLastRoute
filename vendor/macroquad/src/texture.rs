@@ -120,16 +120,15 @@ impl Image {
     /// ```
     pub fn from_file_with_format(
         bytes: &[u8],
-        format: Option<image::ImageFormat>,
+        format: Option<crate::png_lite::ImageFormat>,
     ) -> Result<Image, Error> {
-        let img = if let Some(fmt) = format {
-            image::load_from_memory_with_format(bytes, fmt)?.to_rgba8()
-        } else {
-            image::load_from_memory(bytes)?.to_rgba8()
-        };
-        let width = img.width() as u16;
-        let height = img.height() as u16;
-        let bytes = img.into_raw();
+        // Last Route: PNG is the only format, read by `png_lite` (the `image` crate is gone)
+        let _ = format;
+        let (width, height, bytes) = crate::png_lite::decode(bytes).map_err(Error::ImageError)?;
+        if width > u16::MAX as u32 || height > u16::MAX as u32 {
+            return Err(Error::ImageError("the picture is larger than 65535 pixels a side".into()));
+        }
+        let (width, height) = (width as u16, height as u16);
 
         Ok(Image {
             width,
@@ -326,14 +325,9 @@ impl Image {
             }
         }
 
-        image::save_buffer(
-            path,
-            &bytes[..],
-            self.width as _,
-            self.height as _,
-            image::ColorType::Rgba8,
-        )
-        .unwrap();
+        // Last Route: written by `png_lite`
+        let file = crate::png_lite::encode_rgba8(self.width as u32, self.height as u32, &bytes[..]);
+        std::fs::write(path, file).unwrap();
     }
 }
 
@@ -699,21 +693,15 @@ impl Texture2D {
     ///     );
     /// # }
     /// ```
-    pub fn from_file_with_format(bytes: &[u8], format: Option<image::ImageFormat>) -> Texture2D {
-        let img = if let Some(fmt) = format {
-            image::load_from_memory_with_format(bytes, fmt)
-                .unwrap_or_else(|e| panic!("{}", e))
-                .to_rgba8()
-        } else {
-            image::load_from_memory(bytes)
-                .unwrap_or_else(|e| panic!("{}", e))
-                .to_rgba8()
-        };
-        let width = img.width() as u16;
-        let height = img.height() as u16;
-        let bytes = img.into_raw();
+    pub fn from_file_with_format(
+        bytes: &[u8],
+        format: Option<crate::png_lite::ImageFormat>,
+    ) -> Texture2D {
+        let _ = format;
+        let (width, height, bytes) =
+            crate::png_lite::decode(bytes).unwrap_or_else(|e| panic!("{}", e));
 
-        Self::from_rgba8(width, height, &bytes)
+        Self::from_rgba8(width as u16, height as u16, &bytes)
     }
 
     /// Creates a Texture2D from an [Image].

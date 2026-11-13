@@ -21,7 +21,7 @@ log-rs = ["log"]
 backtrace = { version = "0.3.60", optional = true }
 fontdue = "0.9"
 glam = { version = "0.27", features = ["scalar-math"] }
-image = { version = "0.24", default-features = false, features = ["png"] }
+miniz_oxide = "0.8"
 log = { version = "0.4", optional = true }
 macroquad_macro = "0.1.8"
 miniquad = { version = "=0.4.11", features = ["log-impl"] }

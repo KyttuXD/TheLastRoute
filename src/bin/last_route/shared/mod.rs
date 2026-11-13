@@ -15,6 +15,8 @@ pub mod file_pick;
 pub mod font_subset;
 pub mod safe_room;
 pub mod skin_cache;
+#[cfg(test)]
+mod png_parity_tests;
 pub mod skin_png;
 pub mod skins;
 pub mod task;

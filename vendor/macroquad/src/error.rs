@@ -6,7 +6,8 @@ pub enum Error {
         path: String,
     },
     ShaderError(miniquad::ShaderError),
-    ImageError(image::ImageError),
+    /// Last Route: the reason as text (it held the `image` crate's error; see `png_lite.rs`).
+    ImageError(String),
     UnknownError(&'static str),
 }
 
@@ -22,11 +23,6 @@ impl From<miniquad::ShaderError> for Error {
     }
 }
 
-impl From<image::ImageError> for Error {
-    fn from(s: image::ImageError) -> Self {
-        Error::ImageError(s)
-    }
-}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

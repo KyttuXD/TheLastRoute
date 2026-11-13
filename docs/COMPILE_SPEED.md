@@ -35,7 +35,12 @@ What follows from it:
 
 - The game's dependency tree on Linux went from 105 crates to 68 over the day (the `gltf`, `audrey` and Ogg stacks
   are gone; see the git log), and the lockfile from 160 packages to 147.
-- The vendored macroquad asks the `image` crate for PNG only; the TGA decoder was compiled and never used.
+- The `image` crate and nine crates under it are gone: the vendored macroquad reads and writes PNG with its own
+  `png_lite.rs` (miniz_oxide does the zlib part). The game's Linux tree is 51 crates (it was 63, and 105 at the start of
+  the day), the lockfile 133 packages; a clean dev build is 65 s (it was 68).
+- What cannot go without rewriting it: `sha2` and its six crates (LR Story uses them, and the server's `hmac` and
+  `scrypt` need the real crate), `rustls`/`ring`/`webpki-roots` (HTTPS), `rfd` (the file chooser on Windows and Linux),
+  `serde_json` (217 files use it).
 - Every program, the tests and the web build compile without warnings. Before: 107 in the game, 26 in the vendored
   crates, 24 in Night Watch, 5 in the server. Three were real (two needless `mut`, a dead assignment in a test).
   The vendored crates carry one `allow` line each for upstream code. About 150 items carry

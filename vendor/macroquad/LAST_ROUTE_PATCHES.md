@@ -11,10 +11,17 @@ Measured in the game: 45 glyphs at 15 px took a 512x512 atlas to 1024x1024, and 
 `cursor_x + GAP + width <= image.width`. Nothing else changes: sprites keep their gap and the atlas still doubles
 when it is really full.
 
+**No `image` crate.** `src/png_lite.rs` is a small PNG reader and writer, and `Image::from_file_with_format`,
+`Texture2D::from_file_with_format` and `Image::export_png` use it. The game only loads PNG and only asks for 8-bit
+RGBA. Gone with `image`: `png`, `flate2`, `fdeflate`, `crc32fast`, `simd-adler32`, `color_quant`, `bytemuck`,
+`byteorder`, `num-traits` and a second copy of `miniz_oxide`. `ImageFormat` is now this crate's own one-variant enum
+and `Error::ImageError` holds a `String`. Checked: all 2238 pictures in the repository (PNG files, pictures inside
+GLB models, bbmodel textures) decode to the same bytes as with the `image` crate
+(`src/bin/last_route/shared/png_parity_tests.rs`, run by hand). The Snow Leopard build's 0.4.14 copy keeps `image`.
+
 Two build-only changes besides, neither of which changes what the crate does:
 
-- `Cargo.toml` asks the `image` crate for PNG only (upstream also asks for TGA, which the game never loads), so the
-  TGA decoder is not compiled.
+- `Cargo.toml` names `miniz_oxide` in place of `image`.
 - `src/lib.rs` starts with an `#![allow(...)]` for the lints newer compilers raise on the upstream code, so a build of
   the game shows the game's own warnings only.
 
