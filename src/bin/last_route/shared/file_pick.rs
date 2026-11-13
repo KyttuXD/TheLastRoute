@@ -282,7 +282,10 @@ mod imp {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
-    use super::{extensions_of, Source, State, NO_CHOOSER};
+    // the accept strings are read only by the desktop dialogs (Linux's own, rfd on Windows and macOS, the legacy panel)
+    #[cfg(any(windows, target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))]
+    use super::extensions_of;
+    use super::{Source, State, NO_CHOOSER};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -548,9 +551,16 @@ mod imp {
         }))
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
+    /// The system open dialog is on Windows and macOS (rfd, or AppKit's panel on the legacy build). Phones have none
+    /// here, so the picker says so instead of opening a dialog that cannot come.
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn available() -> bool {
         true
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd")))]
+    pub fn available() -> bool {
+        false
     }
 
     fn title(directory: bool) -> &'static str {
@@ -565,7 +575,7 @@ mod imp {
     /// is shown without a nested run loop, so nothing is drawn from inside the GL view's display (macOS: a sheet on the
     /// main window; Windows and Linux: the dialog runs on a thread of its own). A synchronous `pick_file` on macOS runs
     /// AppKit's modal loop inside the frame callback, which aborted the game in `CA::Transaction::commit`.
-    #[cfg(all(not(lr_macos_legacy), not(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))))]
+    #[cfg(all(not(lr_macos_legacy), any(windows, target_os = "macos")))]
     fn real_dialog(kind: String, multiple: bool, directory: bool) -> Dialog {
         use std::future::Future;
         use std::pin::Pin;
@@ -590,6 +600,12 @@ mod imp {
             Poll::Pending => None,
             Poll::Ready(answer) => Some(answer),
         }))
+    }
+
+    /// Targets without a system dialog (phones) never reach this: `available` is false there, so `open` refuses first.
+    #[cfg(all(not(lr_macos_legacy), not(any(windows, target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))))]
+    fn real_dialog(_kind: String, _multiple: bool, _directory: bool) -> Dialog {
+        Dialog(Box::new(|| Some(None)))
     }
 
     pub fn open(kind: &str, multiple: bool, directory: bool) -> Result<u32, String> {
