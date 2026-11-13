@@ -400,6 +400,22 @@ impl Game {
         true
     }
 
+    /// What this runner's sample says about its rest, for the other runners (`Sample::with_rest`): lying or sitting,
+    /// where the body is drawn in absolute cells (the mattress or the seat, not the spot beside it where the body
+    /// stands), how far that is above the runner's feet, and the way it faces. `None` when the runner is on its feet.
+    /// The anchor is taken relative to the body, which does not move while it rests, so a window recentre keeps it right.
+    pub fn rest_wire(&self) -> Option<crate::net::world_sync::RestPose> {
+        let s = self.rest.seat.seated()?;
+        let o = self.window_origin();
+        Some(crate::net::world_sync::RestPose {
+            lying: s.pose == Pose::Lie,
+            x: self.p.pos.0 + (s.anchor[0] - s.from[0]) + o.0 as f32,
+            y: self.p.pos.1 + (s.anchor[2] - s.from[2]) + o.1 as f32,
+            up: s.anchor[1] - s.floor_y,
+            yaw: s.yaw,
+        })
+    }
+
     /// Gets up (waking first): the body never left the spot beside the bed, so only the view returns.
     pub(super) fn get_up(&mut self) {
         self.rest = Rest::default();
@@ -695,6 +711,39 @@ mod tests {
         assert!((r.look_pitch_down - 0.95).abs() < 0.01 && (r.look_pitch_up - 0.6).abs() < 0.01);
         assert!(parse_sit("{}").is_err());
         assert!(parse_sit(&crate::game::seating::TEXT.replace("\"eye_above_seat\": 0.83,", "")).is_err(), "the numbers are required data");
+    }
+
+    #[test]
+    fn a_resting_runner_tells_the_others_where_it_sits_or_lies_and_a_standing_one_says_nothing() {
+        let (mut g, i, _, _) = seat_game("ROOM-BED-7", "officeChair");
+        assert!(g.rest_wire().is_none(), "on its feet: no rest in the sample");
+        let stood = g.p.pos;
+        assert!(g.sit_down(i));
+        let (_, k) = sit_seat_of("officeChair").unwrap();
+        let o = g.window_origin();
+        let seat = g.rest_wire().expect("seated");
+        assert!(!seat.lying);
+        assert!((seat.up - k.height).abs() < 1e-4, "the pan's height above the feet");
+        // the anchor is on the chair (0.8 m ahead of where the body still stands), in absolute cells
+        let at = (seat.x - o.0 as f32, seat.y - o.1 as f32);
+        assert_eq!(g.p.pos, stood, "the body did not move");
+        let centre = g.bed_centre(i);
+        // rotation 0 faces -z, toward the runner: the anchor is the seat's centre moved by the kind's offset along it
+        assert!(pdist(at, (centre.0, centre.1 - k.offset)) < 1e-3, "{at:?} for a seat at {centre:?}");
+        assert!(pdist(centre, stood) > 0.5, "and the seat is not where the body stands");
+        assert!((seat.yaw - g.p.yaw).abs() < 1e-4, "it faces the way the seat does");
+        g.get_up();
+        assert!(g.rest_wire().is_none());
+        let (mut g, i, _, _) = bed_game("ROOM-BED-7");
+        assert!(g.lie_down(i));
+        assert!(g.rest_wire().expect("lying").lying);
+        // the sample carries it, and an older peer's sample without the key reads as standing
+        let sent = crate::net::world_sync::Sample::of(&g.p, g.depth, g.window_origin()).with_rest(g.rest_wire()).to_json();
+        let back = crate::net::world_sync::Sample::from_json(&sent).expect("parses");
+        assert_eq!(back.rest.map(|r| r.lying), Some(true));
+        let mut old = sent.clone();
+        old.as_object_mut().unwrap().remove("rest");
+        assert_eq!(crate::net::world_sync::Sample::from_json(&old).expect("parses").rest, None);
     }
 
     #[test]

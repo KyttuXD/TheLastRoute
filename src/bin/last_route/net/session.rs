@@ -60,6 +60,25 @@ impl Channel {
 #[derive(Default)]
 struct Peer {
     channels: [Channel; protocol::channel::COUNT],
+    /// Host: when this guest's first reliable EVENTS packet (seq 0, its `RegisterPeer`) was first taken ([`joined_again`]).
+    first_event_at: Option<Instant>,
+    /// Host: when any packet from this guest last arrived. A guest whose ACKs were lost keeps sending, so it is not a new
+    /// connection however long its first packet has been waiting ([`joined_again`]).
+    last_heard: Option<Instant>,
+}
+
+/// How long after a guest's first reliable packet another "first" packet from the same session id is no resend but a new
+/// connection: an honest resend comes every [`RESEND_INTERVAL`] until one of its ACKs gets through.
+const REJOIN_AFTER: Duration = Duration::from_secs(5);
+
+/// Host: whether a reliable EVENTS packet with seq 0 comes from a guest that joined AGAIN under a session id the host
+/// still holds counters for (the UDP relay hands a returning address and port its old id back, for up to 45 s). The
+/// old connection already delivered its seq 0 (`next_receive` is past it) a good while ago (`first_event_at`), so this one
+/// is the new connection's first packet. Without this the new connection's reliable messages are all taken for
+/// duplicates: acknowledged and thrown away, and the guest never gets into the room.
+fn joined_again(next_receive: u32, first_event_at: Option<Instant>, last_heard: Option<Instant>, now: Instant) -> bool {
+    let silent = |t: Instant| now.saturating_duration_since(t) >= REJOIN_AFTER;
+    next_receive != 0 && first_event_at.is_some_and(silent) && last_heard.map_or(true, silent)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -254,10 +273,30 @@ impl CoopSession {
             }
             _ => {}
         }
-        if self.is_host() && !self.peers.contains_key(&from) {
+        let mut seen = self.is_host() && !self.peers.contains_key(&from);
+        if self.is_host() && kind == KIND_DATA && channel == protocol::channel::EVENTS && seq == 0 {
+            let now = Instant::now();
+            let again = self.peers.get(&from).is_some_and(|p| joined_again(p.channels[channel as usize].next_receive, p.first_event_at, p.last_heard, now));
+            if again {
+                // a new connection under an old session id: every counter starts again, and what was still being resent
+                // to the old connection is dropped
+                self.peers.remove(&from);
+                self.pings.remove(&from);
+                self.pending_pings.remove(&from);
+                seen = true;
+            }
+            let peer = self.peers.entry(from).or_default();
+            if peer.first_event_at.is_none() {
+                peer.first_event_at = Some(now);
+            }
+        }
+        if seen {
             out.push(SessionEvent::PeerSeen(from));
         }
-        let state = &mut self.peers.entry(from).or_default().channels[channel as usize];
+        let heard = Instant::now();
+        let peer = self.peers.entry(from).or_default();
+        peer.last_heard = Some(heard);
+        let state = &mut peer.channels[channel as usize];
         if kind == KIND_ACK {
             state.unacked.remove(&seq);
             return;
@@ -445,6 +484,30 @@ mod tests {
         assert!(!guest.send(HOST_PEER_ID, &Message::Snapshot { state: Default::default() }), "guests cannot send host RPCs");
         assert!(!host.send(42, &Message::Place { packet: json!("x".repeat(2000)) }), "a message must fit one datagram");
         host.close();
+    }
+
+    #[test]
+    fn a_first_packet_long_after_the_first_one_is_a_new_connection_and_a_resend_is_not() {
+        let t0 = Instant::now();
+        // nothing was ever taken from this session id: it is simply the first packet
+        assert!(!joined_again(0, None, None, t0));
+        // the first packet's resend, a moment later (its ACK was lost): the same connection
+        assert!(!joined_again(1, Some(t0), Some(t0), t0 + RESEND_INTERVAL));
+        assert!(!joined_again(7, Some(t0), Some(t0), t0 + Duration::from_secs(2)));
+        // seq 0 again long after the old connection's seq 0 was taken, and the guest has been silent: it joined again
+        assert!(joined_again(7, Some(t0), Some(t0), t0 + REJOIN_AFTER));
+        assert!(joined_again(1, Some(t0), None, t0 + Duration::from_secs(40)));
+        // the old connection's seq 0 never arrived (the host still waits for it): this is it, however late
+        assert!(!joined_again(0, Some(t0), None, t0 + Duration::from_secs(40)));
+    }
+
+    #[test]
+    fn a_guest_that_keeps_sending_after_its_acks_were_lost_is_not_a_new_connection() {
+        // the host-to-guest ACKs were lost for longer than REJOIN_AFTER, but the guest's packets kept arriving: its
+        // resent seq 0 is a resend, and taking it again would apply its unacknowledged events a second time
+        let t0 = Instant::now();
+        let now = t0 + REJOIN_AFTER + Duration::from_secs(1);
+        assert!(!joined_again(7, Some(t0), Some(now - Duration::from_millis(200)), now));
     }
 
     /// Host and guest on one fake relay: the guest measures its round trip to the host and the host to the guest.

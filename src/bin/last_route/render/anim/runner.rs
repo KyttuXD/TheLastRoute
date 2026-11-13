@@ -210,6 +210,9 @@ pub fn config() -> &'static Config {
 
 // ------------------------------------------------------------------------------------------------ clip choice
 
+/// The rig clip a seated runner holds (both player rigs carry it; anim.json lists it in `expected_clips`).
+pub const SIT_CLIP: &str = "sit";
+
 /// The poses a runner shows. One per state key of anim.json `clips`; also the pose name a net sample carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pose {
@@ -228,6 +231,11 @@ pub enum Pose {
     Stun,
     /// Caught and down (the lay clip).
     Down,
+    /// Sitting on a chair, couch, bench or stool (the sit clip). Not in [`Pose::ALL`]: it never travels as a sample's
+    /// `clip` name (an older peer would not know it); a resting runner's sample says so in its own `rest` key.
+    Sit,
+    /// Lying on a bed, resting or asleep (the lay clip, as [`Pose::Down`] plays it, but the runner is not down).
+    Lie,
 }
 
 impl Pose {
@@ -259,6 +267,19 @@ impl Pose {
             Pose::Swim => "swim",
             Pose::Stun => "stun",
             Pose::Down => "down",
+            Pose::Sit => "sit",
+            Pose::Lie => "lie",
+        }
+    }
+
+    /// The rig clip this pose plays. The eleven poses of [`Pose::ALL`] read anim.json `clips`; sitting plays the rig's
+    /// `sit` clip and lying the clip a downed runner lies in, so a bed needs no entry of its own in the data.
+    pub fn clip_name(self) -> String {
+        let c = config();
+        match self {
+            Pose::Sit => SIT_CLIP.to_string(),
+            Pose::Lie => c.clip(Pose::Down.key()),
+            other => c.clip(other.key()),
         }
     }
 
@@ -290,6 +311,9 @@ pub struct RunnerState {
     pub stunned: bool,
     /// caught: the runner lies down
     pub down: bool,
+    /// resting on a seat, or lying on a bed (a remote runner's `rest`; the local body is not drawn in first person)
+    pub sitting: bool,
+    pub lying: bool,
     /// real ground speed, metres per second
     pub speed: f32,
     /// moving opposite to the way the runner faces: a paced clip plays time-reversed (see `ClipChoice::backward`)
@@ -315,6 +339,10 @@ impl RunnerState {
     pub fn pose(&self) -> Pose {
         if self.down {
             Pose::Down
+        } else if self.lying {
+            Pose::Lie
+        } else if self.sitting {
+            Pose::Sit
         } else if self.stunned {
             Pose::Stun
         } else if self.climbing {
@@ -359,6 +387,8 @@ impl RunnerState {
             swimming: pose == Pose::Swim,
             stunned: pose == Pose::Stun,
             down: pose == Pose::Down,
+            sitting: pose == Pose::Sit,
+            lying: pose == Pose::Lie,
             ..base
         }
     }
@@ -391,9 +421,9 @@ pub fn clip_for(state: &RunnerState) -> ClipChoice {
         Pose::Swim => (0.0, c.blend_travel, c.swim_pitch),
         Pose::Sprint | Pose::Chased | Pose::Walk => (0.0, c.blend_travel, 0.0),
         Pose::Idle => (0.0, c.blend_idle, 0.0),
-        Pose::Stun | Pose::Down => (0.0, c.blend_default, 0.0),
+        Pose::Stun | Pose::Down | Pose::Sit | Pose::Lie => (0.0, c.blend_default, 0.0),
     };
-    let clip = c.clip(pose.key());
+    let clip = pose.clip_name();
     let paced = c.paced_clips.contains(&clip);
     ClipChoice {
         paced,

@@ -26,6 +26,7 @@ use super::session::{CoopSession, SessionEvent, HOST_PEER_ID};
 use super::ws_link::WsLink;
 use crate::shared::task::IN_BROWSER;
 use super::valve_events::{self, BurstRequest, ValveRequest};
+use super::world_objects::{self, ObjKey, ObjectTable, Op};
 use super::{store, NetError, Pending};
 use crate::config::difficulty::{ALL, LOBBY};
 use crate::config::Difficulty;
@@ -157,6 +158,51 @@ pub struct Sample {
     /// The peer id of the downed teammate this runner is holding a revive on (interact held beside it). Wire:
     /// `"revive"`, sent only while holding; absent or malformed reads as None.
     pub reviving: Option<u32>,
+    /// The bed the runner lies on or the seat it sits on (its body stays where it stood; see [`RestPose`]). Wire:
+    /// `"rest"`, sent only while resting; an older peer never sends or reads it and shows the runner standing.
+    pub rest: Option<RestPose>,
+}
+
+/// A runner resting on furniture, as its sample says it: lying or sitting, where the body is drawn (absolute cells, like
+/// the sample's own position), how far above the runner's feet height, and the way it faces. Wire:
+/// `"rest": ["lie" or "sit", x, y, height, yaw]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestPose {
+    pub lying: bool,
+    pub x: f32,
+    pub y: f32,
+    /// Metres above the runner's feet height (the mattress or the seat pan).
+    pub up: f32,
+    pub yaw: f32,
+}
+
+/// A rest anchor further than this from the runner's own position (cells) is not believed: the seating reach is far
+/// shorter, and a hostile sample must not draw a body across the map.
+const REST_REACH_MAX: f32 = 6.0;
+/// The highest and lowest a rest anchor may be from the runner's feet (metres).
+const REST_UP_MAX: f32 = 3.0;
+
+impl RestPose {
+    fn to_json(self) -> Value {
+        json!([if self.lying { "lie" } else { "sit" }, self.x, self.y, self.up, self.yaw])
+    }
+
+    /// Reads the `rest` key of a sample standing at (`x`, `y`). `None` for anything that is not a five-entry list of a
+    /// known pose and four finite numbers, or an anchor out of reach of the runner.
+    fn from_json(v: &Value, x: f32, y: f32) -> Option<RestPose> {
+        let list = v.as_array().filter(|l| l.len() == 5)?;
+        let lying = match list[0].as_str()? {
+            "lie" => true,
+            "sit" => false,
+            _ => return None,
+        };
+        let num = |i: usize| list[i].as_f64().map(|f| f as f32).filter(|f| f.is_finite());
+        let (ax, ay, up, yaw) = (num(1)?, num(2)?, num(3)?, num(4)?);
+        if (ax - x).hypot(ay - y) > REST_REACH_MAX {
+            return None;
+        }
+        Some(RestPose { lying, x: ax, y: ay, up: up.clamp(-REST_UP_MAX, REST_UP_MAX), yaw })
+    }
 }
 
 /// What the revive rule needs of another runner, from its NEWEST raw sample (see [`NetSession::revive_signals`]).
@@ -235,7 +281,48 @@ impl Sample {
             emote_seq: None,
             downed: false,
             reviving: None,
+            rest: None,
         }
+    }
+
+    /// A bare sample at an absolute cell: what the hunter smoothing feeds [`interp::Track`] (game/hunting.rs), and a
+    /// base for tests. `h` is the absolute feet height.
+    pub fn at(seq: u32, x: f32, y: f32, yaw: f32, depth: i32, h: f32) -> Sample {
+        Sample {
+            seq,
+            depth,
+            h: Some(h),
+            x,
+            y,
+            yaw,
+            moving: true,
+            sprinting: false,
+            crouching: false,
+            spectating: false,
+            game_over: false,
+            escape_active: false,
+            clip: None,
+            vy: 0.0,
+            vx: 0.0,
+            vz: 0.0,
+            jump: 0.0,
+            slim: false,
+            hide: None,
+            held: None,
+            flash_pitch: None,
+            look_pitch: 0.0,
+            emote: None,
+            emote_seq: None,
+            downed: false,
+            reviving: None,
+            rest: None,
+        }
+    }
+
+    /// The sample with the bed or seat the runner rests on (`Game::rest_wire`, absolute cells), or none.
+    pub fn with_rest(mut self, rest: Option<RestPose>) -> Sample {
+        self.rest = rest;
+        self
     }
 
     /// The sample with the revive state: whether this runner is downed, and the peer it is reviving.
@@ -336,6 +423,10 @@ impl Sample {
             if let Some(peer) = self.reviving {
                 o.insert("revive".into(), json!(peer));
             }
+            // lying on a bed or sitting: optional, an older peer ignores the key
+            if let Some(rest) = self.rest {
+                o.insert("rest".into(), rest.to_json());
+            }
             // an emote that plays: its id and start counter (both optional on the wire)
             if let Some(tag) = self.emote {
                 o.insert("emote".into(), json!(tag.as_str()));
@@ -355,6 +446,10 @@ impl Sample {
         let flag = |k: &str| o.get(k).and_then(Value::as_bool).unwrap_or(false);
         // a hostile or broken peer's velocity is scaled down to the speed cap, never trusted as sent
         let (vx, vz) = interp::clamp_velocity(num("vx").unwrap_or(0.0), num("vz").unwrap_or(0.0), interp::rules().max_speed_mps);
+        let rest = match (o.get("rest"), num("x"), num("y")) {
+            (Some(r), Some(x), Some(y)) => RestPose::from_json(r, x, y),
+            _ => None,
+        };
         Some(Sample {
             seq: o.get("seq")?.as_u64()? as u32,
             depth: i32::try_from(o.get("depth")?.as_i64()?).ok()?,
@@ -384,6 +479,7 @@ impl Sample {
             emote_seq: o.get("emote_seq").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
             downed: flag("downed"),
             reviving: o.get("revive").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
+            rest,
         })
     }
 }
@@ -491,9 +587,27 @@ pub struct RemoteView {
 
 /// What the figure code needs of a remote runner's last sample, moved into the window whose origin is `origin`.
 fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, i32), now: Instant) -> RemoteView {
-    let shown = r.shown(now);
+    let mut shown = r.shown(now);
+    let feet = shown.h.unwrap_or(shown.depth as f32 * STOREY);
+    // a runner on a bed or a seat is drawn there, in that pose: its own position is where it stood when it lay down.
+    // A downed runner is shown down wherever it is (the rest is over by then; the newest sample decides).
+    let rest = r.sample.rest.filter(|_| !r.sample.downed && r.sample.clip != Some(Pose::Down));
+    if let Some(rest) = rest {
+        shown.x = rest.x;
+        shown.y = rest.y;
+        shown.yaw = rest.yaw;
+        shown.moving = false;
+        shown.sprinting = false;
+        shown.crouching = false;
+        shown.vx = 0.0;
+        shown.vz = 0.0;
+        shown.vy = 0.0;
+        shown.jump = 0.0;
+        shown.clip = Some(if rest.lying { Pose::Lie } else { Pose::Sit });
+    }
     let (x, y) = to_window((shown.x, shown.y), origin);
-    let h = shown.h.unwrap_or(shown.depth as f32 * STOREY);
+    // the level is the one the runner's own feet are on: the mattress height must not move it to another floor's list
+    let h = feet + rest.map_or(0.0, |pose| pose.up);
     RemoteView {
         peer,
         name,
@@ -501,7 +615,7 @@ fn remote_view(peer: u32, name: String, r: &Remote, skin: String, origin: (i32, 
         y,
         yaw: shown.yaw,
         h,
-        level: crate::game::level_stack::owning_level(h),
+        level: crate::game::level_stack::owning_level(feet),
         skin,
         moving: shown.moving,
         sprinting: shown.sprinting,
@@ -643,6 +757,20 @@ const HELD_EVENTS_MAX: usize = hunter_events::STATE_LOG_MAX + 64;
 /// What a `_hunters` or `_snapshot` message adds around its frame (the `data` / `state` keys, the name, the schema and
 /// the relay count), rounded up: a frame is sized against the link's payload less the packet header and this.
 const FRAME_ENVELOPE_BYTES: usize = 6 + 122;
+/// Guest: most object changes kept for the game between two frames (a late joiner's whole table arrives at once; what
+/// does not fit is still in the table, which the game applies to its window).
+const OBJECT_OPS_MAX: usize = 4096;
+/// Host: most object requests kept for the game between two frames.
+const OBJECT_REQUESTS_MAX: usize = 64;
+/// Host: how often the game is asked to compare its room doors with the table (a hunter pulls doors open on its own).
+const DOOR_CHECK_EVERY: Duration = Duration::from_millis(500);
+/// The frame key that numbers the host's hunter frames, on the first entry of each message (optional: an older host
+/// sends none, an older guest ignores it).
+pub const KEY_FRAME: &str = "fr";
+/// A frame number this far behind the newest seen is not a reordered frame but a counter that started again.
+const FRAME_RESTART_GAP: u32 = 400;
+/// The longest a batch of the object table may be in one message, whatever the link carries.
+const OBJECT_BATCH_BYTES: usize = 1000;
 
 /// A settings difficulty index as Godot's `_selectable_difficulty_or_standard` reads it: 0 RELAXED, 1 STANDARD, 2 HARD.
 /// The index reads only those three (`ALL`), so 3 and any other value is STANDARD; Nightmare crosses the wire by its name
@@ -902,6 +1030,22 @@ pub struct NetSession {
     /// Guest: whether the host's room message (the roster with session ids) has arrived. A runner that joined as the host
     /// left has not been told who is in the room, so it does not know its place in line (`reform_plan`).
     room_seen: bool,
+    /// The route's world objects: what is taken, the open doors and the dark lights (`net/world_objects.rs`). The host's
+    /// is the truth and is sent to a runner that joins during the route; a guest's is its copy, kept for the chunks it
+    /// has not streamed yet.
+    objects: ObjectTable,
+    /// Guest: the object changes the host published since the game last took them ([`NetSession::take_object_ops`]).
+    object_ops: Vec<Op>,
+    /// Host: the guests' object requests waiting for the game ([`NetSession::take_object_requests`]).
+    object_requests: Vec<(u32, ObjKey, bool)>,
+    /// Guest: the host said it decides the world objects (its room message carries [`world_objects::SYNC_KEY`]).
+    host_syncs_objects: bool,
+    /// The window (origin and depth) the game last applied the whole table to ([`NetSession::objects_window_changed`]).
+    objects_window: Option<(i32, i32, i32)>,
+    /// Host: when the game next compares its doors with the table.
+    next_door_check: Instant,
+    /// Host: the number of the last hunter frame sent. Guest: the newest frame number applied ([`KEY_FRAME`]).
+    hunter_frame_no: Option<u32>,
 }
 
 /// CREATE a room on the directory and open its relay as the host. The request blocks, so the frame loop polls the result.
@@ -1277,6 +1421,13 @@ impl NetSession {
             world_state: hunter_events::StateLog::default(),
             in_run: false,
             held_events: Vec::new(),
+            objects: ObjectTable::default(),
+            object_ops: Vec::new(),
+            object_requests: Vec::new(),
+            host_syncs_objects: false,
+            objects_window: None,
+            next_door_check: now,
+            hunter_frame_no: None,
         }
     }
 
@@ -1680,6 +1831,8 @@ impl NetSession {
         if self.dedicated {
             rest.insert("dedicated".into(), Value::Bool(true));
         }
+        // this host decides the world objects and answers a guest's requests for them (an older guest ignores the key)
+        rest.insert(world_objects::SYNC_KEY.into(), json!(world_objects::SYNC_VERSION));
         let room = Message::Room { code: self.code.clone(), seed: self.room_seed.clone(), mode: 0, scale: 0, rest };
         let packs = packs_message(&self.mods);
         for peer in self.coop.peers() {
@@ -1693,6 +1846,8 @@ impl NetSession {
         self.run = Some((seed.to_string(), difficulty.to_string()));
         // a new route: nothing of the last one's valves, pipes and safe rooms is replayed to a late joiner
         self.world_state.clear();
+        self.objects.clear();
+        self.objects_window = None;
         if self.is_host() {
             for peer in self.coop.peers() {
                 self.coop.send(peer, &start_message(&self.code, seed, difficulty));
@@ -1724,12 +1879,19 @@ impl NetSession {
         if let Some(origin) = self.host_origin {
             hunter_events::stamp_origin(&mut frame, origin);
         }
-        let bytes = serde_json::to_vec(&frame).map_or(0, |b| b.len());
+        // the frame's number rides on the first entry of each message: a frame that went on the reliable channel can
+        // land after a newer one from the unreliable channel, and the guest then drops it (`frame_is_stale`)
+        let number = self.hunter_frame_no.map_or(1, |n| n.wrapping_add(1));
+        self.hunter_frame_no = Some(number);
+        // the number's own bytes are counted with the frame, so a frame at the limit still fits
+        const NUMBER_BYTES: usize = 18;
+        let bytes = serde_json::to_vec(&frame).map_or(0, |b| b.len()) + NUMBER_BYTES;
         let room = self.frame_room();
         if bytes > room {
             // too long for one message on this link (a UDP relay datagram): sent as parts that each fit, not dropped.
             // The parts are kept small enough for the unreliable channel, so a lost one costs those hunters one frame.
-            for part in hunter_events::split_frame(frame, room.min(rules.large_frame_over_bytes)) {
+            for mut part in hunter_events::split_frame(frame, room.min(rules.large_frame_over_bytes).saturating_sub(NUMBER_BYTES)) {
+                stamp_frame_number(&mut part, number);
                 let message = Message::Hunters { data: part };
                 for peer in self.coop.peers() {
                     self.coop.send(peer, &message);
@@ -1737,6 +1899,7 @@ impl NetSession {
             }
             return;
         }
+        stamp_frame_number(&mut frame, number);
         let message = if bytes > rules.large_frame_over_bytes {
             Message::HuntersLarge { data: frame }
         } else {
@@ -1744,6 +1907,20 @@ impl NetSession {
         };
         for peer in self.coop.peers() {
             self.coop.send(peer, &message);
+        }
+    }
+
+    /// Guest: takes the frame number off a hunter frame message and says whether the frame is older than one already
+    /// applied (it is then dropped). A message with no number (an older host, or a late joiner's snapshot parts) is never
+    /// stale. Parts of one frame share its number, so all of them pass.
+    fn frame_is_stale(&mut self, data: &mut [Value]) -> bool {
+        let Some(number) = take_frame_number(data) else { return false };
+        match self.hunter_frame_no {
+            Some(last) if number != last && !newer(number, last) && last.wrapping_sub(number) < FRAME_RESTART_GAP => true,
+            _ => {
+                self.hunter_frame_no = Some(number);
+                false
+            }
         }
     }
 
@@ -2013,12 +2190,116 @@ impl NetSession {
             return;
         }
         for event in events {
+            // a world object (taken, a door, a light): the table decides whether anything changed, and tells the guests
+            if let Some(ops) = world_objects::parse_event(&event) {
+                for op in ops {
+                    self.publish_object(op);
+                }
+                continue;
+            }
             // what sets lasting state is kept for the runners who join later (`join_state`)
             self.world_state.record(&event);
             let message = Message::Event { event };
             for peer in self.coop.peers() {
                 self.coop.send(peer, &message);
             }
+        }
+    }
+
+    /// The route's world objects as this machine knows them (the host's table is the truth).
+    pub fn objects(&self) -> &ObjectTable {
+        &self.objects
+    }
+
+    /// Whether the host of this room decides the world objects: always on the host itself; on a guest, when the host's
+    /// room message said so (an older host does not, and its guests then keep their objects to themselves).
+    pub fn host_decides_objects(&self) -> bool {
+        self.is_host() || self.host_syncs_objects
+    }
+
+    /// Host: one object changed. The table takes it and, when that changed anything, every guest is told. Returns whether
+    /// it changed anything (a second take of one pickup does not: the first runner has it).
+    pub fn publish_object(&mut self, op: Op) -> bool {
+        if !self.is_host() || !self.objects.apply(op) {
+            return false;
+        }
+        let message = Message::Event { event: world_objects::event(op) };
+        for peer in self.coop.peers() {
+            self.coop.send(peer, &message);
+        }
+        true
+    }
+
+    /// Host: tells one guest how an object stands (`op`: the answer to a request the host refused, so the guest puts
+    /// back what it showed ahead of the answer). The table is not changed.
+    pub fn send_object_to(&mut self, peer: u32, op: Op) -> bool {
+        if !self.is_host() {
+            return false;
+        }
+        self.coop.send(peer, &Message::Event { event: world_objects::event(op) })
+    }
+
+    /// Guest: asks the host to make an object `on` (take it, open it, light it). Nothing is sent by a host, or to a host
+    /// that does not decide the objects.
+    pub fn request_object(&mut self, key: ObjKey, on: bool) -> bool {
+        if self.is_host() || !self.host_syncs_objects {
+            return false;
+        }
+        self.coop.send(HOST_PEER_ID, &Message::RequestInteraction { event: world_objects::request(key, on) })
+    }
+
+    /// Host: the guests' object requests since the last call, oldest first, each with its sender.
+    pub fn take_object_requests(&mut self) -> Vec<(u32, ObjKey, bool)> {
+        std::mem::take(&mut self.object_requests)
+    }
+
+    /// Guest: the object changes the host published since the last call, oldest first.
+    pub fn take_object_ops(&mut self) -> Vec<Op> {
+        std::mem::take(&mut self.object_ops)
+    }
+
+    /// Whether the game stands in another window (origin and depth) than the one it last applied the whole table to;
+    /// records `window` as that one. True on the first call of a route.
+    pub fn objects_window_changed(&mut self, window: (i32, i32, i32)) -> bool {
+        if self.objects_window == Some(window) {
+            return false;
+        }
+        self.objects_window = Some(window);
+        true
+    }
+
+    /// Host with a guest in the room: whether it is time to compare the game's doors with the table (twice a second).
+    pub fn door_check_due(&mut self) -> bool {
+        if !self.is_host() || self.guests.is_empty() {
+            return false;
+        }
+        let now = Instant::now();
+        if now < self.next_door_check {
+            return false;
+        }
+        self.next_door_check = now + DOOR_CHECK_EVERY;
+        true
+    }
+
+    /// Guest: the host's published object change (or a late joiner's batch). The table always takes it, whether or not
+    /// this runner has a world yet; the game is handed every new take, and every door and light state (a door this guest
+    /// swung ahead of the host's answer is put right even when the table already said so).
+    fn accept_object_event(&mut self, event: &Map<String, Value>) {
+        for op in world_objects::parse_event(event).unwrap_or_default() {
+            let changed = self.objects.apply(op);
+            if (changed || !op.key.kind.is_take()) && self.object_ops.len() < OBJECT_OPS_MAX {
+                self.object_ops.push(op);
+            }
+        }
+    }
+
+    /// Host: queues a registered guest's object request for the game (bounded).
+    fn accept_object_request(&mut self, from: u32, event: &Map<String, Value>) {
+        if from <= HOST_PEER_ID || !self.guests.contains_key(&from) || self.object_requests.len() >= OBJECT_REQUESTS_MAX {
+            return;
+        }
+        if let Some((key, on)) = world_objects::parse_request(event) {
+            self.object_requests.push((from, key, on));
         }
     }
 
@@ -2067,7 +2348,10 @@ impl NetSession {
         } else {
             out.push(Message::Snapshot { state: hunter_events::snapshot_state(&hunters, self.relays_sabotaged) });
         }
-        out.extend(self.world_state.events().map(|event| Message::Event { event: event.clone() }));
+        out.extend(self.world_state.replay(Instant::now()).into_iter().map(|event| Message::Event { event }));
+        // what is taken, the open doors and the dark lights, in parts that each fit the link
+        let part = self.frame_room().min(OBJECT_BATCH_BYTES);
+        out.extend(self.objects.batches(part).into_iter().map(|event| Message::Event { event }));
         out
     }
 
@@ -2081,6 +2365,8 @@ impl NetSession {
     pub fn end_run(&mut self, reason: &str) {
         self.run = None;
         self.world_state.clear();
+        self.objects.clear();
+        self.objects_window = None;
         if self.is_host() {
             for peer in self.coop.peers() {
                 self.coop.send(peer, &Message::End { reason: reason.to_string() });
@@ -2482,7 +2768,11 @@ impl NetSession {
                 if let Some(guest) = self.guests.get_mut(&from) {
                     guest.last_seen = now;
                 }
-                self.accept_valve_request(from, &event);
+                if event.get("what").and_then(Value::as_str) == Some(world_objects::REQUEST) {
+                    self.accept_object_request(from, &event);
+                } else {
+                    self.accept_valve_request(from, &event);
+                }
             }
             Message::Room { seed, rest, .. } if !self.is_host() => {
                 self.room_seed = seed.clone();
@@ -2501,6 +2791,8 @@ impl NetSession {
                     self.difficulty = difficulty_from_name(d).name().to_string();
                 }
                 self.host_dedicated = rest.get("dedicated").and_then(Value::as_bool).unwrap_or(false);
+                // an older host sends no such key: its guests keep every pickup, door and light to themselves, as before
+                self.host_syncs_objects = rest.get(world_objects::SYNC_KEY).and_then(Value::as_u64).is_some_and(|v| v >= world_objects::SYNC_VERSION);
                 self.room_seen = true;
                 // a host that lists session ids says who is in the room: a runner it no longer lists has left, and is not
                 // kept as DISCONNECTED for the idle time (an older host sends no ids, so nothing is dropped for it)
@@ -2531,11 +2823,17 @@ impl NetSession {
             // the host ended the route (Godot `_receive_end`): the run is over here too, the room stays open
             Message::End { reason } if !self.is_host() => {
                 self.held_events.clear();
+                self.objects.clear();
+                self.object_ops.clear();
+                self.objects_window = None;
                 out.push(NetEvent::RouteEnded(reason));
             }
             // the host's hunters and world events (Godot `_hunters` and `_event`): display only, a guest never sends them
-            Message::Hunters { data } | Message::HuntersLarge { data } if !self.is_host() => {
-                out.push(NetEvent::Hunters(data));
+            Message::Hunters { mut data } | Message::HuntersLarge { mut data } if !self.is_host() => {
+                // a frame older than one already shown (it took the reliable channel and was overtaken) is not applied
+                if !self.frame_is_stale(&mut data) {
+                    out.push(NetEvent::Hunters(data));
+                }
             }
             // the host's snapshot on join (Godot `_snapshot`): the hunters now, and the relay count kept for the app
             Message::Snapshot { state } if !self.is_host() => {
@@ -2557,6 +2855,8 @@ impl NetSession {
             Message::ChatPayload { .. } if !self.is_host() => self.keep_chat(&message),
             // a valve turn, a burst pipe or a safe room's status that arrives while this runner has no world yet (it is
             // loading the route it was just sent) would be dropped by the app and never said again: it waits for the world
+            // a world object the host changed: kept in the table here, with or without a world, and handed to the game
+            Message::Event { event } if !self.is_host() && world_objects::is_object_event(&event) => self.accept_object_event(&event),
             Message::Event { event } if !self.is_host() && !self.in_run && hunter_events::state_key(&event).is_some() => {
                 if self.held_events.len() >= HELD_EVENTS_MAX {
                     self.held_events.remove(0);
@@ -2567,6 +2867,9 @@ impl NetSession {
             Message::Start { seed, rest, .. } if !self.is_host() => {
                 // a new route: what was held belonged to the last one
                 self.held_events.clear();
+                self.objects.clear();
+                self.object_ops.clear();
+                self.objects_window = None;
                 let difficulty = rest.get("difficulty").and_then(Value::as_str).unwrap_or("STANDARD").to_string();
                 self.difficulty = difficulty_from_name(&difficulty).name().to_string();
                 out.push(NetEvent::Start { seed, difficulty });
@@ -2650,7 +2953,13 @@ impl NetSession {
     fn store_remote(&mut self, peer: u32, sample: Sample, now: Instant) -> bool {
         if let Some(r) = self.remotes.get(&peer) {
             if !newer(sample.seq, r.sample.seq) {
-                return false;
+                // a reordered or repeated sample is refused. But a runner that was silent past the draw timeout and now
+                // counts from the start again has joined anew under its old session id (the UDP relay hands a returning
+                // address its id back): its old samples are forgotten, or every new one would be refused as old
+                if now.saturating_duration_since(r.last_seen) < remote_timeout() {
+                    return false;
+                }
+                self.remotes.remove(&peer);
             }
         }
         let hide_since = match (sample.hide, self.remotes.get(&peer)) {
@@ -2717,6 +3026,7 @@ impl NetSession {
                     || s.held != last.held
                     || s.downed != last.downed
                     || s.reviving != last.reviving
+                    || s.rest.is_some() != last.rest.is_some()
             }
             (Some(_), None) => true,
             _ => false,
@@ -2762,6 +3072,19 @@ impl NetSession {
             self.coop.send(HOST_PEER_ID, &Message::Place { packet });
         }
     }
+}
+
+/// Writes the hunter frame's number on the first entry of a message ([`KEY_FRAME`]).
+fn stamp_frame_number(data: &mut [Value], number: u32) {
+    if let Some(first) = data.first_mut().and_then(Value::as_object_mut) {
+        first.insert(KEY_FRAME.into(), json!(number));
+    }
+}
+
+/// Takes the frame number off a hunter frame message, so the entries reach the game as the host's game wrote them.
+fn take_frame_number(data: &mut [Value]) -> Option<u32> {
+    let number = data.first_mut()?.as_object_mut()?.remove(KEY_FRAME)?;
+    number.as_u64().and_then(|n| u32::try_from(n).ok())
 }
 
 fn start_message(code: &str, seed: &str, difficulty: &str) -> Message {
@@ -2926,6 +3249,7 @@ pub(crate) mod tests {
             emote_seq: None,
             downed: false,
             reviving: None,
+            rest: None,
         }
     }
 
@@ -3196,6 +3520,7 @@ pub(crate) mod tests {
             emote_seq: Some(7),
             downed: true,
             reviving: Some(3),
+            rest: Some(RestPose { lying: true, x: 13.0, y: -2.5, up: 0.5, yaw: 0.25 }),
         };
         assert_eq!(Sample::from_json(&s.to_json()), Some(s));
         assert_eq!(Sample::from_json(&Value::Null), None, "a keep-alive is not a sample");
@@ -5025,6 +5350,211 @@ mod sync_audit_tests {
         assert!(!guest.remotes.contains_key(&7) && !guest.names.contains_key(&7) && !guest.skins.contains_key(&7), "it left the room");
         assert!(guest.remotes.contains_key(&HOST_PEER_ID), "the host is never dropped by its own roster");
         assert!(guest.roster().iter().all(|e| e.peer != 7), "and it is not listed as DISCONNECTED");
+    }
+
+    fn object(kind: world_objects::Kind, x: i32) -> ObjKey {
+        ObjKey { kind, level: 0, x, y: -40 }
+    }
+
+    /// Feeds a guest what a host would send it.
+    fn deliver(guest: &mut NetSession, messages: Vec<Message>) -> Vec<NetEvent> {
+        let mut out = Vec::new();
+        for message in messages {
+            guest.on_message(HOST_PEER_ID, message, Instant::now(), &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn the_host_hands_an_object_out_once_and_a_late_joiner_is_told_what_is_taken_open_and_dark() {
+        use crate::net::world_objects::Kind;
+        let now = Instant::now();
+        let mut host = offline_session(true, "HOST");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        host.guests.insert(2, Guest { name: "G2".into(), last_seen: now });
+        let relay = object(Kind::Relay, 1);
+        let mut out = Vec::new();
+        // a registered guest's request waits for the game; a stranger's, or a broken one, is dropped
+        host.on_message(2, Message::RequestInteraction { event: world_objects::request(relay, true) }, now, &mut out);
+        host.on_message(9, Message::RequestInteraction { event: world_objects::request(relay, true) }, now, &mut out);
+        let mut broken = world_objects::request(relay, true);
+        broken.insert("k".into(), json!("?"));
+        host.on_message(2, Message::RequestInteraction { event: broken }, now, &mut out);
+        assert_eq!(host.take_object_requests(), vec![(2, relay, true)]);
+        assert!(host.take_object_requests().is_empty() && host.take_valve_requests().is_empty() && out.is_empty());
+        // the game accepted it: the table has it, and nobody else can have it
+        assert!(host.publish_object(Op { key: relay, on: true, by: 2 }));
+        assert!(!host.publish_object(Op { key: relay, on: true, by: 3 }), "taken once");
+        // the game's own changes come through its world events, and a passing moment still goes its old way
+        let (door, light) = (object(Kind::Door, 2), object(Kind::Light, 3));
+        host.send_world_events(vec![
+            world_objects::event(Op { key: door, on: true, by: 0 }),
+            world_objects::event(Op { key: light, on: false, by: 0 }),
+            valve_turn(1),
+        ]);
+        assert!(host.objects().is_on(relay) && host.objects().is_on(door) && !host.objects().is_on(light));
+        assert_eq!(host.objects().relays(), 1);
+        // a runner that joins now is told all of it after the snapshot, whether or not its world is loaded yet
+        let mut late = offline_session(false, "LATE");
+        let sent = host.join_state();
+        assert!(sent.iter().all(|m| m.encode().len() <= host.coop.link.max_payload() - 6), "every part fits the link");
+        let events = deliver(&mut late, sent);
+        assert!(events.iter().all(|e| !matches!(e, NetEvent::WorldEvent(_))), "object state is not a notice: {events:?}");
+        assert!(late.objects().is_on(relay) && late.objects().is_on(door) && !late.objects().is_on(light));
+        assert_eq!(late.objects().relays(), 1);
+        let mut ops = late.take_object_ops();
+        ops.sort_by_key(|op| op.key.x);
+        assert_eq!(ops, vec![Op { key: relay, on: true, by: 0 }, Op { key: door, on: true, by: 0 }, Op { key: light, on: false, by: 0 }]);
+        // a new route starts clean on both sides
+        deliver(&mut late, vec![start_message("ABCDE", "ROOM-ABCDE-4567", "STANDARD")]);
+        assert!(late.objects().is_empty() && late.take_object_ops().is_empty());
+        host.end_run("ROUTE RESTARTING");
+        host.start_run("ROOM-ABCDE-4567", "STANDARD");
+        assert!(host.objects().is_empty());
+        assert_eq!(host.join_state().len(), 1, "only the new route's snapshot");
+    }
+
+    #[test]
+    fn a_guest_keeps_what_the_host_published_for_chunks_it_has_not_built_and_is_told_a_door_every_time() {
+        use crate::net::world_objects::Kind;
+        let mut guest = offline_session(false, "GUEST");
+        let (coin, door) = (object(Kind::Coin, 1), object(Kind::Door, 2));
+        let take = Op { key: coin, on: true, by: 7 };
+        // no world yet (the route is still loading): nothing is dropped, nothing is a notice
+        let out = deliver(&mut guest, vec![Message::Event { event: world_objects::event(take) }]);
+        assert!(out.is_empty());
+        assert!(guest.objects().is_on(coin));
+        assert_eq!(guest.take_object_ops(), vec![take], "the game is handed it once it is there");
+        // a replay of a take is not handed over again: nobody is given the coin twice
+        deliver(&mut guest, vec![Message::Event { event: world_objects::event(take) }]);
+        assert!(guest.take_object_ops().is_empty());
+        // a door's state is handed over every time: this guest may have swung its own copy ahead of the host's answer
+        let open = Op { key: door, on: true, by: 0 };
+        deliver(&mut guest, vec![Message::Event { event: world_objects::event(open) }, Message::Event { event: world_objects::event(open) }]);
+        assert_eq!(guest.take_object_ops(), vec![open, open]);
+        // the window the game applied the table to is remembered, so the whole table is applied once per window
+        assert!(guest.objects_window_changed((0, 0, 1)));
+        assert!(!guest.objects_window_changed((0, 0, 1)));
+        assert!(guest.objects_window_changed((48, 0, 1)), "another chunk");
+        assert!(guest.objects_window_changed((48, 0, 2)), "another floor");
+        // a host never applies a published object back to itself, and a guest never publishes
+        let mut host = offline_session(true, "HOST");
+        let mut out = Vec::new();
+        host.on_message(2, Message::Event { event: world_objects::event(take) }, Instant::now(), &mut out);
+        assert!(host.objects().is_empty() && out.is_empty());
+        assert!(!guest.publish_object(Op { key: object(Kind::Item, 9), on: true, by: 1 }));
+        assert!(!guest.objects().is_on(object(Kind::Item, 9)));
+    }
+
+    #[test]
+    fn a_guest_asks_only_a_host_that_says_it_decides_the_objects() {
+        let mut guest = offline_session(false, "GUEST");
+        let key = object(world_objects::Kind::Door, 4);
+        assert!(!guest.host_decides_objects(), "nothing is known of the host yet");
+        assert!(!guest.request_object(key, true));
+        // an older host's room message has no sync key: its guests keep their doors and pickups to themselves
+        deliver(&mut guest, vec![room_message(Some(json!([])), json!([]))]);
+        assert!(!guest.host_decides_objects());
+        assert!(!guest.request_object(key, true), "nothing is sent that nobody would answer");
+        // a host of this build says so in its room message
+        let Message::Room { code, seed, mode, scale, mut rest } = room_message(Some(json!([])), json!([])) else { panic!("a room message") };
+        rest.insert(world_objects::SYNC_KEY.into(), json!(world_objects::SYNC_VERSION));
+        deliver(&mut guest, vec![Message::Room { code, seed, mode, scale, rest }]);
+        assert!(guest.host_decides_objects());
+        // the host itself always decides, and never asks
+        let mut host = offline_session(true, "HOST");
+        assert!(host.host_decides_objects() && !host.request_object(key, true));
+    }
+
+    #[test]
+    fn a_hunter_frame_overtaken_by_a_newer_one_is_dropped_and_an_older_hosts_frames_all_pass() {
+        let entry = |fr: Option<u32>| {
+            let mut e = json!({"index": 0, "id": "aki", "state": "CHASE", "position": [1.0, 2.0]});
+            if let Some(fr) = fr {
+                e[KEY_FRAME] = json!(fr);
+            }
+            e
+        };
+        let plain = vec![entry(None)];
+        let mut guest = offline_session(false, "GUEST");
+        // frame 5 on the unreliable channel, then frame 4 late on the reliable one: the older frame is not shown
+        let out = deliver(&mut guest, vec![Message::Hunters { data: vec![entry(Some(5))] }, Message::HuntersLarge { data: vec![entry(Some(4))] }]);
+        assert_eq!(out, vec![NetEvent::Hunters(plain.clone())], "the game gets the entries as the host wrote them, without the number");
+        // the other part of frame 5, and the next frame, are applied
+        let out = deliver(&mut guest, vec![Message::Hunters { data: vec![entry(Some(5))] }, Message::Hunters { data: vec![entry(Some(6))] }]);
+        assert_eq!(out.len(), 2);
+        // an older host numbers nothing, and a late joiner's snapshot parts carry no number: they always pass
+        let out = deliver(&mut guest, vec![Message::Hunters { data: plain.clone() }, Message::HuntersLarge { data: plain.clone() }]);
+        assert_eq!(out, vec![NetEvent::Hunters(plain.clone()), NetEvent::Hunters(plain.clone())]);
+        // a counter that started again (a new host process behind the same room) is followed, not refused for ever
+        assert!(deliver(&mut guest, vec![Message::Hunters { data: vec![entry(Some(100_000))] }]).len() == 1);
+        assert!(deliver(&mut guest, vec![Message::Hunters { data: vec![entry(Some(1))] }]).len() == 1);
+        assert!(deliver(&mut guest, vec![Message::Hunters { data: vec![entry(Some(u32::MAX))] }]).is_empty(), "one behind 0 after a wrap is still old");
+        // the host numbers each frame it sends, and the snapshot a joiner gets is the game's own entries
+        let mut host = offline_session(true, "HOST");
+        host.start_run("ROOM-ABCDE-0123", "STANDARD");
+        host.send_hunter_frame(plain.clone(), Difficulty::Standard, None, Instant::now());
+        assert_eq!(host.hunter_frame_no, Some(1));
+        let Message::Snapshot { state } = host.snapshot_message() else { panic!("a snapshot") };
+        assert!(state["hunters"][0].get(KEY_FRAME).is_none());
+        let mut stamped = plain.clone();
+        stamp_frame_number(&mut stamped, 7);
+        assert_eq!(stamped[0][KEY_FRAME], json!(7));
+        assert_eq!(take_frame_number(&mut stamped), Some(7));
+        assert_eq!(stamped, plain, "an older guest reads the entry by its other keys; the number is one more key to it");
+    }
+
+    #[test]
+    fn a_runner_that_joined_again_under_its_old_session_id_is_shown_again() {
+        let now = Instant::now();
+        let mut guest = offline_session(false, "GUEST");
+        assert!(guest.store_remote(7, sample(900, 1.0, 1.0), now));
+        // a reordered sample of the live connection is refused, as before
+        assert!(!guest.store_remote(7, sample(899, 2.0, 2.0), now + Duration::from_millis(40)));
+        // the runner dropped, and its new connection counts its samples from the start: after the silence they are taken
+        let back = now + remote_timeout() + Duration::from_secs(3);
+        assert!(guest.store_remote(7, sample(1, 5.0, 5.0), back), "not refused for ever as older than sample 900");
+        assert!(guest.store_remote(7, sample(2, 5.5, 5.0), back + Duration::from_millis(40)));
+        assert_eq!(guest.remotes[&7].sample.seq, 2);
+    }
+
+    #[test]
+    fn a_resting_runner_is_drawn_on_its_bed_or_seat_and_an_older_peer_sends_and_reads_no_rest() {
+        let now = Instant::now();
+        let lie = RestPose { lying: true, x: 14.0, y: 14.5, up: 0.5, yaw: 1.0 };
+        let smp = sample(1, 13.0, 14.0).with_rest(Some(lie));
+        let feet = smp.h.expect("the test sample has a height");
+        let v = remote_view(5, "Ann".into(), &Remote::new(smp, now, None), "DEFAULT".into(), (10, 10), now);
+        assert_eq!((v.x, v.y, v.yaw), (4.0, 4.5, 1.0), "the body is on the bed, not where the runner stood beside it");
+        assert_eq!(v.clip, Some(Pose::Lie), "lying, which is not the pose of a caught runner");
+        assert_eq!(v.h, feet + 0.5, "on the mattress");
+        assert_eq!(v.level, crate::game::level_stack::owning_level(feet), "the floor is the one its feet are on");
+        assert!(!v.moving && v.speed == 0.0);
+        let sit = RestPose { lying: false, ..lie };
+        let v = remote_view(5, "Ann".into(), &Remote::new(sample(1, 13.0, 14.0).with_rest(Some(sit)), now, None), "DEFAULT".into(), (10, 10), now);
+        assert_eq!(v.clip, Some(Pose::Sit));
+        // a runner pulled off its bed and downed is shown down where it is
+        let down = sample(1, 13.0, 14.0).with_rest(Some(lie)).with_revive(true, None);
+        let v = remote_view(5, "Ann".into(), &Remote::new(down, now, None), "DEFAULT".into(), (10, 10), now);
+        assert_eq!((v.x, v.y), (3.0, 4.0));
+        assert_ne!(v.clip, Some(Pose::Lie));
+        // the key is optional both ways: a standing runner sends none, and a sample without it (an older peer) parses
+        assert!(sample(1, 13.0, 14.0).to_json().get("rest").is_none());
+        let wire = smp.to_json();
+        assert_eq!(Sample::from_json(&wire).and_then(|s| s.rest), Some(lie));
+        let mut old = wire.clone();
+        old.as_object_mut().unwrap().remove("rest");
+        assert_eq!(Sample::from_json(&old).expect("an older peer's sample").rest, None);
+        // an older peer reads the sample by its other keys: with the rest key present, they are all still there
+        for key in ["seq", "depth", "x", "y", "yaw", "moving"] {
+            assert!(wire.get(key).is_some(), "{key}");
+        }
+        // a hostile rest (a body across the map, an unknown pose, a short list) is not believed
+        for bad in [json!(["lie", 9000.0, 14.5, 0.5, 1.0]), json!(["float", 14.0, 14.5, 0.5, 1.0]), json!(["sit", 14.0]), json!("lie")] {
+            let mut v = wire.clone();
+            v["rest"] = bad.clone();
+            assert_eq!(Sample::from_json(&v).expect("the sample itself is fine").rest, None, "{bad}");
+        }
     }
 }
 

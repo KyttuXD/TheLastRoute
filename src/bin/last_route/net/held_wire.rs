@@ -153,7 +153,7 @@ pub fn lamp_point(min: Vec3, max: Vec3) -> Vec3 {
 /// and not once its body has faded out.
 pub fn shown(held: Option<Item>, hiding: bool, pose: crate::render::anim::runner::Pose, alpha: f32) -> Option<Item> {
     use crate::render::anim::runner::Pose;
-    if hiding || alpha < 0.05 || matches!(pose, Pose::Down | Pose::Climb) {
+    if hiding || alpha < 0.05 || matches!(pose, Pose::Down | Pose::Lie | Pose::Climb) {
         return None;
     }
     held

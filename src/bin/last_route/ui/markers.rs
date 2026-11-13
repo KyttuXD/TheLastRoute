@@ -144,6 +144,7 @@ pub fn remote_markers(remotes: &[RemoteView]) -> Vec<Marker> {
             yaw: r.yaw,
             colour: super::map::teammate_colour(r.peer),
             is_bot: false,
+            // only a caught runner is DOWN: one lying on a bed (`Pose::Lie`) or sitting keeps its tag and gets no ring
             concealed: hidden_for_good(r) || r.clip == Some(Pose::Down),
             downed: r.clip == Some(Pose::Down),
             age_s: 0.0,
@@ -438,6 +439,15 @@ mod tests {
         down.clip = Some(Pose::Down);
         let ms = remote_markers(&[peer_view(1, "ANN"), down]);
         assert!(!ms[0].downed && ms[1].downed);
+    }
+
+    #[test]
+    fn a_remote_lying_on_a_bed_or_sitting_is_not_marked_down_and_keeps_its_tag() {
+        let (mut asleep, mut seated) = (peer_view(2, "Bea"), peer_view(3, "Cy"));
+        asleep.clip = Some(Pose::Lie);
+        seated.clip = Some(Pose::Sit);
+        let ms = remote_markers(&[asleep, seated]);
+        assert!(ms.iter().all(|m| !m.downed && !m.concealed), "resting is not DOWN: only a caught runner is");
     }
 
     #[test]

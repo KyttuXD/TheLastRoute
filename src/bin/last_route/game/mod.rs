@@ -40,6 +40,8 @@ mod inferno_terrain_tests;
 mod frame_fix_tests;
 #[cfg(test)]
 mod danger_tests;
+#[cfg(test)]
+mod flashlight_on_tests;
 mod items;
 pub mod meters;
 pub mod seating;
@@ -276,6 +278,9 @@ pub struct Game {
     played: instruments::Played,
     /// Host: the world events the game raised this frame for the guests (game/hunting.rs), taken by the app.
     pub hunter_out: crate::net::hunter_events::Outbox,
+    /// Guest: when the last pack-taking request (a battery or a floor item) went to the host, until its answer comes
+    /// (`pack_ask_busy`): a second one meanwhile could be granted by the host into a pack that has no room for it.
+    pub(super) pack_ask: Option<crate::shared::clock::Instant>,
 
     pub focus: Option<Focus>,
     pub toast: String,
@@ -445,6 +450,7 @@ impl Game {
             rest: Default::default(),
             played: Default::default(),
             hunter_out: Default::default(),
+            pack_ask: None,
             focus: None,
             toast: String::new(),
             toast_t: 0.0,
@@ -605,6 +611,7 @@ impl Game {
             rest: Default::default(),
             played: Default::default(),
             hunter_out: Default::default(),
+            pack_ask: None,
             focus: None,
             toast: String::new(),
             toast_t: 0.0,
@@ -1110,6 +1117,8 @@ impl Game {
                 // a hunter that chose a player bot (update_hunters) is no danger cue for the runner
                 targets_runner: !h.target_is_bot && !h.shadow,
             }).collect();
+            // a hunter touching a runner it cannot capture (admin god mode) starts no chase cue (audio/world.rs)
+            crate::audio::world::set_runner_capture_immune(self.admin_flags().god);
             crate::audio::world::update(dt, &listener, &hunters);
             // the bed under the runner: a level layer's bed (sewer, Inferno) wins, else the room's region bed (corridors
             // fade the bed out)

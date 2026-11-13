@@ -321,7 +321,7 @@ impl Room {
         }
         if !self.route_on {
             // the route is ended: what the guests report is dropped, nothing steps, nobody is hunted
-            let _ = (self.net.take_guest_events(), self.net.take_valve_requests(), self.net.take_burst_requests());
+            let _ = (self.net.take_guest_events(), self.net.take_valve_requests(), self.net.take_burst_requests(), self.net.take_object_requests());
             return Status::Running;
         }
         // the guests become the hunters' targets, and the window follows the party anchor
@@ -495,6 +495,9 @@ impl Room {
                 g.host_burst_pipe(&req, (x, y), depth);
             }
         }
+        // the world objects the guests asked for (pickups, relays, doors, lights): this room decides each one and tells
+        // every guest, and its own window takes what the table says when it moves (game/guest_apply.rs)
+        g.sync_world_objects(&mut self.net, &self.sim.content);
         self.net.set_relays_sabotaged(g.relays_sabotaged_count());
     }
 
@@ -515,8 +518,10 @@ impl Room {
             self.captures.push(c);
         }
         if !self.busy() {
-            // nobody to tell: drop the frame's events so none piles up
-            let _ = self.game_mut().hunter_out.take();
+            // nobody to tell now, but a change that lasts (a valve, a burst pipe, a safe room, a world object) is still
+            // kept for the next runner who joins; a passing moment is dropped there, so nothing piles up
+            let events = self.game_mut().hunter_out.take();
+            self.net.send_world_events(events);
             return;
         }
         let (frame, grab, diff) = {
@@ -1021,6 +1026,79 @@ mod tests {
         assert!(!room.game().hunters.is_empty());
     }
 
+
+    #[test]
+    fn a_relay_one_guest_recovers_is_gone_for_every_guest_and_a_late_one_and_cannot_be_recovered_twice() {
+        use crate::net::world_objects::{Kind, ObjKey, Op};
+        let hub = TestHub::start();
+        let opts = options(&hub);
+        let mut room = open_room(&hub, &opts);
+        // a relay of the room's own window, named as every machine names it: by its level and absolute cell
+        let (key, at) = {
+            let g = room.game();
+            let Some(cell) = g.fac.relays.first().copied() else { return };
+            let o = g.window_origin();
+            let key = ObjKey { kind: Kind::Relay, level: 1 - g.depth, x: cell.x + o.0, y: cell.y + o.1 };
+            (key, (key.x as f32 + 0.5, key.y as f32 + 0.5))
+        };
+        let mut a = Bot::join(&hub, "BOT-A", at);
+        let mut b = Bot::join(&hub, "BOT-B", at);
+        drive(&mut room, &mut [&mut a, &mut b], |room, bots| {
+            room.net.guest_count() == 2 && room.net.guest_poses().len() == 2 && bots.iter().all(|b| b.started && b.net.host_decides_objects())
+        });
+        assert!(a.net.host_decides_objects() && b.net.host_decides_objects(), "the room says it decides the objects");
+        let before = room.game().relays_collected;
+        // both guests stand at the relay and press at the same moment
+        assert!(a.net.request_object(key, true));
+        assert!(b.net.request_object(key, true));
+        drive(&mut room, &mut [&mut a, &mut b], |_, bots| bots.iter().all(|b| b.net.objects().is_on(key)));
+        assert!(room.net.objects().is_on(key), "the room's table has it");
+        assert_eq!(room.net.objects().relays(), 1);
+        assert_eq!(room.game().relays_collected, before + 1, "recovered once, whoever pressed");
+        // every guest is told the same one name: that guest has the relay, the other only sees it go
+        // (the room also tells its guests about doors; only the relay is looked at here)
+        let relay_ops = |bot: &mut Bot| -> Vec<Op> { bot.net.take_object_ops().into_iter().filter(|op| op.key.kind == Kind::Relay).collect() };
+        let (told_a, told_b) = (relay_ops(&mut a), relay_ops(&mut b));
+        assert_eq!(told_a.len(), 1, "{told_a:?}");
+        assert_eq!(told_a, told_b);
+        let winner = told_a[0].by as i64;
+        assert!(winner == a.net.local_peer_id() || winner == b.net.local_peer_id(), "{told_a:?}");
+        assert_eq!(told_a[0], Op { key, on: true, by: told_a[0].by });
+        // asking again changes nothing
+        assert!(a.net.request_object(key, true));
+        let mut passes = 0;
+        drive(&mut room, &mut [&mut a, &mut b], |_, _| {
+            passes += 1;
+            passes > 20
+        });
+        assert_eq!(room.game().relays_collected, before + 1);
+        assert!(relay_ops(&mut a).is_empty() && relay_ops(&mut b).is_empty());
+        // a runner that joins later is told, before it has built that chunk or any other
+        let mut late = Bot::join(&hub, "BOT-LATE", (at.0 + 3.0, at.1));
+        drive(&mut room, &mut [&mut a, &mut b, &mut late], |_, bots| bots[2].started && bots[2].net.objects().is_on(key));
+        assert_eq!(late.net.objects().relays(), 1);
+    }
+
+    #[test]
+    fn a_lasting_change_in_an_empty_room_is_kept_for_the_next_guest() {
+        use crate::net::world_objects::{self, Kind, ObjKey, Op};
+        let hub = TestHub::start();
+        let opts = options(&hub);
+        let mut room = open_room(&hub, &opts);
+        drive(&mut room, &mut [], |room, _| room.net.link_alive() && room.net.linked());
+        assert!(!room.busy());
+        // the game raises a change with nobody in the room (a hunter's doing, or the room's own)
+        let key = ObjKey { kind: Kind::Item, level: 0, x: 1_000, y: 1_000 };
+        room.game_mut().hunter_out.push_state(world_objects::event(Op { key, on: true, by: 0 }));
+        assert_eq!(room.frame(Duration::from_millis(1)), Status::Running);
+        assert!(room.net.objects().is_on(key), "kept, though nobody was there to be told");
+        assert!(room.game_mut().hunter_out.take().is_empty(), "and nothing piles up in the game");
+        let start = room.game().fac.start.center();
+        let origin = room.game().window_origin();
+        let mut late = Bot::join(&hub, "BOT-LATE", (start.0 + origin.0 as f32, start.1 + origin.1 as f32));
+        drive(&mut room, &mut [&mut late], |_, bots| bots[0].started && bots[0].net.objects().is_on(key));
+        assert!(late.net.objects().is_on(key));
+    }
 
     // ---- the public route's room -------------------------------------------------------------------------------------
 

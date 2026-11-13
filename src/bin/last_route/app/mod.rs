@@ -1153,6 +1153,8 @@ pub async fn run(
                         crate::net::runner_figure::local_hide(g),
                     )
                     .with_jump(g.p.feet_y)
+                    // lying on a bed or sitting: the others draw the body there (game/bed.rs)
+                    .with_rest(g.rest_wire())
             }),
             _ => None,
         };
@@ -1294,6 +1296,12 @@ pub async fn run(
                     }
                 }
                 n.set_relays_sabotaged(g.relays_sabotaged_count());
+            }
+        }
+        // the room's world objects (what is taken, doors, lights): the host decides, every runner applies (game/guest_apply.rs)
+        if loading.is_none() {
+            if let (Some(n), Some(g)) = (net.as_mut(), playing.as_mut()) {
+                g.sync_world_objects(n, &w.content);
             }
         }
         // the host's hunters and their events go to the guests (a guest never sends them)

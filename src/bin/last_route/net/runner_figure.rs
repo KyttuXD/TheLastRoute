@@ -180,6 +180,9 @@ pub fn local_state(g: &Game) -> RunnerState {
         backward: false,
         // the host plays its own jump in time
         air_phase: None,
+        // resting on a bed or a seat: the other runners draw the lying or sitting pose (game/bed.rs)
+        lying: g.rest.lying(),
+        sitting: g.rest.sitting(),
     }
 }
 
@@ -311,7 +314,8 @@ thread_local! {
 
 /// The still pose of `pose` (its clip at `phase` of its length), for a figure with no view of its own.
 fn still_pose(rig: &Rig, pose: Pose, phase: f32) -> Vec<Local> {
-    let clip = driver::config().clips.get(pose.key()).map(String::as_str).unwrap_or(pose.key());
+    let clip = pose.clip_name();
+    let clip = clip.as_str();
     let mut p = AnimPlayer::default();
     p.play(rig, clip, 0.0);
     p.seek(phase.clamp(0.0, 1.0) * rig.length(clip));
@@ -459,9 +463,9 @@ pub fn looked_head(base: f32, look: f32) -> f32 {
 /// The most a head may turn from the body with a bot's look added (radians): a safety cap above the data's limit.
 const LOOK_YAW_CAP: f32 = 1.5;
 
-/// Whether a body in this state holds its head straight: down, stunned, or on a ladder.
+/// Whether a body in this state holds its head straight: down, lying on a bed, stunned, or on a ladder.
 fn holds_head(state: &RunnerState) -> bool {
-    matches!(state.pose(), Pose::Down | Pose::Stun | Pose::Climb)
+    matches!(state.pose(), Pose::Down | Pose::Lie | Pose::Stun | Pose::Climb)
 }
 
 /// Aims one driven figure's head and body at its facing `yaw`: the head turns first, and the body follows once the head is
@@ -1120,6 +1124,25 @@ mod tests {
         let all: Vec<String> = rig.bones.iter().map(|b| b.name.clone()).collect();
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         assert!(peak(&rig, "idle", &all) <= 10.0, "the idle clip barely moves any joint");
+    }
+
+    #[test]
+    fn a_resting_runner_is_drawn_sitting_or_lying_and_both_rigs_have_the_clips() {
+        let seated = remote_state(&remote(Some(Pose::Sit), false, false, false, 0.0));
+        assert_eq!(seated.pose(), Pose::Sit);
+        assert_eq!(driver::clip_for(&seated).clip, driver::SIT_CLIP);
+        assert!(!holds_head(&seated), "a seated runner still looks around");
+        let lying = remote_state(&remote(Some(Pose::Lie), false, false, false, 0.0));
+        assert_eq!(lying.pose(), Pose::Lie);
+        assert_eq!(driver::clip_for(&lying).clip, driver::clip_for(&remote_state(&remote(Some(Pose::Down), false, false, false, 0.0))).clip, "a bed and a catch lie the same way");
+        assert!(holds_head(&lying));
+        for slim in [false, true] {
+            let rig = player_rig(slim).expect("rig");
+            for pose in [Pose::Sit, Pose::Lie] {
+                assert!(rig.has_clip(&pose.clip_name()), "slim={slim}: {pose:?}");
+                assert_eq!(Pose::from_wire(pose.wire()), None, "{pose:?} never travels as a clip name, so an older peer never meets it");
+            }
+        }
     }
 
     #[test]

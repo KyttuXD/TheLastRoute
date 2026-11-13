@@ -396,7 +396,15 @@ impl Tracker {
 pub struct Outbox {
     gate: Tracker,
     queue: Vec<Map<String, Value>>,
+    /// Guest: the world objects this runner asked the host to change (`net/world_objects.rs`), until the app sends them.
+    object_asks: Vec<(super::world_objects::ObjKey, bool)>,
+    /// Guest: the host of this room decides the world objects (it said so in its room message), so a pickup, a door or a
+    /// light switch is asked for instead of being changed here alone. False for a host, a solo run and an older host.
+    pub host_decides_objects: bool,
 }
+
+/// Most events and object asks an [`Outbox`] holds: a run whose loop never takes them cannot grow it without end.
+const OUTBOX_MAX: usize = 1024;
 
 impl Outbox {
     /// Queues an event of `kind` with `fields` when the rules send that kind on this difficulty and its gap has passed.
@@ -424,6 +432,26 @@ impl Outbox {
     /// Takes the queued events, oldest first.
     pub fn take(&mut self) -> Vec<Map<String, Value>> {
         std::mem::take(&mut self.queue)
+    }
+
+    /// Queues an event that sets lasting world state (a world object taken, a door, a light). No rule gates it: a
+    /// state change that is not sent leaves the runners in different worlds.
+    pub fn push_state(&mut self, event: Map<String, Value>) {
+        if self.queue.len() < OUTBOX_MAX {
+            self.queue.push(event);
+        }
+    }
+
+    /// Guest: queues a request to the host to make world object `key` `on` (taken, open or lit).
+    pub fn ask_object(&mut self, key: super::world_objects::ObjKey, on: bool) {
+        if self.object_asks.len() < OUTBOX_MAX {
+            self.object_asks.push((key, on));
+        }
+    }
+
+    /// Takes the queued object requests, oldest first.
+    pub fn take_object_asks(&mut self) -> Vec<(super::world_objects::ObjKey, bool)> {
+        std::mem::take(&mut self.object_asks)
     }
 }
 
@@ -491,7 +519,18 @@ pub const STATE_LOG_MAX: usize = 1024;
 /// pipes and safe rooms match the host's; replaying them is harmless (`valve_events`). Events with no key are not kept.
 #[derive(Debug, Default)]
 pub struct StateLog {
-    entries: Vec<(String, Map<String, Value>)>,
+    entries: Vec<(String, Map<String, Value>, Instant)>,
+}
+
+/// The key a replayed event carries for how long ago it happened, in seconds ([`StateLog::replay`]). Optional: an older
+/// guest ignores it and starts the flood when the replay arrives.
+pub const KEY_AGE: &str = "age";
+/// A replayed event younger than this carries no age: the difference is not seen.
+const AGE_WORTH_SENDING_S: f64 = 0.5;
+
+/// The age a replayed event says it has, in seconds; 0 without the key, for a bad value, and never more than a day.
+pub fn event_age(event: &Map<String, Value>) -> f32 {
+    event.get(KEY_AGE).and_then(Value::as_f64).filter(|a| a.is_finite() && *a > 0.0).map_or(0.0, |a| a.min(86_400.0) as f32)
 }
 
 impl StateLog {
@@ -499,18 +538,39 @@ impl StateLog {
     /// replay runs in the order things last happened. Returns whether it was kept.
     pub fn record(&mut self, event: &Map<String, Value>) -> bool {
         let Some(key) = state_key(event) else { return false };
-        if let Some(at) = self.entries.iter().position(|(k, _)| *k == key) {
+        if let Some(at) = self.entries.iter().position(|(k, _, _)| *k == key) {
             self.entries.remove(at);
         } else if self.entries.len() >= STATE_LOG_MAX {
             self.entries.remove(0);
         }
-        self.entries.push((key, event.clone()));
+        self.entries.push((key, event.clone(), Instant::now()));
         true
     }
 
     /// The kept events, oldest first.
     pub fn events(&self) -> impl Iterator<Item = &Map<String, Value>> {
-        self.entries.iter().map(|(_, e)| e)
+        self.entries.iter().map(|(_, e, _)| e)
+    }
+
+    /// The kept events as a late joiner is sent them at `now`, oldest first: a valve turn or a burst pipe that happened a
+    /// while ago says how long ago ([`KEY_AGE`]), so the joiner's water stands where the host's does and does not start
+    /// filling from empty. Any other event, and one that only just happened, is sent as it was.
+    pub fn replay(&self, now: Instant) -> Vec<Map<String, Value>> {
+        self.entries
+            .iter()
+            .map(|(_, event, at)| {
+                let mut event = event.clone();
+                let age = now.saturating_duration_since(*at).as_secs_f64();
+                let timed = matches!(
+                    event.get("what").and_then(Value::as_str),
+                    Some(super::valve_events::VALVE | super::valve_events::BURST)
+                );
+                if timed && age >= AGE_WORTH_SENDING_S {
+                    event.insert(KEY_AGE.into(), json!((age * 10.0).round() / 10.0));
+                }
+                event
+            })
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -904,6 +964,45 @@ mod tests {
         }
         assert_eq!(log.len(), STATE_LOG_MAX);
         assert_eq!(log.events().next().unwrap()["flow_id"], json!("BRK:0:-1:0:10"), "the oldest went first");
+    }
+
+    #[test]
+    fn a_replayed_flood_says_how_long_ago_it_started_and_an_older_guest_reads_it_unchanged() {
+        let mut log = StateLog::default();
+        let burst = obj(json!({"what": "stream_pipe_burst", "flow_id": "BRK:0:-1:0:9"}));
+        let safe = obj(json!({"what": "stream_safe_room", "room_id": "R:1:SAFE", "integrity": 0, "breached": true}));
+        log.record(&burst);
+        log.record(&safe);
+        let now = Instant::now();
+        assert_eq!(log.replay(now), vec![burst.clone(), safe.clone()], "what only just happened is sent as it was");
+        let later = log.replay(now + Duration::from_secs(30));
+        let age = event_age(&later[0]);
+        assert!((29.5..=31.0).contains(&age), "the burst is half a minute old: {age}");
+        assert_eq!(later[1], safe, "a safe room's status has no clock");
+        // an older guest reads only the flow id: the extra key changes nothing for it
+        assert_eq!(crate::net::valve_events::parse_burst(&later[0]), Some("BRK:0:-1:0:9".to_string()));
+        assert_eq!(event_age(&burst), 0.0, "no key reads as now");
+        let mut odd = burst.clone();
+        odd.insert(KEY_AGE.into(), json!(-5));
+        assert_eq!(event_age(&odd), 0.0, "an age in the future is not believed");
+        odd.insert(KEY_AGE.into(), json!("old"));
+        assert_eq!(event_age(&odd), 0.0);
+    }
+
+    #[test]
+    fn the_outbox_keeps_a_state_event_whatever_the_rules_say_and_hands_object_asks_over_once() {
+        let mut out = Outbox::default();
+        assert!(!out.host_decides_objects, "a host or a solo run decides its own objects");
+        let key = crate::net::world_objects::ObjKey { kind: crate::net::world_objects::Kind::Door, level: 0, x: 3, y: 4 };
+        out.push_state(crate::net::world_objects::event(crate::net::world_objects::Op { key, on: true, by: 0 }));
+        out.ask_object(key, false);
+        assert_eq!(out.take().len(), 1);
+        assert_eq!(out.take_object_asks(), vec![(key, false)]);
+        assert!(out.take().is_empty() && out.take_object_asks().is_empty());
+        for _ in 0..OUTBOX_MAX + 5 {
+            out.ask_object(key, true);
+        }
+        assert_eq!(out.take_object_asks().len(), OUTBOX_MAX, "a loop that never takes them cannot grow the queue for ever");
     }
 
     #[test]

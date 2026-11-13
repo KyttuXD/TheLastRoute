@@ -17,10 +17,13 @@
 //!   caught, blocked or timed out ([`Game::guest_released`]) and the grace has passed.
 //! * With no guest in play the hunters do not run at all: an empty room costs one sample check a frame.
 //!
-//! Limits (see headless/dedicated.rs): relays, pickups and doors are still local to each client, so the room's relay
-//! count (and with it the hunter population) is set at the start ([`Game::relays_collected`]) and does not grow; a guest
-//! in a safe room is protected only where `fac.safe_zone` says so; a guest's flashlight is read from its sample, so a lit guest
-//! is seen with the beam its sample says.
+//! Relays, pickups, doors and lights are the room's (`net/world_objects.rs`, `Game::sync_world_objects`): a guest asks,
+//! this game decides and tells every guest. The room's relay count starts at the difficulty's activation count
+//! ([`Game::relays_collected`], set by the dedicated loop) and grows with every relay a guest recovers, and the hunter
+//! population with it.
+//!
+//! Limits (see headless/dedicated.rs): a guest in a safe room is protected only where `fac.safe_zone` says so; a guest's
+//! flashlight is read from its sample, so a lit guest is seen with the beam its sample says.
 
 use super::{pdist, Game};
 use crate::audio::Sounds;

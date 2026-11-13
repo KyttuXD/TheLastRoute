@@ -15,6 +15,76 @@ thread_local! {
     pub(super) static BOT_BODIES: std::cell::RefCell<Vec<crate::hunters::director::BotBody>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 use serde_json::{json, Value};
+use crate::net::interp;
+use crate::net::world_sync::Sample;
+
+/// Guest: one hunter's received places, played back a little late so it glides between the host's 20 Hz frames instead
+/// of stepping (the runner smoothing of `net/interp.rs`, fed with the hunter's place as a bare sample). Places are
+/// absolute cells, so a window recentre does not disturb the track.
+struct HunterTrack {
+    track: interp::Track,
+    seq: u32,
+    /// Where the hunter was last drawn and where the newest frame put it. A hunter standing at neither was moved by
+    /// something else (another game on this thread, a rebuild), and its track is dropped.
+    shown_abs: (f32, f32),
+    target_abs: (f32, f32),
+    /// The newest frame carried a facing, so the drawn facing follows the track too.
+    turns: bool,
+}
+
+impl HunterTrack {
+    fn new(rules: &interp::Rules, abs: (f32, f32)) -> HunterTrack {
+        HunterTrack { track: interp::Track::new(rules), seq: 0, shown_abs: abs, target_abs: abs, turns: false }
+    }
+
+    /// A host frame put the hunter at absolute cell `abs`, facing `facing`, feet at absolute height `y` on `level`.
+    fn push(&mut self, now: f64, abs: (f32, f32), facing: (f32, f32), level: i32, y: f32, rules: &interp::Rules) {
+        self.seq = self.seq.wrapping_add(1);
+        self.turns = facing.0.hypot(facing.1) > 1e-3;
+        let yaw = if self.turns { facing.1.atan2(facing.0) } else { self.track.newest().map_or(0.0, |s| s.yaw) };
+        self.track.push(now, Sample::at(self.seq, abs.0, abs.1, yaw, 1i32.saturating_sub(level), y), rules);
+        self.target_abs = abs;
+    }
+
+    /// Where the hunter is drawn at `now`: its absolute cell, its facing when the frames carry one, and its height. A
+    /// jump too long to be a walk, or onto another floor, is not glided: the hunter appears at the new place.
+    fn shown(&mut self, now: f64, rules: &interp::Rules) -> Option<((f32, f32), Option<(f32, f32)>, Option<f32>)> {
+        let s = self.track.shown(now, rules)?;
+        self.shown_abs = (s.x, s.y);
+        Some(((s.x, s.y), self.turns.then(|| (s.yaw.cos(), s.yaw.sin())), s.h))
+    }
+}
+
+/// Most hunters with a display track (a memory bound; a route has a few dozen hunter ids at the very most).
+const HUNTER_TRACKS_MAX: usize = 256;
+/// A hunter this far (cells) from both the place it was last drawn at and the place its newest frame gave is not the
+/// one its track describes any more.
+const HUNTER_TRACK_SLACK: f32 = 0.05;
+
+thread_local! {
+    /// Guest: the display track of each hunter the host's frames place, by hunter id (`Game::apply_hunter_frame` feeds
+    /// them, `Game::glide_guest_hunters` reads them). The game runs on one thread; a track is tied to its hunter by the
+    /// place check above, not by the game it came from.
+    static HUNTER_TRACKS: std::cell::RefCell<std::collections::HashMap<String, HunterTrack>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Guest: records where a host frame put hunter `id` (see [`HunterTrack::push`]).
+fn note_hunter_place(id: &str, abs: (f32, f32), facing: (f32, f32), level: i32, y: f32) {
+    let rules = interp::rules();
+    let now = interp::secs(crate::shared::clock::Instant::now());
+    HUNTER_TRACKS.with(|tracks| {
+        let mut tracks = tracks.borrow_mut();
+        if !tracks.contains_key(id) {
+            if tracks.len() >= HUNTER_TRACKS_MAX {
+                tracks.clear();
+            }
+            tracks.insert(id.to_string(), HunterTrack::new(rules, abs));
+        }
+        if let Some(track) = tracks.get_mut(id) {
+            track.push(now, abs, facing, level, y, rules);
+        }
+    });
+}
 use crate::hunters::gimmicks::{nyxie::Wake, Ctx, Event, Gimmick};
 use crate::hunters::noise_events::{self, NoiseEvent, NoiseKind};
 use crate::hunters::water::WaterField;
@@ -154,6 +224,7 @@ impl Game {
                 },
             };
             let Some(h) = self.hunter_at_mut(spot) else { continue };
+            let mut placed = false;
             if let (Some(x), Some(y)) = (finite(&entry["position"][0]), finite(&entry["position"][1])) {
                 // a frame from a room with its own window: the cells are that window's, moved into this one
                 let shift = match (entry["origin"][0].as_i64(), entry["origin"][1].as_i64()) {
@@ -168,6 +239,7 @@ impl Game {
                 };
                 if let Some(shift) = shift {
                     h.pos = (x + shift.0, y + shift.1);
+                    placed = true;
                 }
             }
             if let (Some(x), Some(y)) = (finite(&entry["facing"][0]), finite(&entry["facing"][1])) {
@@ -201,8 +273,53 @@ impl Game {
             }
             h.level = level.unwrap_or(viewer);
             h.y = finite(&entry["presentation_y"]).unwrap_or_else(|| floor_y_of(h.level));
+            // the place is set here at once (it is the host's word); what is drawn glides to it (`glide_guest_hunters`)
+            if placed {
+                note_hunter_place(id, (h.pos.0 + window.0 as f32, h.pos.1 + window.1 as f32), h.facing, h.level, h.y);
+            }
         }
         self.move_crossers();
+    }
+
+    /// Guest: puts each hunter of this floor where its track says it is now, between the host's last frames, so it moves
+    /// every drawn frame and not twenty times a second. A teleport or a floor change snaps (`interp::Track::shown`). A
+    /// hunter with no track, or one that something else moved, is left where it is.
+    fn glide_guest_hunters(&mut self) {
+        if self.hunters.is_empty() {
+            return;
+        }
+        let rules = interp::rules();
+        let now = interp::secs(crate::shared::clock::Instant::now());
+        let o = self.window_origin();
+        let (ox, oy) = (o.0 as f32, o.1 as f32);
+        let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() <= HUNTER_TRACK_SLACK && (a.1 - b.1).abs() <= HUNTER_TRACK_SLACK;
+        HUNTER_TRACKS.with(|tracks| {
+            let mut tracks = tracks.borrow_mut();
+            if tracks.is_empty() {
+                return;
+            }
+            for h in self.hunters.iter_mut() {
+                let abs = (h.pos.0 + ox, h.pos.1 + oy);
+                let stale = match tracks.get(h.def.id.as_str()) {
+                    None => continue,
+                    Some(t) => !near(abs, t.shown_abs) && !near(abs, t.target_abs),
+                };
+                if stale {
+                    tracks.remove(h.def.id.as_str());
+                    continue;
+                }
+                let Some(track) = tracks.get_mut(h.def.id.as_str()) else { continue };
+                if let Some((at, facing, y)) = track.shown(now, rules) {
+                    h.pos = (at.0 - ox, at.1 - oy);
+                    if let Some(facing) = facing {
+                        h.facing = facing;
+                    }
+                    if let Some(y) = y {
+                        h.y = y;
+                    }
+                }
+            }
+        });
     }
 
     pub(super) fn target(&self) -> Target {
@@ -270,6 +387,8 @@ impl Game {
             for h in self.resident_hunters.iter_all_mut() {
                 h.tick_net_mechanic(dt);
             }
+            // between two of the host's frames the hunters glide (the frames come 20 times a second)
+            self.glide_guest_hunters();
             return;
         }
         // a room with no local runner hunts its guests (game/remote_targets.rs); with none in play it runs nothing at all
@@ -426,8 +545,13 @@ impl Game {
                 flashlight_dead: self.p.lamp <= 0.0,
             };
             let held_before = ability_held(&self.hunters[i]);
+            let chasing_before = self.hunters[i].state == State::Chase;
             let (c, ev) =
                 self.hunters[i].update(dt, &ctx, hunter_target, self.depth, self.relays_collected, prof);
+            // admin god mode refuses this grab (`resolve_capture`): the chaser is held off the runner, still chasing
+            if c && !chose_bot && guest_peer.is_none() && admin.god {
+                self.hold_refused_capture(i, chasing_before);
+            }
             // the host tells the guests when a hunter starts a lunge or a pounce (the rising edge only)
             if let (None, Some((kind, ability))) = (held_before, ability_held(&self.hunters[i])) {
                 let id = self.hunters[i].def.id.clone();
@@ -545,6 +669,31 @@ impl Game {
         }
         // a hunter whose derived level changed (it walked a flight or a ladder) moves to the list of that level
         self.move_crossers();
+    }
+
+    /// Admin god mode refused hunter `i`'s grab this frame. Without this the chaser walked onto the runner, "arrived"
+    /// at its goal (the brain's Chase -> Search), saw the runner again at the next sense tick (Search -> Chase) and so
+    /// flapped about ten times a second, each flap a new chase for the sound. The hunter is kept just outside the
+    /// brain's arrival distance, where it does not arrive, and a chase that arrived anyway (a long frame) stays a chase.
+    /// Only under god mode: a normal runner is caught at this point and never reaches here.
+    fn hold_refused_capture(&mut self, i: usize, chasing_before: bool) {
+        const HOLD: f32 = HUNTER_ARRIVAL_DISTANCE + 0.2;
+        let at = self.p.pos;
+        let h = &mut self.hunters[i];
+        if chasing_before && h.state == State::Search {
+            h.state = State::Chase;
+            h.search_target = None;
+        }
+        if h.walk.is_some() {
+            return;
+        }
+        let gap = pdist(h.pos, at);
+        if gap >= HOLD {
+            return;
+        }
+        let dir = if gap > 1e-3 { ((h.pos.0 - at.0) / gap, (h.pos.1 - at.1) / gap) } else { (-h.facing.0, -h.facing.1) };
+        let want = (at.0 + dir.0 * HOLD, at.1 + dir.1 * HOLD);
+        h.pos = self.fac.clear_toward(h.pos, want, HUNTER_RADIUS);
     }
 
     /// The runner is caught by active hunter `i`: the struggle starts, or the run ends when the hunter's capture cannot
@@ -2195,7 +2344,8 @@ mod resident_floor_tests {
         let prof = g.prof();
         let sounds = Sounds::default();
         let (mut prev, mut worst, mut rose, mut walked, mut landed) = (None::<((f32, f32), f32)>, 0.0f32, 0.0f32, false, false);
-        for _ in 0..(60 * 120) {
+        // the seed's chaser starts about 80 m from the flight and walks it at the sewer's pace: 180 s is ample
+        for _ in 0..(60 * 180) {
             g.update_hunters(FRAME, &prof, &sounds);
             let b = probe(&g).expect("the chaser is still in a list");
             if let Some((p, y)) = prev {
@@ -2420,5 +2570,89 @@ mod knock_tuning_tests {
         let (base, falloff) = parse_knock_rules(r#"{"base_volume": 0.1, "falloff_distance": 40.0}"#);
         assert!(knock_volume_with(base, falloff, 20.0) > 0.0, "a longer falloff still carries at 20 m");
         assert!((knock_volume_with(base, falloff, 0.0) - 0.1).abs() < 1e-6);
+    }
+}
+
+/// A guest's hunters glide between the host's frames (issue 11 of docs/MULTIPLAYER_SYNC_AUDIT.md).
+#[cfg(test)]
+mod hunter_glide_tests {
+    use super::*;
+    use crate::content::Content;
+    use crate::world::catalog::Catalog;
+
+    fn track(points: &[(f64, (f32, f32), f32)]) -> (HunterTrack, interp::Rules) {
+        let rules = interp::Rules::default();
+        let mut t = HunterTrack::new(&rules, points[0].1);
+        for &(time, at, y) in points {
+            t.push(time, at, (1.0, 0.0), 0, y, &rules);
+        }
+        (t, rules)
+    }
+
+    #[test]
+    fn a_guests_hunter_is_drawn_between_two_host_frames_and_not_only_on_them() {
+        // two frames 50 ms apart (the host's 20 Hz), one cell apart
+        let (mut t, rules) = track(&[(10.0, (100.0, 40.0), 0.0), (10.05, (101.0, 40.0), 0.0)]);
+        let late = t.track.delay(&rules) as f64;
+        let mut last = 100.0f32;
+        let mut seen_between = false;
+        // a guest at 200 fps draws ten frames in that time: the hunter moves on each of them, never backwards
+        for step in 0..=10 {
+            let now = 10.0 + late + 0.005 * step as f64;
+            let ((x, y), facing, h) = t.shown(now, &rules).expect("a place");
+            assert!(x >= last - 1e-4 && (100.0..=101.0 + 1e-3).contains(&x), "step {step}: {x}");
+            assert_eq!(y, 40.0);
+            assert_eq!(h, Some(0.0));
+            let facing = facing.expect("the frames carry a facing");
+            assert!((facing.0 - 1.0).abs() < 1e-5 && facing.1.abs() < 1e-5);
+            seen_between |= x > 100.05 && x < 100.95;
+            last = x;
+        }
+        assert!(seen_between, "the hunter was shown on the way, not only at the two frames");
+        assert!((last - 101.0).abs() < 1e-3, "and it arrives where the host put it: {last}");
+    }
+
+    #[test]
+    fn a_teleport_or_a_floor_change_snaps_instead_of_gliding() {
+        let far = interp::Rules::default().snap_distance_m + 20.0;
+        let (mut t, rules) = track(&[(10.0, (100.0, 40.0), 0.0), (10.05, (100.0 + far, 40.0), 0.0)]);
+        let late = t.track.delay(&rules) as f64;
+        let ((x, _), _, _) = t.shown(10.0 + late + 0.025, &rules).unwrap();
+        assert_eq!(x, 100.0 + far, "a jump across the map is not a walk");
+        // the same cell one storey down: the height says it is another floor
+        let drop = interp::Rules::default().snap_height_m + 2.0;
+        let (mut t, rules) = track(&[(10.0, (100.0, 40.0), 0.0), (10.05, (100.6, 40.0), -drop)]);
+        let late = t.track.delay(&rules) as f64;
+        let ((x, _), _, h) = t.shown(10.0 + late + 0.025, &rules).unwrap();
+        assert_eq!((x, h), (100.6, Some(-drop)), "it appears on the other floor, it does not sink through this one");
+    }
+
+    #[test]
+    fn a_frame_sets_the_hunter_at_once_and_a_still_hunter_stays_put_through_the_guests_frames() {
+        let (content, catalog) = (Content::load(), Catalog::load());
+        let mut g = Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-GLIDE-7", 0, &content, &catalog);
+        g.relays_collected = 1;
+        g.ensure_hunters(&content);
+        g.remote_hunters = true;
+        let Some(id) = g.hunters.first().map(|h| h.def.id.clone()) else { return };
+        let level = g.runner_level();
+        let at = g.hunters[0].pos;
+        let frame = json!({"index": 0, "id": id, "position": [at.0, at.1], "facing": [0.0, 1.0], "level": level});
+        g.apply_hunter_frame(&[frame.clone()]);
+        assert_eq!(g.hunters[0].pos, at, "the host's word is applied at once");
+        for _ in 0..5 {
+            g.glide_guest_hunters();
+        }
+        let now = g.hunters[0].pos;
+        assert!((now.0 - at.0).abs() < 1e-3 && (now.1 - at.1).abs() < 1e-3, "a hunter that stands still does not drift: {now:?}");
+        // something else moves the hunter (a rebuild): its old track no longer describes it and is not played over it
+        g.hunters[0].pos = (at.0 + 7.0, at.1);
+        g.glide_guest_hunters();
+        assert_eq!(g.hunters[0].pos, (at.0 + 7.0, at.1));
+        // an older host's frame (no facing, no level) is placed and glided all the same
+        g.apply_hunter_frame(&[json!({"index": 0, "id": id, "position": [at.0, at.1]})]);
+        g.glide_guest_hunters();
+        let now = g.hunters[0].pos;
+        assert!((now.0 - at.0).abs() < 1e-3 && (now.1 - at.1).abs() < 1e-3);
     }
 }

@@ -67,6 +67,8 @@ pub mod session_store;
 pub mod valve_events;
 pub mod web_bridge;
 pub mod wiring;
+/// The world objects a room agrees on: what is taken, open doors and dark lights (host-authoritative).
+pub mod world_objects;
 pub mod world_sync;
 pub mod ws_link;
 /// The native WebSocket room link (std TcpStream, RFC 6455 client): host and guest over `ws://`.
@@ -213,7 +215,7 @@ pub fn scrub(text: &str) -> String {
 pub fn random_bytes(n: usize) -> Vec<u8> {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
-    use crate::shared::atomic64::AtomicU64;
+    use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut out = Vec::with_capacity(n + 8);

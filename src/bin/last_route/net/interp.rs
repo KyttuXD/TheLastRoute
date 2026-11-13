@@ -362,6 +362,7 @@ mod tests {
             emote_seq: None,
             downed: false,
             reviving: None,
+            rest: None,
         }
     }
 

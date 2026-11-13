@@ -14,6 +14,9 @@ use crate::world::facility::{Cover, DoorToggle, LinkKind};
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+/// How long a guest's pack-taking request may wait for the host's answer before another may be asked (see `pack_ask_busy`).
+const PACK_ASK_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// `data/player/hiding_slots.json`: how many bodies a hiding spot holds and where the second one sits.
 pub(crate) struct HidingSlots {
     default_capacity: usize,
@@ -428,10 +431,14 @@ impl Game {
                 self.take_pickup(i, Actor::Player);
             }
             Focus::Coin(i) => {
-                self.coins_taken[i] = true;
-                self.coins += 2;
-                crate::audio::sound::collect();
-                self.say("COIN +2");
+                let Some(cell) = self.fix.coins.get(i).copied() else { return };
+                if self.asks_host_for_objects() {
+                    // the host decides who has it: the coin is this runner's when the host says so
+                    self.ask_object(crate::net::world_objects::Kind::Coin, cell, true);
+                } else {
+                    self.take_coin_now(i);
+                    self.publish_object(crate::net::world_objects::Kind::Coin, cell, true, true);
+                }
             }
             Focus::Locker(i) => self.enter_locker(i, sounds),
             Focus::Safe => {
@@ -460,14 +467,16 @@ impl Game {
                 self.say(&format!("DESCENDING TO DEPTH {d}"));
             }
             Focus::LightSwitch(i) => {
-                self.lights_on[i] = !self.lights_on[i];
-                self.world.lamps =
-                    crate::render::world_mesh::lamps_near(&self.fac, &self.lights_on, content, Some(self.p.pos));
-                self.say(if self.lights_on[i] {
-                    "ROOM LIGHT ON"
+                let on = !self.lights_on[i];
+                self.set_room_light(i, on, content);
+                self.say(if on { "ROOM LIGHT ON" } else { "ROOM LIGHT OFF" });
+                // the switch flips here at once; in a room the host is asked, and every runner sees what it says
+                let cell = self.fac.room_lights[i].switch_cell;
+                if self.asks_host_for_objects() {
+                    self.ask_object(crate::net::world_objects::Kind::Light, cell, on);
                 } else {
-                    "ROOM LIGHT OFF"
-                });
+                    self.publish_object(crate::net::world_objects::Kind::Light, cell, on, false);
+                }
             }
             Focus::Vent(i) => self.use_vent(i),
             Focus::Shop(i) => {
@@ -519,7 +528,27 @@ impl Game {
         if actor != Actor::Player && self.opalie_guarding(at).is_some() {
             return false;
         }
-        self.relays_taken[i] = true;
+        let cell = self.fac.relays[i];
+        if actor == Actor::Player && self.asks_host_for_objects() {
+            // in a room the host decides who recovers it: the relay is this runner's when the host says so
+            // (`Game::sync_world_objects`), and two runners at one relay cannot both have it
+            self.ask_object(crate::net::world_objects::Kind::Relay, cell, true);
+            return false;
+        }
+        self.claim_relay_now(i, actor, content);
+        self.publish_object(crate::net::world_objects::Kind::Relay, cell, true, actor == Actor::Player);
+        true
+    }
+
+    /// The relay is `actor`'s: the count, score, sound, notice, save, hunters and noise of a recovered relay. Called by
+    /// [`Game::claim_relay`], and for a guest when the host answers its request.
+    pub(super) fn claim_relay_now(&mut self, i: usize, actor: Actor, content: &Content) {
+        let Some(at) = self.fac.relays.get(i).map(|c| c.center()) else {
+            return;
+        };
+        if let Some(taken) = self.relays_taken.get_mut(i) {
+            *taken = true;
+        }
         self.relays_collected += 1;
         self.score += crate::game::progression::Progression::load().relay_score;
         crate::audio::sound::event("relay_pickup", 0.0, 0.0);
@@ -536,7 +565,22 @@ impl Game {
         }
         self.release_hunters_for_relay(actor, content);
         self.relay_noise(actor);
-        true
+    }
+
+    /// Host: a guest recovered a relay (its request was accepted). `i` is the relay when this window holds it, and
+    /// `stood` where the guest stands in this window's cells, when it is here. The team's count grows and the same
+    /// hunters are released as for the host's own relay, waking toward the guest; the score and the save are the guest's.
+    pub(super) fn relay_recovered_by_guest(&mut self, i: Option<usize>, stood: Option<(f32, f32)>, content: &Content) {
+        if let Some(taken) = i.and_then(|i| self.relays_taken.get_mut(i)) {
+            *taken = true;
+        }
+        self.relays_collected += 1;
+        self.announce("A RUNNER RECOVERED A RELAY");
+        self.release_hunters_at(stood.unwrap_or(self.p.pos), content);
+        if let Some(stood) = stood {
+            let level = self.runner_level();
+            self.push_noise_at(crate::hunters::noise_events::NoiseKind::RelayRecover, stood, level);
+        }
     }
 
     /// The sound of a recovered relay, the same whoever recovers it: a `RelayRecover` noise event where the one who
@@ -557,6 +601,11 @@ impl Game {
     /// wakes at the runner, and a bot is a runner of the team), so a bot's relay draws the hunters to the bot.
     fn release_hunters_for_relay(&mut self, actor: Actor, content: &Content) {
         let stood = self.actor_position(actor);
+        self.release_hunters_at(stood, content);
+    }
+
+    /// The hunters a recovered relay releases, waking toward `stood` (see [`Game::release_hunters_for_relay`]).
+    fn release_hunters_at(&mut self, stood: (f32, f32), content: &Content) {
         let need = crate::game::progression::Progression::load()
             .activation_relays(self.difficulty)
             .min(self.fac.relays.len() as i32);
@@ -586,8 +635,37 @@ impl Game {
         if actor != Actor::Player && self.opalie_guarding(self.fac.batteries[i].center()).is_some() {
             return false;
         }
+        let cell = self.fac.batteries[i];
+        if actor == Actor::Player && self.asks_host_for_objects() && self.can_grant_n(Item::Battery, 1) {
+            // the host decides who has it (a full pack is refused here, below, without asking); one ask at a time
+            if self.pack_ask_busy() {
+                return false;
+            }
+            self.pack_ask = Some(crate::shared::clock::Instant::now());
+            self.ask_object(crate::net::world_objects::Kind::Battery, cell, true);
+            return false;
+        }
+        if self.take_battery_now(i, actor) {
+            self.publish_object(crate::net::world_objects::Kind::Battery, cell, true, actor == Actor::Player);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Guest: a pack-taking request is still waiting for the host's answer (and has not timed out). A request that the
+    /// host never answers stops blocking after [`PACK_ASK_WAIT`], so a lost answer cannot lock pickups for good.
+    pub(super) fn pack_ask_busy(&self) -> bool {
+        self.pack_ask.is_some_and(|t| t.elapsed() < PACK_ASK_WAIT)
+    }
+
+    /// Battery `i` goes into the pack: taken, with its sound and notice; a full pack refuses it. Called by
+    /// [`Game::take_battery`], and for a guest when the host answers its request.
+    pub(super) fn take_battery_now(&mut self, i: usize, actor: Actor) -> bool {
         if self.grant(Item::Battery, 1) {
-            self.batteries_taken[i] = true;
+            if let Some(taken) = self.batteries_taken.get_mut(i) {
+                *taken = true;
+            }
             crate::audio::sound::event("battery_pickup", 0.0, 0.0);
             self.notice_taken(actor, "FLASHLIGHT BATTERY");
             true
@@ -595,6 +673,25 @@ impl Game {
             self.notice_full(actor);
             false
         }
+    }
+
+    /// Coin `i` is the runner's: taken, counted, with its sound and notice.
+    pub(super) fn take_coin_now(&mut self, i: usize) {
+        if let Some(taken) = self.coins_taken.get_mut(i) {
+            *taken = true;
+        }
+        self.coins += 2;
+        crate::audio::sound::collect();
+        self.say("COIN +2");
+    }
+
+    /// Switches room light `i` and rebuilds the lamps around the runner. Nothing changes for a light already so.
+    pub(super) fn set_room_light(&mut self, i: usize, on: bool, content: &Content) {
+        if self.lights_on.get(i).copied() != Some(!on) {
+            return;
+        }
+        self.lights_on[i] = on;
+        self.world.lamps = crate::render::world_mesh::lamps_near(&self.fac, &self.lights_on, content, Some(self.p.pos));
     }
 
     /// Takes floor item `i` for `actor` into the team's inventory. True when it was taken.
@@ -606,6 +703,31 @@ impl Game {
         if actor != Actor::Player && self.opalie_guarding(at).is_some() {
             return false;
         }
+        let cell = crate::world::Cell::new(at.0.floor() as i32, at.1.floor() as i32);
+        if actor == Actor::Player && self.asks_host_for_objects() && self.can_grant_n(item, n) {
+            // the host decides who has it; what the pack cannot hold is refused here, below, without asking; one ask at a time
+            if self.pack_ask_busy() {
+                return false;
+            }
+            self.pack_ask = Some(crate::shared::clock::Instant::now());
+            self.ask_object(crate::net::world_objects::Kind::Item, cell, true);
+            return false;
+        }
+        if self.take_pickup_now(i, actor) {
+            self.publish_object(crate::net::world_objects::Kind::Item, cell, true, actor == Actor::Player);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Floor item `i` goes into the pack: taken, with its sound, notice and save; a pack that cannot hold it refuses it
+    /// with its reason. Called by [`Game::take_pickup`], and for a guest when the host answers its request.
+    pub(super) fn take_pickup_now(&mut self, i: usize, actor: Actor) -> bool {
+        let Some(p) = self.pickups.get(i) else {
+            return false;
+        };
+        let (item, n) = (p.item, p.n);
         if self.grant(item, n) {
             self.pickups[i].taken = true;
             crate::audio::sound::event("item_pickup", 0.0, 0.0);
@@ -654,10 +776,31 @@ impl Game {
     /// The interact press on the door at threshold `cell`, for the runner and for a player bot alike: it toggles the
     /// door unless a body (the runner, a hunter or a bot) stands in a closing leaf's sweep.
     pub(super) fn press_door(&mut self, cell: crate::world::Cell) -> Option<DoorToggle> {
+        let did = self.swing_door(cell);
+        let open = match did {
+            Some(DoorToggle::Opened) => true,
+            Some(DoorToggle::Closed) => false,
+            _ => return did,
+        };
+        // the door swings here at once. In a room the host is asked and answers with the door as it stands, which every
+        // runner (this one too) then shows; a host or a solo run publishes its own door
+        if self.asks_host_for_objects() {
+            self.ask_object(crate::net::world_objects::Kind::Door, cell, open);
+        } else {
+            self.publish_object(crate::net::world_objects::Kind::Door, cell, open, false);
+        }
+        did
+    }
+
+    /// Toggles the door at threshold `cell` unless a body stands in a closing leaf's sweep: the runner, a hunter, a bot
+    /// or a guest's runner on this level. Nothing is told to the room ([`Game::press_door`] does that).
+    pub(super) fn swing_door(&mut self, cell: crate::world::Cell) -> Option<DoorToggle> {
         let level = self.runner_level();
+        let origin = self.window_origin();
         let bodies: Vec<(f32, f32)> = std::iter::once(self.p.pos)
             .chain(self.hunters.iter().filter(|h| h.active).map(|h| h.pos))
             .chain(self.npcs.iter().filter(|n| n.level == level).map(|n| n.at))
+            .chain(self.remote_targets.iter().filter(|t| t.target.level == level).map(|t| Self::abs_to_window(origin, t.abs)))
             .collect();
         self.fac.toggle_door(cell, &bodies)
     }
