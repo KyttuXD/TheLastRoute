@@ -87,6 +87,8 @@ impl Response {
 pub fn response_headers() -> Vec<(String, String)> {
     vec![
         ("cache-control".into(), "no-store".into()),
+        // every reply is served as the type it names: a browser must not guess another one from the bytes
+        ("x-content-type-options".into(), "nosniff".into()),
         ("access-control-allow-origin".into(), "*".into()),
         ("access-control-allow-methods".into(), "GET, HEAD, POST, PUT, OPTIONS".into()),
         (

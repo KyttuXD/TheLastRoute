@@ -17,7 +17,7 @@
 //! be registered (`is_reserved_for_guests`).
 
 use crate::account_service::OrderedMap;
-use crate::util::{self, base64url, field, js_number, num, random_bytes, str_or_empty, stringify, Clock, Reply};
+use crate::util::{self, base64url, field, js_number, num, random_bytes, safe_equal, str_or_empty, stringify, Clock, Reply};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,6 +168,17 @@ impl GuestNames {
         token
     }
 
+    /// Whether `body` renews a lease its sender already holds (a held `previous` with its own `token`). A renewal takes
+    /// no new name, so the server does not count it against the new-name limit.
+    pub fn is_renewal(&self, body: &Value) -> bool {
+        let previous = str_or_empty(field(body, "previous")).to_uppercase();
+        let Some(Value::String(token)) = field(body, "token") else { return false };
+        is_guest_name(&previous)
+            && self.held(&previous)
+            && !token.is_empty()
+            && self.leases.get(&previous).is_some_and(|l| safe_equal(&l.token, token))
+    }
+
     /// POST /api/guest/name `{previous?, token?}`.
     pub fn issue(&mut self, body: &Value) -> Reply {
         let previous = str_or_empty(field(body, "previous")).to_uppercase();
@@ -177,7 +188,8 @@ impl GuestNames {
         };
         if is_guest_name(&previous) {
             let held = self.held(&previous);
-            if held && !token.is_empty() && self.leases.get(&previous).is_some_and(|l| l.token == token) {
+            // the lease token is a secret: compared in constant time
+            if held && !token.is_empty() && self.leases.get(&previous).is_some_and(|l| safe_equal(&l.token, &token)) {
                 let token = self.grant(&previous, Some(token));
                 return (200, json!({ "ok": true, "name": previous, "token": token, "renewed": true }));
             }

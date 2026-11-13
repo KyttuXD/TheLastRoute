@@ -25,6 +25,8 @@ pub struct CrashLimits {
     pub field_chars: usize,
     pub stored: usize,
     pub per_client_per_hour: usize,
+    /// Reports per hour from one address whatever device id they carry (the device id is the sender's own word).
+    pub per_address_per_hour: usize,
     pub list_max: usize,
 }
 
@@ -36,6 +38,7 @@ pub const CRASH_LIMITS: CrashLimits = CrashLimits {
     field_chars: 120,
     stored: 5000,
     per_client_per_hour: 6,
+    per_address_per_hour: 30,
     list_max: 200,
 };
 
@@ -242,7 +245,7 @@ impl CrashReports {
         names
     }
 
-    fn allow(&mut self, client: &str) -> bool {
+    fn allow(&mut self, client: &str, limit: usize) -> bool {
         let hour = 3600 * 1000;
         let timestamp = (self.now)();
         let mut recent: Vec<i64> = self
@@ -250,7 +253,7 @@ impl CrashReports {
             .get(client)
             .map(|times| times.iter().copied().filter(|&at| timestamp - at < hour).collect())
             .unwrap_or_default();
-        if recent.len() >= CRASH_LIMITS.per_client_per_hour {
+        if recent.len() >= limit {
             self.rates.insert(client.to_string(), recent);
             return false;
         }
@@ -270,7 +273,10 @@ impl CrashReports {
             Err(code) => return (400, json!({ "ok": false, "code": code, "error": "Not a crash report" })),
         };
         let client = if client.is_empty() { "unknown" } else { client };
-        if !self.allow(client) {
+        // The device id comes from the report, so a sender could use a new one each time: all the devices of one address
+        // (an IPv6 address counts as its /64 network) also share a per-address allowance.
+        let address = format!("address:{}", crate::server::rate_limit::rate_address(client.split('|').next().unwrap_or(client)));
+        if !self.allow(client, CRASH_LIMITS.per_client_per_hour) || !self.allow(&address, CRASH_LIMITS.per_address_per_hour) {
             return (429, json!({ "ok": false, "code": "CRASH_RATE_LIMITED", "error": "Too many crash reports from this client" }));
         }
         let stamp: String = util::iso_time((self.now)()).replace(['-', ':'], "").chars().take(15).collect();
@@ -286,7 +292,8 @@ impl CrashReports {
         if let Err(error) = util::write_atomic(&path, util::stringify(&stored).as_bytes()) {
             // Node would throw here (an unhandled rejection); answer instead of crashing.
             util::log_error(&format!("Crash report write failed: {error}"));
-            return (500, json!({ "ok": false, "error": error.to_string() }));
+            // the reason stays in the server log: it names a path on this machine
+            return (500, json!({ "ok": false, "code": "REPORT_STORE_FAILED", "error": "Could not store the report" }));
         }
         let names = self.files();
         let excess = names.len().saturating_sub(CRASH_LIMITS.stored);
@@ -441,6 +448,42 @@ mod tests {
             std::fs::read_dir(&root).unwrap().all(|e| e.unwrap().file_name().to_string_lossy().ends_with(".json")),
             "no temp files are left"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn one_address_cannot_get_past_the_limit_by_sending_a_new_device_id_each_time() {
+        let root = temp_dir("address");
+        let (clock, handle) = manual_clock(util::parse_iso_time("2026-10-28T20:00:00.000Z").unwrap());
+        let mut store = CrashReports::new(CrashReportsOptions { directory: root.clone(), now: clock });
+        for device in 0..CRASH_LIMITS.per_address_per_hour {
+            handle.advance(1000);
+            assert_eq!(store.submit(&report(json!({})), &format!("203.0.113.9|device-{device}")).0, 201, "{device}");
+        }
+        let refused = store.submit(&report(json!({})), "203.0.113.9|one-more-device");
+        assert_eq!((refused.0, refused.1["code"].clone()), (429, json!("CRASH_RATE_LIMITED")));
+        assert_eq!(store.submit(&report(json!({})), "203.0.113.10|one-more-device").0, 201, "another address has its own allowance");
+        // two addresses of one IPv6 /64 network share an allowance
+        for device in 0..CRASH_LIMITS.per_address_per_hour {
+            handle.advance(1);
+            assert_eq!(store.submit(&report(json!({})), &format!("2001:db8:0:1::{device:x}|d{device}")).0, 201, "{device}");
+        }
+        assert_eq!(store.submit(&report(json!({})), "2001:db8:0:1:ffff::1|other").0, 429);
+        handle.advance(3600 * 1000);
+        assert_eq!(store.submit(&report(json!({})), "203.0.113.9|one-more-device").0, 201, "the allowance resets after an hour");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_write_does_not_tell_the_client_where_the_server_keeps_its_files() {
+        let root = temp_dir("unwritable");
+        // the directory is a plain file, so no report can be written under it
+        let blocked = root.join("not-a-directory");
+        std::fs::write(&blocked, b"x").unwrap();
+        let mut store = CrashReports::new(CrashReportsOptions { directory: blocked.join("reports"), ..Default::default() });
+        let (status, body) = store.submit(&report(json!({})), "203.0.113.9|dev-1");
+        assert_eq!((status, body["code"].clone()), (500, json!("REPORT_STORE_FAILED")));
+        assert!(!util::stringify(&body).contains("not-a-directory"), "{body}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

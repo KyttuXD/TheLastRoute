@@ -20,6 +20,8 @@ pub(crate) use routes::body_limit;
 mod tests;
 #[cfg(test)]
 mod route_tests;
+#[cfg(test)]
+mod security_tests;
 
 pub use support::*;
 
@@ -43,7 +45,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -63,6 +65,33 @@ pub const HOSTLESS_CREATE_LIMIT: usize = 5;
 pub const HOSTLESS_CREATE_WINDOW_MS: i64 = 60_000;
 const HOSTLESS_ADDRESS_CAP: usize = 1024;
 pub const RESERVED_TAKEOVER_MS: i64 = 30_000;
+/// A body that is not complete this long after its headers is given up on (`LASTROUTE_BODY_TIMEOUT_SECONDS`).
+pub const DEFAULT_BODY_READ_TIMEOUT_MS: u64 = 15_000;
+/// Helper threads reading (or draining) a request body at once. Each belongs to one open connection, which already has
+/// a tiny_http thread of its own, so this is only a ceiling on threads.
+pub const MAX_BODY_READERS: usize = 1024;
+/// A declared body up to this size that is over `RAW_BODY_HARD_CAP` is answered 413 and drained on a helper thread;
+/// a bigger one is never read at all (see `LastRouteServer::read_body`).
+pub const MAX_DRAINED_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Requests given up on without being dropped (`LastRouteServer::give_up_on`) before the server exits so that its
+/// service manager restarts it: each one keeps a connection open for good.
+pub const MAX_ABANDONED_REQUESTS: usize = 256;
+/// Wrong sign-ins one account name may collect per `LOGIN_FAILURE_WINDOW_MS`, from all addresses together, before
+/// sign-in for that name answers 429 (`LASTROUTE_LOGIN_FAILURE_LIMIT`).
+pub const DEFAULT_LOGIN_FAILURE_LIMIT: u32 = 30;
+pub const LOGIN_FAILURE_WINDOW_MS: i64 = 5 * 60 * 1000;
+/// Reserved-room password attempts per rate window: from one address, and against one room from all addresses.
+pub const ROOM_PASSWORD_ATTEMPTS_PER_ADDRESS: u32 = 10;
+pub const ROOM_PASSWORD_ATTEMPTS_PER_ROOM: u32 = 60;
+/// New guest names (not renewals) one address may take per `GUEST_NAME_WINDOW_MS`.
+pub const GUEST_NAMES_PER_ADDRESS: u32 = 20;
+pub const GUEST_NAME_WINDOW_MS: i64 = 60 * 60 * 1000;
+/// ENet room codes the directory lists at once, and how many of them one address may hold (dedicated hosts an owner
+/// spawned and a proxy on this machine are not counted per address).
+pub const MAX_ENET_ROOMS: usize = 4096;
+pub const ENET_ROOMS_PER_ADDRESS: usize = 32;
+/// Web rooms one address may open per rate window (`/api/rooms/join` on a code that does not exist yet).
+pub const WEB_ROOMS_PER_ADDRESS: u32 = 20;
 pub const WS_PATH: &str = "/api/ws";
 /// The biggest skin PNG: 64 KB, the one number of `skins/skins.rs` (and of the game's validator).
 pub const SKIN_MAX_BYTES: usize = crate::skins::skins::SKIN_MAX_BYTES;
@@ -482,6 +511,10 @@ pub struct ServerOptions {
     pub auth_rate_limit_max: u32,
     /// How long a session lives (`LASTROUTE_SESSION_TTL_HOURS`).
     pub session_ttl_ms: i64,
+    /// Wrong sign-ins per account name per `LOGIN_FAILURE_WINDOW_MS` (`LASTROUTE_LOGIN_FAILURE_LIMIT`).
+    pub login_failure_limit: u32,
+    /// How long a request body may take to arrive (`LASTROUTE_BODY_TIMEOUT_SECONDS`).
+    pub body_read_timeout_ms: u64,
     pub dev_token_ttl_ms: i64,
     /// `LASTROUTE_INSTANCE` (shown in /api/health).
     pub instance: String,
@@ -530,6 +563,8 @@ impl Default for ServerOptions {
             account_rate_limit_max: 30,
             auth_rate_limit_max: 0,
             session_ttl_ms: crate::account_service::DEFAULT_SESSION_TTL_MS,
+            login_failure_limit: DEFAULT_LOGIN_FAILURE_LIMIT,
+            body_read_timeout_ms: DEFAULT_BODY_READ_TIMEOUT_MS,
             dev_token_ttl_ms: DEFAULT_DEV_TOKEN_TTL_MS,
             instance: "production".into(),
             now: system_clock(),
@@ -558,8 +593,26 @@ pub(crate) struct Config {
     pub mod_rate_limit_max: u32,
     pub account_rate_limit_max: u32,
     pub auth_rate_limit_max: u32,
+    pub login_failure_limit: u32,
+    pub body_read_timeout_ms: u64,
     pub dev_token_ttl_ms: i64,
     pub instance: String,
+}
+
+/// Locks a mutex, recovering the data when a panicking request poisoned it: one failed request must not take every
+/// later request (or the relay and maintenance threads) down with it.
+pub(crate) fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What reading a request body came to.
+enum BodyRead {
+    /// The request, its body (cut to `RAW_BODY_HARD_CAP`) and whether the body was longer than that.
+    Done(Box<tiny_http::Request>, Vec<u8>, bool),
+    /// Too many bodies are in flight: the request is answered 503 without being read.
+    Busy(Box<tiny_http::Request>),
+    /// The request is gone: its body never arrived in time, or it was refused without an answer from this thread.
+    Dropped,
 }
 
 pub struct State {
@@ -585,6 +638,10 @@ pub struct LastRouteServer {
     pub(crate) config: Config,
     pub(crate) state: Arc<Mutex<State>>,
     relay_driver: Mutex<Option<RelayDriver>>,
+    /// How many helper threads are reading a request body right now (`read_body`).
+    body_readers: Arc<AtomicUsize>,
+    /// Requests given up on without being dropped (`give_up_on`).
+    abandoned_requests: AtomicUsize,
     /// When the server was built: `uptimeSeconds` on /api/health.
     started: std::time::Instant,
 }
@@ -706,11 +763,15 @@ impl LastRouteServer {
                 mod_rate_limit_max: opts.mod_rate_limit_max,
                 account_rate_limit_max: opts.account_rate_limit_max,
                 auth_rate_limit_max: opts.auth_rate_limit_max,
+                login_failure_limit: opts.login_failure_limit.max(1),
+                body_read_timeout_ms: opts.body_read_timeout_ms.max(100),
                 dev_token_ttl_ms: opts.dev_token_ttl_ms,
                 instance: if instance.is_empty() { "production".into() } else { instance },
             },
             state: Arc::new(Mutex::new(state)),
             relay_driver: Mutex::new(None),
+            body_readers: Arc::new(AtomicUsize::new(0)),
+            abandoned_requests: AtomicUsize::new(0),
         }
     }
 
@@ -734,7 +795,7 @@ impl LastRouteServer {
 
     /// `server.startEnetRelay({host, port})`: binds the UDP relay and starts its thread. Returns the bound port.
     pub fn start_enet_relay(&self, host: &str, port: u16) -> std::io::Result<u16> {
-        let mut slot = self.relay_driver.lock().unwrap();
+        let mut slot = lock_recover(&self.relay_driver);
         if let Some(driver) = slot.as_ref() {
             return Ok(driver.local_port());
         }
@@ -744,19 +805,23 @@ impl LastRouteServer {
         let mut relay = EnetRelay::new(options);
         relay.set_listening(bound, buffers);
         let tick = relay.prune_interval();
-        self.state.lock().unwrap().relay = Some(relay);
+        lock_recover(&self.state).relay = Some(relay);
         log_info(&format!("ENet gameplay relay: UDP {bound}"));
         let state = self.state.clone();
         let driver = RelayDriver::spawn(socket, tick, move |event| {
-            let mut guard = state.lock().unwrap();
-            let s = &mut *guard;
-            let Some(relay) = s.relay.as_mut() else { return Vec::new() };
-            match event {
-                RelayEvent::Datagram(from, data) => relay.handle_datagram(from, data, &mut s.dir),
-                RelayEvent::Tick => relay.prune(&mut s.dir),
-                RelayEvent::SendError => relay.note_send_error(),
-            }
-            relay.take_outbox()
+            // a datagram that makes the relay panic is dropped: the relay thread and the shared state stay usable
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut guard = lock_recover(&state);
+                let s = &mut *guard;
+                let Some(relay) = s.relay.as_mut() else { return Vec::new() };
+                match event {
+                    RelayEvent::Datagram(from, data) => relay.handle_datagram(from, data, &mut s.dir),
+                    RelayEvent::Tick => relay.prune(&mut s.dir),
+                    RelayEvent::SendError => relay.note_send_error(),
+                }
+                relay.take_outbox()
+            }))
+            .unwrap_or_default()
         })?;
         *slot = Some(driver);
         Ok(bound)
@@ -766,12 +831,12 @@ impl LastRouteServer {
         if outgoing.is_empty() {
             return;
         }
-        let failed = match self.relay_driver.lock().unwrap().as_ref() {
+        let failed = match lock_recover(&self.relay_driver).as_ref() {
             Some(driver) => enet_relay::send_outgoing(driver.sender(), outgoing),
             None => 0,
         };
         if failed > 0 {
-            if let Some(relay) = self.state.lock().unwrap().relay.as_mut() {
+            if let Some(relay) = lock_recover(&self.state).relay.as_mut() {
                 for _ in 0..failed {
                     relay.note_send_error();
                 }
@@ -781,10 +846,10 @@ impl LastRouteServer {
 
     /// Stops the relay thread and flushes the public routes (the Node server "close").
     pub fn close(&self) {
-        if let Some(mut driver) = self.relay_driver.lock().unwrap().take() {
+        if let Some(mut driver) = lock_recover(&self.relay_driver).take() {
             driver.stop();
         }
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_recover(&self.state);
         if let Some(relay) = state.relay.as_mut() {
             relay.close();
         }
@@ -796,7 +861,7 @@ impl LastRouteServer {
     /// The Node maintenance interval: prune rooms, clean web rooms, expire rate buckets (plus public-route ticks).
     pub fn maintenance(&self) {
         let timestamp = self.now();
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_recover(&self.state);
         state.dir.prune();
         state.room_service.cleanup();
         state.request_rates.prune(timestamp);
@@ -818,7 +883,7 @@ impl LastRouteServer {
     /// Handles one HTTP request (the body of the Node `createServer` callback).
     pub fn handle(&self, request: &Request) -> Response {
         let response = self.route(request);
-        let outgoing = self.state.lock().unwrap().relay.as_mut().map(|r| r.take_outbox()).unwrap_or_default();
+        let outgoing = lock_recover(&self.state).relay.as_mut().map(|r| r.take_outbox()).unwrap_or_default();
         self.flush_relay(outgoing);
         response
     }
@@ -832,7 +897,13 @@ impl LastRouteServer {
             threads.push(std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     match server.recv_timeout(std::time::Duration::from_millis(200)) {
-                        Ok(Some(request)) => this.serve_one(request, local_port),
+                        Ok(Some(request)) => {
+                            // a request whose handler panics is dropped; the worker keeps serving
+                            let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.serve_one(request, local_port)));
+                            if served.is_err() {
+                                log_error("A request handler panicked: the request was dropped and the worker kept running");
+                            }
+                        }
                         Ok(None) => {}
                         Err(_) => break,
                     }
@@ -847,36 +918,124 @@ impl LastRouteServer {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if last.elapsed() >= interval.min(std::time::Duration::from_secs(1)) {
                     last = std::time::Instant::now();
-                    this.maintenance();
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| this.maintenance())).is_err() {
+                        log_error("The maintenance pass panicked: it runs again at the next interval");
+                    }
                 }
             }
         }));
         threads
     }
 
-    fn serve_one(&self, mut raw: tiny_http::Request, local_port: u16) {
+    /// Gives up on a request whose declared body cannot be read here, WITHOUT dropping it: tiny_http's drop would
+    /// allocate a buffer of the whole unread size (a huge `Content-Length` ends the process) and read the rest on this
+    /// thread (a silent sender holds it for good). The connection stays open until the process ends, so the count is
+    /// logged, and at `MAX_ABANDONED_REQUESTS` the server stops so that its service manager starts a clean one.
+    fn give_up_on(&self, raw: tiny_http::Request, address: &str, declared: Option<usize>) {
+        std::mem::forget(raw);
+        let abandoned = self.abandoned_requests.fetch_add(1, Ordering::SeqCst) + 1;
+        if abandoned.is_power_of_two() {
+            log_error(&format!(
+                "Gave up on {abandoned} request(s) with an unread body so far (the latest declared {} bytes, from {address})",
+                declared.unwrap_or(0)
+            ));
+        }
+        if abandoned >= MAX_ABANDONED_REQUESTS {
+            log_error("Too many requests were given up on: stopping so the service manager restarts the server");
+            self.close();
+            std::process::exit(1);
+        }
+    }
+
+    /// Requests given up on so far (`give_up_on`).
+    #[cfg(test)]
+    pub(crate) fn abandoned_requests(&self) -> usize {
+        self.abandoned_requests.load(Ordering::SeqCst)
+    }
+
+    /// Helper threads reading a request body right now.
+    #[cfg(test)]
+    pub(crate) fn body_readers(&self) -> usize {
+        self.body_readers.load(Ordering::SeqCst)
+    }
+
+    /// Reads the body of `raw` without letting a slow or dishonest sender hold this worker.
+    ///
+    /// tiny_http has no read timeout, and when a request is dropped with part of its declared `Content-Length` unread it
+    /// allocates a buffer of the whole unread size and reads the rest in the dropping thread. So:
+    /// - no declared body (no `Content-Length`, or 0, and not chunked): nothing is read;
+    /// - a declared body of at most 1024 bytes without `Expect`: tiny_http already holds it, it is read in place;
+    /// - a declared body over `MAX_DRAINED_BODY_BYTES` is given up on (`give_up_on`): it is never read or dropped;
+    /// - a declared body over `RAW_BODY_HARD_CAP` is answered 413 and drained by a helper thread;
+    /// - anything else is read on a helper thread while this worker waits at most the body timeout. A body that is
+    ///   late keeps only its helper thread.
+    ///
+    /// At most `MAX_BODY_READERS` helper threads run at once. Past that a chunked request is answered 503 and a request
+    /// with a declared body is given up on.
+    fn read_body(&self, mut raw: tiny_http::Request, address: &str) -> BodyRead {
         use std::io::Read;
-        let (path, query) = split_target(raw.url());
-        let mut request = Request {
-            method: raw.method().as_str().to_uppercase(),
-            path,
-            query,
-            remote: raw.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default(),
-            local_port,
-            ..Request::default()
-        };
-        for header in raw.headers() {
-            request.headers.insert(header.field.as_str().as_str().to_ascii_lowercase(), header.value.as_str().to_string());
+        let has_header = |raw: &tiny_http::Request, name: &'static str| raw.headers().iter().any(|h| h.field.equiv(name));
+        let declared = raw.body_length();
+        let chunked = has_header(&raw, "Transfer-Encoding");
+        if declared == Some(0) || (declared.is_none() && !chunked) {
+            return BodyRead::Done(Box::new(raw), Vec::new(), false);
         }
-        let mut body = Vec::new();
-        let _ = raw.as_reader().take(RAW_BODY_HARD_CAP as u64 + 1).read_to_end(&mut body);
-        if body.len() > RAW_BODY_HARD_CAP {
-            request.body_overflow = true;
-            body.truncate(RAW_BODY_HARD_CAP);
+        if declared.is_some_and(|n| n <= 1024) && !has_header(&raw, "Expect") {
+            let mut body = Vec::new();
+            let _ = raw.as_reader().take(RAW_BODY_HARD_CAP as u64 + 1).read_to_end(&mut body);
+            return BodyRead::Done(Box::new(raw), body, false);
         }
-        request.body = body;
-        let response = self.handle(&request);
-        let head_only = request.method == "HEAD";
+        if declared.is_some_and(|n| n > MAX_DRAINED_BODY_BYTES) {
+            self.give_up_on(raw, address, declared);
+            return BodyRead::Dropped;
+        }
+        let oversize = declared.is_some_and(|n| n > RAW_BODY_HARD_CAP);
+        if self.body_readers.fetch_add(1, Ordering::SeqCst) >= MAX_BODY_READERS {
+            self.body_readers.fetch_sub(1, Ordering::SeqCst);
+            if declared.is_some() {
+                // answering would read the rest of the body on this thread
+                self.give_up_on(raw, address, declared);
+                return BodyRead::Dropped;
+            }
+            return BodyRead::Busy(Box::new(raw));
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let readers = self.body_readers.clone();
+        let spawned = std::thread::Builder::new().name("lr-http-body".into()).spawn(move || {
+            if oversize {
+                let refused = json_response(413, &json!({ "ok": false, "error": "REQUEST BODY TOO LARGE" }), &[]);
+                // dropping the request after the answer reads the rest of the declared body away, on this thread
+                Self::respond(raw, &refused, false);
+                readers.fetch_sub(1, Ordering::SeqCst);
+                return;
+            }
+            let mut body = Vec::new();
+            let _ = raw.as_reader().take(RAW_BODY_HARD_CAP as u64 + 1).read_to_end(&mut body);
+            readers.fetch_sub(1, Ordering::SeqCst);
+            // when the worker stopped waiting, the request is dropped here (tiny_http answers it 500)
+            let _ = sender.send((raw, body));
+        });
+        if spawned.is_err() {
+            // no thread could be started: the request went with the closure
+            self.body_readers.fetch_sub(1, Ordering::SeqCst);
+            return BodyRead::Dropped;
+        }
+        if oversize {
+            return BodyRead::Dropped;
+        }
+        match receiver.recv_timeout(std::time::Duration::from_millis(self.config.body_read_timeout_ms)) {
+            Ok((raw, mut body)) => {
+                let overflow = body.len() > RAW_BODY_HARD_CAP;
+                body.truncate(RAW_BODY_HARD_CAP);
+                BodyRead::Done(Box::new(raw), body, overflow)
+            }
+            Err(_) => BodyRead::Dropped,
+        }
+    }
+
+    /// Writes `response` to the client of `raw`.
+    fn respond(raw: tiny_http::Request, response: &Response, head_only: bool) {
+        // tiny_http writes its own content-length from the data it is given
         let length = response.header("content-length").map(str::to_string);
         let mut out = tiny_http::Response::from_data(if head_only { Vec::new() } else { response.body.clone() })
             .with_status_code(response.status);
@@ -891,11 +1050,45 @@ impl LastRouteServer {
         let _ = length;
         let _ = raw.respond(out);
     }
+
+    fn serve_one(&self, raw: tiny_http::Request, local_port: u16) {
+        let (path, query) = split_target(raw.url());
+        let mut request = Request {
+            method: raw.method().as_str().to_uppercase(),
+            path,
+            query,
+            remote: raw.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default(),
+            local_port,
+            ..Request::default()
+        };
+        for header in raw.headers() {
+            request.headers.insert(header.field.as_str().as_str().to_ascii_lowercase(), header.value.as_str().to_string());
+        }
+        let raw = match self.read_body(raw, &request.remote) {
+            BodyRead::Done(raw, body, overflow) => {
+                request.body = body;
+                request.body_overflow = overflow;
+                *raw
+            }
+            BodyRead::Busy(raw) => {
+                let busy = json_response(
+                    503,
+                    &json!({ "ok": false, "code": "SERVER_BUSY", "error": "SERVER BUSY. TRY AGAIN IN A MOMENT." }),
+                    &[("retry-after", "5".to_string())],
+                );
+                Self::respond(*raw, &busy, false);
+                return;
+            }
+            BodyRead::Dropped => return,
+        };
+        let response = self.handle(&request);
+        Self::respond(raw, &response, request.method == "HEAD");
+    }
 }
 
 impl SessionLookup for LastRouteServer {
     fn session_username(&self, token: &str) -> Option<String> {
-        let accounts = self.state.lock().unwrap().accounts.clone();
+        let accounts = lock_recover(&self.state).accounts.clone();
         accounts.session_username(token)
     }
 }
@@ -1034,6 +1227,8 @@ pub fn options_from_environment(env: &HashMap<String, String>, cwd: &Path) -> Re
         account_rate_limit_max: number("LASTROUTE_ACCOUNT_RATE_LIMIT", 30.0).max(1.0) as u32,
         auth_rate_limit_max: number("LASTROUTE_AUTH_RATE_LIMIT", 10.0).max(1.0) as u32,
         session_ttl_ms: (number("LASTROUTE_SESSION_TTL_HOURS", 720.0).max(1.0) * 3_600_000.0) as i64,
+        login_failure_limit: number("LASTROUTE_LOGIN_FAILURE_LIMIT", DEFAULT_LOGIN_FAILURE_LIMIT as f64).max(1.0) as u32,
+        body_read_timeout_ms: (number("LASTROUTE_BODY_TIMEOUT_SECONDS", (DEFAULT_BODY_READ_TIMEOUT_MS / 1000) as f64).clamp(1.0, 300.0) * 1000.0) as u64,
         mod_rate_limit_max: number("LASTROUTE_MOD_RATE_LIMIT", 120.0).max(1.0) as u32,
         instance: env.get("LASTROUTE_INSTANCE").cloned().unwrap_or_else(|| "production".into()),
         ..ServerOptions::default()

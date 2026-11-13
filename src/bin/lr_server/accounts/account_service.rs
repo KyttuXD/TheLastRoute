@@ -29,6 +29,9 @@ pub const MAX_PASSWORD_LENGTH: usize = 200;
 pub const MAX_PROGRESS_BYTES: usize = 32 * 1024;
 const SCRYPT_KEY_LENGTH: usize = 64;
 pub const DEFAULT_SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+/// Most live sessions one account keeps: a sign-in past this ends the account's oldest session, so signing in over and
+/// over cannot grow the session list (and `accounts.json`, rewritten on every change) without bound.
+pub const MAX_SESSIONS_PER_ACCOUNT: usize = 16;
 /// How long the confirm token of an account deletion stays valid (`AccountServiceOptions::delete_confirm_ttl_ms`).
 pub const DEFAULT_DELETE_CONFIRM_TTL_MS: i64 = 5 * 60 * 1000;
 const DECOY_SALT: &str = "last-route-decoy-salt";
@@ -420,7 +423,18 @@ impl AccountService {
 
     fn issue_session(&self, state: &mut State, username: &str) -> String {
         let token = hex(&random_bytes(24));
-        let expires_at = (self.now() + self.session_ttl_ms) as f64;
+        let now = self.now();
+        let expires_at = (now + self.session_ttl_ms) as f64;
+        // Sessions that ran out are dropped here (a lookup only drops the one it was asked for), and the account keeps
+        // its newest sessions only (the map iterates oldest first).
+        state.sessions.retain(|_, session| session.expires_at > now as f64);
+        let held: Vec<String> =
+            state.sessions.iter().filter(|(_, session)| session.username == username).map(|(key, _)| key.clone()).collect();
+        if held.len() >= MAX_SESSIONS_PER_ACCOUNT {
+            for key in &held[..held.len() + 1 - MAX_SESSIONS_PER_ACCOUNT] {
+                state.sessions.remove(key);
+            }
+        }
         state.sessions.insert(session_hash(&token), Session { username: username.to_string(), expires_at });
         self.persist(state);
         token
@@ -1026,6 +1040,30 @@ mod tests {
 
     fn names(roster: &Value) -> Vec<String> {
         roster.as_array().unwrap().iter().map(|e| e["username"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn an_account_keeps_only_its_newest_sessions_and_expired_sessions_go_when_one_is_issued() {
+        let app = open_accounts();
+        let a = &app.accounts;
+        let first = token(&a.register(&json!({ "username": "ada", "password": PASSWORD }), false).1);
+        let other = token(&a.register(&json!({ "username": "bob", "password": PASSWORD }), false).1);
+        let mut issued = Vec::new();
+        for _ in 0..MAX_SESSIONS_PER_ACCOUNT {
+            let mut state = a.lock();
+            issued.push(a.issue_session(&mut state, "ADA"));
+        }
+        assert_eq!(a.session_username(&first), None, "the oldest session of the account ended");
+        for live in &issued {
+            assert_eq!(a.session_username(live).as_deref(), Some("ADA"));
+        }
+        assert_eq!(a.session_username(&other).as_deref(), Some("BOB"), "another account's session is untouched");
+        assert_eq!(a.lock().sessions.len(), MAX_SESSIONS_PER_ACCOUNT + 1);
+        // every session runs out; the next one issued sweeps them all away
+        app.handle.advance(DEFAULT_SESSION_TTL_MS + 1);
+        let mut state = a.lock();
+        let _fresh = a.issue_session(&mut state, "BOB");
+        assert_eq!(state.sessions.len(), 1);
     }
 
     #[test]

@@ -340,6 +340,13 @@ server only forwards them. Tunables are environment variables, read once at star
 - **Body limits**: `POST_ROUTES` in `server/routes.rs` lists every POST route with its own limit; `server/route_tests.rs` fails when a
   route is added without an entry.
 
+### Security review (2026-11-12)
+
+The attack surface, the findings, every limit the server enforces and the setup advice (proxy, firewall, secrets,
+backups) are in [SERVER_SECURITY.md](SERVER_SECURITY.md). New variables from that pass: `LASTROUTE_BODY_TIMEOUT_SECONDS`
+(15; how long a request body may take to arrive) and `LASTROUTE_LOGIN_FAILURE_LIMIT` (30; wrong sign-ins per account
+per 5 minutes, from all addresses together).
+
 ### Client address, room kicks and room depth (2026-11-08)
 
 **Client address** (rate limits, account audit lines, moderation, the ENet room address): `requester_address` in

@@ -176,6 +176,9 @@ pub struct EnetRelayOptions {
     pub maximum_guests_per_room: usize,
     pub guest_allocation_window_ms: i64,
     pub maximum_guest_allocations_per_address: u32,
+    /// Most `code|address` join counters kept at once. UDP source addresses can be forged, so a flood of joins from
+    /// made-up addresses stops growing the table here: a new address is refused until old windows end.
+    pub maximum_guest_allocation_keys: usize,
     pub handoff_ttl_ms: i64,
     pub socket_buffer_bytes: usize,
 }
@@ -190,6 +193,7 @@ impl Default for EnetRelayOptions {
             maximum_guests_per_room: 15,
             guest_allocation_window_ms: 10_000,
             maximum_guest_allocations_per_address: 4,
+            maximum_guest_allocation_keys: 50_000,
             handoff_ttl_ms: 20_000,
             socket_buffer_bytes: 4 * 1024 * 1024,
         }
@@ -346,6 +350,9 @@ impl EnetRelay {
         let timestamp = self.now();
         let key = format!("{code}|{address}");
         let window = self.opts.guest_allocation_window_ms;
+        if !self.guest_allocation_rates.contains_key(&key) && self.guest_allocation_rates.len() >= self.opts.maximum_guest_allocation_keys.max(1) {
+            return false;
+        }
         let entry = self.guest_allocation_rates.entry(key).or_insert((0, timestamp + window));
         if timestamp >= entry.1 {
             *entry = (0, timestamp + window);
@@ -972,6 +979,40 @@ mod tests {
         let mut relay = EnetRelay::new(opts);
         relay.set_listening(1105, Some((4_194_304, 4_194_304)));
         relay
+    }
+
+    #[test]
+    fn the_join_counter_table_is_bounded_and_recovers_when_its_windows_end() {
+        let (clock, time) = manual_clock(0);
+        let mut relay = relay_with(clock, |o| {
+            o.maximum_guest_allocation_keys = 3;
+            o.maximum_guests_per_room = 2;
+        });
+        let mut rooms = Rooms::new("ABCDE", "host-secret");
+        let host = addr(4001);
+        exchange(&mut relay, &mut rooms, host, frame(RelayFrame::HOST_REGISTER, 0, "ABCDE", b"host-secret"));
+        let from = |last: u8| SocketAddr::from(([203, 0, 113, last], 5000));
+        // two guests fill the room; a third address is still counted (it gets ROOM RELAY IS FULL)
+        for last in 1..=3u8 {
+            exchange(&mut relay, &mut rooms, from(last), frame(RelayFrame::GUEST_JOIN, 0, "ABCDE", b"guest-nonce"));
+        }
+        assert_eq!(relay.guest_allocation_rates.len(), 3);
+        // the table is full: a fourth address is refused and is not remembered
+        let out = exchange(&mut relay, &mut rooms, from(4), frame(RelayFrame::GUEST_JOIN, 0, "ABCDE", b"guest-nonce"));
+        let refused = &to(&out, from(4))[0];
+        assert_eq!((refused.kind, refused.payload.as_slice()), (RelayFrame::ERROR, &b"TOO MANY RELAY JOIN ATTEMPTS"[..]));
+        assert_eq!(relay.guest_allocation_rates.len(), 3);
+        // a guest that is already in keeps working
+        let out = exchange(&mut relay, &mut rooms, from(1), frame(RelayFrame::GUEST_JOIN, 0, "ABCDE", b"guest-nonce"));
+        assert_eq!(to(&out, from(1))[0].kind, RelayFrame::GUEST_ACK);
+        // the windows end (the host stays alive): the table empties and a new address is counted again
+        time.advance(10_001);
+        exchange(&mut relay, &mut rooms, host, frame(RelayFrame::HOST_REGISTER, 0, "ABCDE", b"host-secret"));
+        relay.prune(&mut rooms);
+        assert_eq!(relay.guest_allocation_rates.len(), 0);
+        let out = exchange(&mut relay, &mut rooms, from(4), frame(RelayFrame::GUEST_JOIN, 0, "ABCDE", b"guest-nonce"));
+        assert_eq!(to(&out, from(4))[0].kind, RelayFrame::ERROR, "the room is still full, but the address was counted");
+        assert_eq!(relay.guest_allocation_rates.len(), 1);
     }
 
     #[test]

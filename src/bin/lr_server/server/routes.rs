@@ -197,12 +197,6 @@ struct Caller {
     owner: Option<String>,
 }
 
-/// Locks a mutex, recovering the data when a panicking request poisoned it: one failed request must not take every
-/// later request down with it.
-fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 /// The 500 a route answers when internal state it expected is missing.
 fn internal_error() -> Response {
     json_response(500, &json!({ "ok": false, "code": "INTERNAL_ERROR", "error": "Internal server error" }), &[])
@@ -239,6 +233,22 @@ pub(crate) fn room_action_report(body: &Value, account: &str) -> Option<Value> {
     Some(Value::Object(report))
 }
 
+/// The 429 of a limit that a route counts itself (the same shape as the per-address limiter's reply).
+fn limited(auth: bool, retry_after: i64) -> Response {
+    json_response(
+        429,
+        &json!({ "ok": false, "code": "RATE_LIMITED", "error": rate_limit::limited_message(auth, retry_after), "retryAfterSeconds": retry_after }),
+        &[("retry-after", retry_after.to_string())],
+    )
+}
+
+/// The limiter key of the account a sign-in names (every address counts against the same key); None when the name
+/// could not be an account's.
+fn login_failure_key(body: &Value) -> Option<String> {
+    let name = crate::account_service::username_of_str(&str_or_empty(body.get("username")));
+    crate::account_service::valid_username(&name).then(|| format!("login-fail|{name}"))
+}
+
 /// The health route the root page points at: a const here, outside the POST handlers, so the route-table scan in
 /// `route_tests` does not read this GET path as a POST route.
 const HEALTH_PATH: &str = "/api/health";
@@ -260,7 +270,11 @@ impl LastRouteServer {
         } else {
             self.config.api_rate_limit_max
         };
-        let address = or_default(requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops), "unknown");
+        // an IPv6 caller is counted by its /64 network, not by one of the addresses it can pick inside it
+        let address = or_default(
+            rate_limit::rate_address(&requester_address(request, self.config.trust_proxy, self.config.trusted_proxy_hops)),
+            "unknown",
+        );
         let bucket = if auth && self.config.auth_rate_limit_max > 0 {
             "auth"
         } else if sensitive {
@@ -271,6 +285,24 @@ impl LastRouteServer {
             "api"
         };
         state.request_rates.hit(&format!("{bucket}|{address}"), maximum, self.config.rate_limit_window_ms, self.now())
+    }
+
+    /// Counts one password attempt on the reserved room `code`: per caller address, and per room from every address
+    /// together. The password check is a slow scrypt run under the state lock, so a limited attempt is refused before
+    /// it. Returns the 429 to send when either limit is used up.
+    fn room_password_limited(&self, state: &mut State, address: &str, code: &str) -> Option<Response> {
+        let (now, window) = (self.now(), self.config.rate_limit_window_ms);
+        let by_address = state.request_rates.hit(
+            &format!("room-password|{}", or_default(rate_limit::rate_address(address), "unknown")),
+            ROOM_PASSWORD_ATTEMPTS_PER_ADDRESS,
+            window,
+            now,
+        );
+        if by_address > 0 {
+            return Some(limited(false, by_address));
+        }
+        let by_room = state.request_rates.hit(&format!("room-password-room|{code}"), ROOM_PASSWORD_ATTEMPTS_PER_ROOM, window, now);
+        (by_room > 0).then(|| limited(false, by_room))
     }
 
     /// `developerRequest(body)`: a live dev token, the setup password as `adminProof`, or an owner session.
@@ -397,6 +429,10 @@ impl LastRouteServer {
             return json_response(404, &json!({ "ok": false, "code": "NOT_FOUND", "error": "Not found" }), &[]);
         }
         if path == "/api/regions/report" {
+            // the size is checked before the signature is computed over the body
+            if request.body_overflow || request.body.len() > body_limit(path) {
+                return json_response(413, &json!({ "ok": false, "error": "REQUEST BODY TOO LARGE" }), &[]);
+            }
             let raw = String::from_utf8_lossy(&request.body).to_string();
             let region = state.regions.verify(&request.headers, &raw);
             if region.is_empty() {
@@ -673,6 +709,11 @@ impl LastRouteServer {
             let username = caller.username.clone();
             let owner = caller.owner.is_some();
             let password = str_or_empty(body.get("password"));
+            if !owner && !password.is_empty() {
+                if let Some(refused) = self.room_password_limited(state, &address, &code) {
+                    return Some(refused);
+                }
+            }
             let live = state.dir.enet_rooms.get(&code).cloned();
             let Some(reserved) = state.dir.reserved.as_mut() else { return Some(internal_error()) };
             if !reserved.has_access(&code, &username, &password, owner) {
@@ -814,6 +855,30 @@ impl LastRouteServer {
                 "/api/admin/builds/remove" => state.moderation.remove_build(body),
                 _ => unknown_endpoint(),
             }));
+        }
+        if path == "/api/guest/name" {
+            // a renewal (the holder's own token) is free; new names are limited per address, so one caller cannot lease
+            // the whole name space (each lease lasts 30 days and every grant rewrites the lease file)
+            if !state.guest_names.is_renewal(body) {
+                let key = format!("guest-name|{}", or_default(rate_limit::rate_address(&address), "unknown"));
+                let wait = state.request_rates.hit(&key, GUEST_NAMES_PER_ADDRESS, GUEST_NAME_WINDOW_MS, now);
+                if wait > 0 {
+                    return Some(limited(false, wait));
+                }
+            }
+            return Some(reply(state.guest_names.issue(body)));
+        }
+        if path == "/api/rooms/join" && !truthy(body.get("joinOnly")) {
+            // opening a web room that does not exist yet is limited per address (the server holds `MAX_ROOMS` of them);
+            // a caller on this machine is not counted
+            let code = crate::room_service::clean_room(body.get("room"));
+            if code.len() >= 5 && address != "127.0.0.1" && !state.room_service.rooms.contains_key(&code) {
+                let key = format!("web-room|{}", or_default(rate_limit::rate_address(&address), "unknown"));
+                let wait = state.request_rates.hit(&key, WEB_ROOMS_PER_ADDRESS, self.config.rate_limit_window_ms, now);
+                if wait > 0 {
+                    return Some(limited(false, wait));
+                }
+            }
         }
         if path == "/api/dev/login" {
             if self.config.admin_password.is_empty() {
@@ -1054,12 +1119,25 @@ impl LastRouteServer {
                 (404, json!({ "ok": false, "code": "CITY_MAPS_UNAVAILABLE", "error": "City maps are not part of this server" }))
             }
             "/api/rooms/leave" => guard.room_service.leave_room(body),
-            "/api/guest/name" => guard.guest_names.issue(body),
             "/api/account/register" | "/api/account/login" => {
                 let register = path == "/api/account/register";
+                // Wrong sign-ins are also counted per account name, from every address together, so guessing one
+                // account's password from many addresses is slowed like guessing from one. A name that used up its
+                // window is refused before the (slow) password check.
+                let guessed = if register { None } else { login_failure_key(body) };
+                if let Some(key) = &guessed {
+                    let wait = guard.request_rates.blocked(key, self.config.login_failure_limit, self.now());
+                    if wait > 0 {
+                        return (429, json!({ "ok": false, "code": "RATE_LIMITED", "error": rate_limit::limited_message(true, wait), "retryAfterSeconds": wait }));
+                    }
+                }
                 let (allow, g) = if register { self.developer_request_unlocked(guard, body) } else { (false, guard) };
                 let (mut r, g) = self.with_accounts(g, |accounts| if register { accounts.register(body, allow) } else { accounts.login(body) });
                 guard = g;
+                if let Some(key) = guessed.filter(|_| r.0 == 401) {
+                    let now = self.now();
+                    guard.request_rates.hit(&key, self.config.login_failure_limit, LOGIN_FAILURE_WINDOW_MS, now);
+                }
                 // The website mints its own devToken for an owner, so a forwarded reply keeps it.
                 if !guard.accounts.is_upstream() && r.1.get("ok") == Some(&json!(true)) && truthy(r.1.get("adminOwner")) {
                     r.1["devToken"] = json!(self.issue_dev_token(&mut guard));
@@ -1196,6 +1274,11 @@ impl LastRouteServer {
         if reserved && !spawned {
             let owner = caller.owner.is_some();
             let password = str_or_empty(body.get("roomPassword"));
+            if !owner && !password.is_empty() {
+                if let Some(refused) = self.room_password_limited(state, address, &code) {
+                    return refused;
+                }
+            }
             if !state.dir.reserved.as_ref().map(|r| r.has_access(&code, &host_user, &password, owner)).unwrap_or(false) {
                 return json_response(403, &json!({ "ok": false, "code": "ROOM_RESERVED", "reserved": true,
                     "error": "THAT ROOM CODE IS RESERVED // INVITE OR ROOM PASSWORD REQUIRED" }), &[]);
@@ -1215,6 +1298,21 @@ impl LastRouteServer {
             let own_relay_made = state.dir.made_by(&code, address);
             if !(reserved && now - live.last_seen > RESERVED_TAKEOVER_MS) && !own_relay_made {
                 return json_response(409, &json!({ "ok": false, "error": "ROOM CODE ALREADY REGISTERED" }), &[]);
+            }
+        }
+        // The directory is bounded: in total, and per address for the rooms anyone may register (a dedicated host an
+        // owner spawned, a reserved room and a caller behind a proxy on this machine are not counted per address).
+        if !state.dir.enet_rooms.contains_key(&code) {
+            if state.dir.enet_rooms.len() >= MAX_ENET_ROOMS {
+                return json_response(503, &json!({ "ok": false, "code": "SERVER_BUSY", "error": "TOO MANY ROOMS RIGHT NOW" }), &[]);
+            }
+            let counted = !spawned && !reserved && !address.is_empty() && address != "127.0.0.1";
+            let network = rate_limit::rate_address(address);
+            if counted
+                && state.dir.enet_rooms.values().filter(|r| !r.dedicated && !r.reserved && rate_limit::rate_address(&r.address) == network).count()
+                    >= ENET_ROOMS_PER_ADDRESS
+            {
+                return json_response(429, &json!({ "ok": false, "code": "TOO_MANY_ROOMS", "error": "TOO MANY ROOMS FROM THIS ADDRESS" }), &[]);
             }
         }
         let token = base64url(&random_bytes(24));
