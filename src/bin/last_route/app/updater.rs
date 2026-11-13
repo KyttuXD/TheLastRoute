@@ -465,6 +465,8 @@ pub fn start_check() -> UpdateHandle {
 }
 
 /// The website's signed builds first, then the old server (only with a download key) when the site cannot be used.
+// (on a Mac every arm of the match ends the check, so the old server below is never asked there)
+#[cfg_attr(target_os = "macos", allow(unreachable_code, unused_variables))]
 fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
     #[cfg(not(target_arch = "wasm32"))]
     match site_update(handle) {
@@ -524,9 +526,7 @@ pub fn build_label() -> String {
 /// Ok(false) when nothing needs doing.
 #[cfg(target_os = "macos")]
 fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
-    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
-    let file = format!("last_route-macos-{arch}.zip");
-    let url = "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly";
+    let (file, url, bundle_name) = mac_release_source(cfg!(lr_macos_legacy), cfg!(target_arch = "aarch64"));
     let reply = Request::new(Method::Get, url)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "last-route-updater")
@@ -608,7 +608,7 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
     std::fs::write(&zip, &reply.body).map_err(|e| e.to_string())?;
     set(handle, UpdateStatus::Installing);
     run("ditto", &["-x", "-k", zip.to_str().unwrap_or(""), stage.to_str().unwrap_or("")])?;
-    let bundle = stage.join("KYTTU The Last Route.app");
+    let bundle = stage.join(bundle_name);
     if !bundle.is_dir() {
         let _ = std::fs::remove_dir_all(&stage);
         return Err("the release file does not hold the app".into());
@@ -621,6 +621,26 @@ fn github_update(handle: &Mutex<UpdateStatus>) -> Result<bool, String> {
         }
     }
     result.map(|()| true)
+}
+
+/// Where a Mac build updates from: (the release file, the GitHub API address of its release, the app inside the zip).
+/// The legacy app (OS X 10.5 to 10.11) has a release of its own; the normal builds need macOS 10.12 or 11.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mac_release_source(legacy: bool, arm: bool) -> (String, &'static str, &'static str) {
+    if legacy {
+        (
+            "last_route-macos-legacy.zip".to_string(),
+            "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly-legacy",
+            "KYTTU The Last Route (legacy).app",
+        )
+    } else {
+        let arch = if arm { "arm64" } else { "x86_64" };
+        (
+            format!("last_route-macos-{arch}.zip"),
+            "https://api.github.com/repos/KyttuXD/TheLastRoute/releases/tags/nightly",
+            "KYTTU The Last Route.app",
+        )
+    }
 }
 
 /// The old vps3 update API: the offer, a keyed download, the SHA-256, the replacement.
@@ -664,6 +684,11 @@ enum SiteOutcome {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
+    // The legacy Mac app (OS X 10.5 to 10.11) must never take the website's Mac build: that one needs macOS 10.12 and
+    // does not start on the old systems (it happened on a Mac Pro 3,1). It updates from the nightly-legacy release.
+    if cfg!(lr_macos_legacy) {
+        return SiteOutcome::Unavailable("the legacy Mac app updates from the nightly-legacy release".into());
+    }
     use super::updater_site as source;
     let base = source::site_url(std::env::var("LR_UPDATE_SITE_URL").ok().as_deref());
     let keys = source::trusted_keys(&base, std::env::var("LR_NATIVE_PUBKEY").ok().as_deref());
@@ -809,6 +834,14 @@ mod tests {
     #[test]
     fn a_release_download_may_only_move_through_github_hosts() {
         assert!(release_host_allowed("https://github.com/KyttuXD/TheLastRoute/releases/download/nightly/x.zip"));
+        // the legacy Mac app never looks at the normal Mac release
+        let (file, url, bundle) = mac_release_source(true, false);
+        assert_eq!(file, "last_route-macos-legacy.zip");
+        assert!(url.ends_with("/releases/tags/nightly-legacy") && bundle.contains("(legacy)"));
+        let (file, url, _) = mac_release_source(false, false);
+        assert_eq!(file, "last_route-macos-x86_64.zip");
+        assert!(url.ends_with("/releases/tags/nightly"));
+        assert_eq!(mac_release_source(false, true).0, "last_route-macos-arm64.zip");
         assert!(release_host_allowed("https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sig=a"));
         assert!(!release_host_allowed("http://github.com/x.zip"));
         assert!(!release_host_allowed("https://evil.example.com/x.zip"));

@@ -1063,7 +1063,7 @@ impl Game {
 
         // world sound every frame, hidden or struggling too (main_3d.gd _update_local_audio, Glyra's hum)
         {
-            use crate::hunters::gimmicks::{nyxie::Wake, Gimmick};
+            use crate::hunters::gimmicks::nyxie::Wake;
             let (eye, (fwd, right, up)) = (self.eye(), self.camera_basis());
             let listener = crate::audio::world::Listener {
                 pos: self.p.pos,

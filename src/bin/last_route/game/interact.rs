@@ -257,7 +257,6 @@ impl Game {
 
     /// E on an open signal route: one press for the first hunter with a route open. True when a route took the press.
     pub(crate) fn press_signal_route(&mut self) -> bool {
-        use crate::hunters::gimmicks::Gimmick;
         let Some(i) = self.hunters.iter().position(|h| matches!(&h.gimmick, Gimmick::VoidGray(g) if g.route_prompt().is_some())) else {
             return false;
         };
