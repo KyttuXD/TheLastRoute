@@ -8,6 +8,7 @@ the numbers stand.
 | Machine | Goal | State |
 |---|---|---|
 | Very low-end PCs | at least 30 fps in play | not measured on such a machine |
+| KT's Mac Pro 3,1 (2008, OS X 10.6.8, legacy app) | at least 30 fps | 116 fps average in the `mixed` stress run, worst 1% of frames 9 fps (chunk arrival hitches), 2026-11-12 |
 | KT's dual-core MacBook Airs | 60 to 300 fps | last Intel Air numbers are in [STRESS_TESTS.md](STRESS_TESTS.md) and [GRAPHICS_API.md](GRAPHICS_API.md) |
 | KT's Framework Laptop 13 | 1000 fps or more; keep it | release build, stress `mixed`: 0.81 ms a frame (about 1230 fps), 2026-11-12 |
 
@@ -68,8 +69,13 @@ triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
 - **Done since:** every upload of a draw call's vertices now gives the driver new storage on macOS (miniquad patch
   10). The Mac Pro's stress run went from 69 fps to 117 and 120 fps (two runs each way, same program, the switch
   flipped with `LR_GL_ORPHAN`). The MacBook Airs use the same Apple OpenGL family and get it too; not measured there.
-- What that points to, in order: spread the window arrival over more frames on slow machines; fewer draw calls in
-  the HUD; a release build of the legacy app (it is a dev-profile build today).
+- **Release profile for the legacy app:** no gain in the average there (116 fps, two runs, the same frame count
+  both times, so something caps it near 116 to 120: the drawing side, not the program's own code). The worst 1% of
+  frames rose from 8.8 to 9.4 fps. It stays, as every shipped build is a release build.
+- **Tried and undone:** building the neighbour levels one frame after a window of chunks arrives, to split the 150 ms
+  hitch. Two tests failed (code after a level change relies on the neighbours being there in the same frame).
+- What is left, in order: the hitch when a window of chunks arrives (80 to 150 ms on the Mac Pro, about every 45 m
+  walked), which needs that split done with care; fewer draw calls in the HUD.
 
 ## Not known yet
 

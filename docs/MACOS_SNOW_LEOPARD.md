@@ -6,7 +6,8 @@ The normal game artifact still requires macOS 10.12 or later.
 ## Download and state (2026-11-12)
 
 **It runs.** The legacy app starts, draws correctly and plays on KT's Mac Pro 3,1 (2008, two Xeon E5462, Radeon HD
-2600, OS X 10.6.8): a 25 second `mixed` stress run averages about 70 frames a second, with no crash.
+2600, OS X 10.6.8): a 25 second `mixed` stress run averages 116 frames a second (it was 69 before the draw-call
+upload change, [PERFORMANCE.md](PERFORMANCE.md)), with no crash.
 
 The `nightly-legacy` pre-release (https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly-legacy) holds
 `last_route-macos-legacy.zip`: **one app for 64-bit Intel Macs on OS X 10.5 up to 10.11** (the normal app needs
