@@ -965,6 +965,7 @@ impl Game {
             return;
         }
         let from = self.inf.as_ref().map(|i| (i.center, i.level));
+        let builds_before = self.inf.as_ref().map_or(0, |i| i.builds);
         self.recentre_window(content, catalog);
         if self.inf.as_ref().map(|i| (i.center, i.level)) != from && self.p.hidden.is_none() {
             // a new window: its doors are registered shut and the crosshair target is read again, so the prompt
@@ -982,6 +983,14 @@ impl Game {
         self.refresh_waypoint();
         let _window_residency_perf = crate::app::perf::section("window residency");
         self.keep_stack(content, catalog);
+        // the prewarm is background work: it waits out a frame that already built a window or a neighbour level (on a
+        // Mac Pro 3,1 a prewarm step on top of a window move made a 150 ms frame; docs/PERFORMANCE.md)
+        let built_this_frame = self.inf.as_ref().map_or(0, |i| i.builds) != builds_before || self.inf.as_ref().map(|i| (i.center, i.level)) != from;
+        if built_this_frame {
+            if let Some(inf) = self.inf.as_mut() {
+                inf.prewarm_wait = inf.prewarm_wait.max(2);
+            }
+        }
         self.prewarm_chunks(content, catalog);
         self.pipes_tick();
         let dt = self.safe_room_dt();

@@ -1,7 +1,7 @@
 {
   "schema": "lr.chunk_prewarm/1",
-  "_about": "Chunk-window prewarm (game/preload.rs `ChunkPrewarm`, hooked in Game::prewarm_chunks). margin_m: how close (metres) the runner gets to the edge of the middle chunk before the chunks beyond that edge are generated into the window cache. gap_frames: frames to wait after a step. chunks_per_step: chunks generated per step (the per-frame budget). A chunk is a pure function of the seed, so prewarming never changes the world.",
+  "_about": "Chunk-window prewarm (game/preload.rs `ChunkPrewarm`, hooked in Game::prewarm_chunks). margin_m: how close (metres) the runner gets to the edge of the middle chunk before the chunks beyond that edge are generated into the window cache. gap_frames: frames to wait after a step. chunks_per_step: chunks generated per step (the per-frame budget; 1 since 2026-11-12: a chunk takes about 5 ms on a fast PC and 25 ms on a 2008 Mac Pro, and two in a frame was a visible hitch). A frame that builds a window or a neighbour level skips its step. A chunk is a pure function of the seed, so prewarming never changes the world.",
   "margin_m": 64.0,
   "gap_frames": 1,
-  "chunks_per_step": 2
+  "chunks_per_step": 1
 }
