@@ -2202,6 +2202,109 @@ fn plane_box(b: &mut Builder, centre: Vec3, axes: [Vec3; 3], room_h: f32, tiers:
     }
 }
 
+/// The hall decor (pilasters, arches, sewer ribs) of the open cells `cells` of chunk `key`, in the chunk's own cells,
+/// with the chunk's corner in window cells. None for a sewer chunk that has no grid.
+fn chunk_hall_decor(f: &Facility, sewer: &mut Option<SewerFloor>, key: (i32, i32), cells: &[Cell]) -> Option<((i32, i32), super::hall_arch::Decor)> {
+    use super::hall_arch::{self, ChunkView};
+    // the chunk's corner in window cells
+    let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
+    // a sewer chunk's grid and ramp cells; a sewer window's chunk without a grid is not dressed
+    let sewer_chunk: Option<(Grid, HashSet<(i32, i32)>)> = match sewer.as_mut() {
+        Some(s) => {
+            let grid = s.grid(key).copied()?;
+            let inputs = crate::world::route::sewer::Inputs { world: &s.seed };
+            let ramps = crate::world::route::sewer::ramp_cells(&inputs, key.0, key.1, s.level).keys().map(|c| (c.x, c.y)).collect();
+            Some((grid, ramps))
+        }
+        None => None,
+    };
+    let solid = |x: i32, z: i32| f.is_wall_cell(at.0 + x, at.1 + z);
+    let code = |x: i32, z: i32| sewer_chunk.as_ref().map(|(grid, _)| grid[z as usize][x as usize]);
+    let open = |x: i32, z: i32| !solid(x, z) && code(x, z).map_or(true, |c| c == DRY || c == BRIDGE);
+    let brick = |x: i32, z: i32| code(x, z).map_or(true, |c| c == SOLID);
+    let room = |x: i32, z: i32| f.room_at((at.0 + x) as f64 + 0.5, (at.1 + z) as f64 + 0.5).is_some();
+    let ramp = |x: i32, z: i32| sewer_chunk.as_ref().is_some_and(|(_, ramps)| ramps.contains(&(x, z)));
+    let height = |x: i32, z: i32| cell_wall_height(f, at.0 + x, at.1 + z);
+    let view = ChunkView { size: CHUNK, sewer: sewer_chunk.is_some(), open: &open, brick: &brick, room: &room, ramp: &ramp, height: &height };
+    let mut decor = hall_arch::Decor::default();
+    for &c in cells {
+        let (lx, lz) = (c.x - at.0, c.y - at.1);
+        for d in hall_arch::DIRS {
+            hall_arch::wall_face(&view, lx - d.0, lz - d.1, d, &mut decor);
+        }
+    }
+    Some((at, decor))
+}
+
+/// How far from the wall a hall pilaster is solid to the runner, metres. The shaft is drawn 32 cm deep, but a body
+/// of 24 cm radius walking the middle line of the cell beside the wall reaches to 26 cm from it, and everything that
+/// walks by cell centres (the stress scenarios, the headless bots, the stair sweep tests) does exactly that. At
+/// 24 cm the middle line stays free and a runner hugging the wall is stopped by the shaft.
+const PILASTER_SOLID_DEPTH: f32 = 0.24;
+
+/// A window with hall decor: a streamed 3x3 window with flat floors (not the finite floor, not Inferno).
+fn has_hall_decor(f: &Facility) -> bool {
+    !f.has_lift && f.cols == CHUNK * WINDOW && f.rows == CHUNK * WINDOW && f.terrain().is_none()
+}
+
+/// What the game needs of a window's hall decor (render/hall_arch.rs), in window metres: the pilaster shafts the
+/// runner cannot walk through, as (min x, min z, max x, max z), and the middle of the hall under each arch. Godot makes the shafts solid to the player and lets hunters through (`HunterView3D.ignore_decor`); the
+/// arch stones are overhead and solid to nobody. A shaft in a hall one cell wide is left out: with its twin it
+/// would leave 36 cm for a 48 cm body.
+pub fn hall_solids(f: &Facility) -> (Vec<[f32; 4]>, Vec<Vec3>) {
+    use super::hall_arch::ArchEntry;
+    let (mut blocks, mut arches) = (vec![], vec![]);
+    if !has_hall_decor(f) {
+        return (blocks, arches);
+    }
+    let mut sewer = SewerFloor::of(f);
+    // the sewers' walkways are narrow, railed and beside water: their shafts stay walk-through (a headless walk
+    // out of a spiral's foot into the tunnel was stopped by one)
+    let sewer_window = sewer.is_some();
+    // no solid shaft within two cells of a flight's well: the lanes on and off a flight run along the walls there
+    let wells: HashSet<(i32, i32)> = f.well_cells_all().into_iter().map(|c| (c.x, c.y)).collect();
+    let near_well = |cell: Cell| (-2..=2).any(|dy| (-2..=2).any(|dx| wells.contains(&(cell.x + dx, cell.y + dy))));
+    let mut by_chunk: HashMap<(i32, i32), Vec<Cell>> = HashMap::new();
+    for c in f.floor_cells() {
+        by_chunk.entry(chunk_cell(f.origin, c.x, c.y).0).or_default().push(c);
+    }
+    for (key, cells) in by_chunk {
+        let Some((at, decor)) = chunk_hall_decor(f, &mut sewer, key, &cells) else { continue };
+        let shift = vec3(at.0 as f32, 0.0, at.1 as f32);
+        for c in &decor.colliders {
+            let (centre, half) = (c.centre + shift, c.size * 0.5);
+            // the hall cell the shaft stands in, and whether the hall is one cell wide there (the shaft is thin
+            // along the direction across the hall)
+            let cell = Cell::new(centre.x.floor() as i32, centre.z.floor() as i32);
+            let across = if c.size.x < c.size.z { (1, 0) } else { (0, 1) };
+            let (wall_low, wall_high) = (f.is_wall_cell(cell.x - across.0, cell.y - across.1), f.is_wall_cell(cell.x + across.0, cell.y + across.1));
+            // the hall must be at least two cells of plain floor wide there: the shaft's own cell and the next one
+            let beyond = if wall_low { Cell::new(cell.x + across.0, cell.y + across.1) } else { Cell::new(cell.x - across.0, cell.y - across.1) };
+            let roomy = !f.is_wall_cell(beyond.x, beyond.y) && f.can_occupy(beyond.x as f64 + 0.5, beyond.y as f64 + 0.5, 0.24);
+            if (wall_low && wall_high) || !roomy || sewer_window || near_well(cell) {
+                continue;
+            }
+            // solid from the wall out to PILASTER_SOLID_DEPTH, not the whole 32 cm: see the constant
+            let mut b = [centre.x - half.x, centre.z - half.z, centre.x + half.x, centre.z + half.z];
+            let (lo, hi) = if across.0 != 0 { (0, 2) } else { (1, 3) };
+            if wall_low {
+                b[hi] = b[hi].min(b[lo] + PILASTER_SOLID_DEPTH);
+            } else {
+                b[lo] = b[lo].max(b[hi] - PILASTER_SOLID_DEPTH);
+            }
+            blocks.push(b);
+        }
+        for e in &decor.log {
+            match e {
+                ArchEntry::Hall { hall_centre, .. } => arches.push(*hall_centre + shift),
+                // a sewer rib: the walkway cell it springs over
+                ArchEntry::Haunch { centre, .. } => arches.push(vec3(centre.x, 0.0, centre.z) + shift),
+            }
+        }
+    }
+    (blocks, arches)
+}
+
 /// The hall pilasters and hall arches of the picked cells (render/hall_arch.rs, Godot's RefDecor): the shafts and the
 /// arch blocks in the hall's own wall picture, the caps and keystones in the district's accent (`RegionAccent`, a
 /// painted floor kind under a tint; plain tinted colour when the painter tables do not know the kind).
@@ -2220,8 +2323,8 @@ fn add_hall_arches(
     choices: &mut HashMap<(String, String, bool), TextureChoice>,
     assets: &Assets,
 ) {
-    use super::hall_arch::{self, ChunkView, Material};
-    if f.has_lift || f.cols != CHUNK * WINDOW || f.rows != CHUNK * WINDOW || f.terrain().is_some() {
+    use super::hall_arch::Material;
+    if !has_hall_decor(f) {
         return;
     }
     let mut by_chunk: HashMap<(i32, i32), Vec<Cell>> = HashMap::new();
@@ -2232,35 +2335,7 @@ fn add_hall_arches(
     }
     let regions = crate::content::regions::table();
     for (key, cells) in by_chunk {
-        // the chunk's corner in window cells
-        let at = (key.0 * CHUNK - f.origin.0, key.1 * CHUNK - f.origin.1);
-        // a sewer chunk's grid and ramp cells; a sewer window's chunk without a grid is not dressed
-        let sewer_chunk: Option<(Grid, HashSet<(i32, i32)>)> = match sewer.as_mut() {
-            Some(s) => {
-                let Some(grid) = s.grid(key).copied() else { continue };
-                let inputs = crate::world::route::sewer::Inputs { world: &s.seed };
-                let ramps = crate::world::route::sewer::ramp_cells(&inputs, key.0, key.1, s.level).keys().map(|c| (c.x, c.y)).collect();
-                Some((grid, ramps))
-            }
-            None => None,
-        };
-        let solid = |x: i32, z: i32| f.is_wall_cell(at.0 + x, at.1 + z);
-        let code = |x: i32, z: i32| sewer_chunk.as_ref().map(|(grid, _)| grid[z as usize][x as usize]);
-        let open = |x: i32, z: i32| !solid(x, z) && code(x, z).map_or(true, |c| c == DRY || c == BRIDGE);
-        let brick = |x: i32, z: i32| code(x, z).map_or(true, |c| c == SOLID);
-        let room = |x: i32, z: i32| f.room_at((at.0 + x) as f64 + 0.5, (at.1 + z) as f64 + 0.5).is_some();
-        let ramp = |x: i32, z: i32| sewer_chunk.as_ref().is_some_and(|(_, ramps)| ramps.contains(&(x, z)));
-        let height = |x: i32, z: i32| cell_wall_height(f, at.0 + x, at.1 + z);
-        let view = ChunkView { size: CHUNK, sewer: sewer_chunk.is_some(), open: &open, brick: &brick, room: &room, ramp: &ramp, height: &height };
-        let mut decor = hall_arch::Decor::default();
-        for c in cells {
-            let (lx, lz) = (c.x - at.0, c.y - at.1);
-            for d in hall_arch::DIRS {
-                hall_arch::wall_face(&view, lx - d.0, lz - d.1, d, &mut decor);
-            }
-        }
-        // `decor.colliders` (the pilaster shafts, solid to the player in Godot) is not used yet: the body tests of
-        // `Facility` are shared by the runner, the bots and the hunters, and a shaft narrows a one-cell hall to 36 cm
+        let Some((at, decor)) = chunk_hall_decor(f, sewer, key, &cells) else { continue };
         let shift = vec3(at.0 as f32, 0.0, at.1 as f32);
         for b in &decor.boxes {
             let (cell, room_h, trim) = match b.material {

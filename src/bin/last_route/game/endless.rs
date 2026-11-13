@@ -839,6 +839,9 @@ impl Game {
         self.fix = fix;
         let level = self.inf.as_ref().map_or(0, |i| i.level);
         self.fac.level = level;
+        // the hall pilasters are solid to the runner (render/hall_arch.rs places them; Godot `_collide("pilaster")`)
+        let (blocks, _) = crate::render::world_mesh::hall_solids(&self.fac);
+        self.fac.set_runner_blocks(blocks);
         self.claim_window();
         // the focus is a prop index of the window just replaced: it would name another door in this one
         self.focus = None;
@@ -1543,6 +1546,11 @@ impl Game {
         let from = inf.level;
         inf.level = to;
         self.fac.level = to;
+        // a floor that was a neighbour until now has no runner-only solids yet (a floor walked before keeps its own)
+        if self.fac.runner_block_count() == 0 {
+            let (blocks, _) = crate::render::world_mesh::hall_solids(&self.fac);
+            self.fac.set_runner_blocks(blocks);
+        }
         self.p.rebase_floor(floor_y_of(to));
         self.claim_window();
         self.focus = None;

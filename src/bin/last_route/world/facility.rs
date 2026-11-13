@@ -306,6 +306,10 @@ pub struct Facility {
     hunter_open: Vec<bool>,
     /// Indices into `props` of the crawl-under pipes (`Prop::crawl_under`): the few props only a hunter is stopped by.
     crawl_props: Vec<usize>,
+    /// Boxes only the runner cannot walk through (the hall pilasters: `set_runner_blocks`), as (min x, min z, max x,
+    /// max z) in metres, and for each cell the boxes that reach into it.
+    runner_blocks: Vec<[f32; 4]>,
+    runner_block_cells: HashMap<(i32, i32), Vec<u32>>,
     random: Rng,
     /// Solid props by cell, for fast footprint tests.
     prop_grid: Vec<Vec<usize>>,
@@ -656,6 +660,8 @@ impl Facility {
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
             crawl_props: vec![],
+            runner_blocks: vec![],
+            runner_block_cells: HashMap::new(),
             random: Rng::new(seed_text),
             prop_grid: vec![vec![]; (cols * rows) as usize],
             door_state: HashMap::new(),
@@ -1041,6 +1047,8 @@ impl Facility {
             hole: vec![false; (cols * rows) as usize],
             hunter_open: vec![],
             crawl_props: vec![],
+            runner_blocks: vec![],
+            runner_block_cells: HashMap::new(),
             random: Rng::new(seed_text),
             prop_grid: vec![],
             door_state: HashMap::new(),
@@ -1768,6 +1776,44 @@ impl Facility {
         }
         self.fits(x, y, r, 0.0, false)
             && (self.stairs.is_empty() || self.stair_holes_fit(x, y, r.min(crate::config::PLAYER_RADIUS), 0.0, true))
+    }
+
+    /// Sets the boxes only the runner cannot walk through (hunters and bots pass, as in Godot, where the hall
+    /// pilasters are solid to the player only).
+    pub fn set_runner_blocks(&mut self, blocks: Vec<[f32; 4]>) {
+        self.runner_block_cells.clear();
+        for (i, b) in blocks.iter().enumerate() {
+            for z in b[1].floor() as i32..=b[3].floor() as i32 {
+                for x in b[0].floor() as i32..=b[2].floor() as i32 {
+                    self.runner_block_cells.entry((x, z)).or_default().push(i as u32);
+                }
+            }
+        }
+        self.runner_blocks = blocks;
+    }
+
+    /// Whether a runner-only box overlaps a body of radius `r` at `(x, z)` (its square footprint, as the walls test it).
+    pub fn runner_blocked(&self, x: f32, z: f32, r: f32) -> bool {
+        if self.runner_blocks.is_empty() {
+            return false;
+        }
+        for cz in (z - r).floor() as i32..=(z + r).floor() as i32 {
+            for cx in (x - r).floor() as i32..=(x + r).floor() as i32 {
+                let Some(list) = self.runner_block_cells.get(&(cx, cz)) else { continue };
+                for &i in list {
+                    let b = self.runner_blocks[i as usize];
+                    if x + r > b[0] && x - r < b[2] && z + r > b[1] && z - r < b[3] {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// How many runner-only boxes the floor holds.
+    pub fn runner_block_count(&self) -> usize {
+        self.runner_blocks.len()
     }
 
     /// Whether a crawl-under pipe's footprint covers a body of radius `r` at `(x, y)`. Height is `crawl_stops`.
@@ -3101,6 +3147,19 @@ mod tests {
 
     /// The invisible door: a room arch has a doorway but no leaf and no model, so it is never a door to use. It is
     /// not listed, never registered, never blocks and cannot be toggled; the same prop as a room door is all of those.
+    #[test]
+    fn runner_only_boxes_stop_a_body_that_overlaps_them_and_nothing_else() {
+        let (mut f, _) = Facility::test_levels(FlightShape::Straight, false);
+        assert!(!f.runner_blocked(3.5, 3.5, 0.24), "no boxes: nothing blocks");
+        // a shaft 24 cm deep on the low-x side of cell (3, 3)
+        f.set_runner_blocks(vec![[3.0, 3.29, 3.24, 3.71]]);
+        assert_eq!(f.runner_block_count(), 1);
+        assert!(!f.runner_blocked(3.5, 3.5, 0.24), "the middle line of the cell stays free (the body reaches to 3.26)");
+        assert!(f.runner_blocked(3.4, 3.5, 0.24), "a body hugging the wall is stopped");
+        assert!(!f.runner_blocked(3.4, 4.5, 0.24), "past the shaft the wall side is free again");
+        assert!(f.runner_blocked(3.1, 3.9, 0.24), "a body in the next cell that reaches over the shaft is stopped too");
+    }
+
     #[test]
     fn a_room_arch_is_an_open_way_not_a_door() {
         let mut f = door_floor();

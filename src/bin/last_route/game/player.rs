@@ -517,6 +517,9 @@ impl Player {
     fn fits(&self, fac: &Facility, stack: &LevelStack, x: f32, z: f32) -> bool {
         body_fits_at_y(fac, stack, x, z, self.floor_y + self.height, PLAYER_RADIUS)
             && !fac.crawl_stops(x, z, PLAYER_RADIUS, self.capsule_top(fac))
+            // the hall pilasters stop the runner (not hunters or bots). A body that is already inside one (it
+            // spawned or was set down there) may always move, so nothing can trap it.
+            && (!fac.runner_blocked(x, z, PLAYER_RADIUS) || fac.runner_blocked(self.pos.0, self.pos.1, PLAYER_RADIUS))
     }
 
     pub fn update_movement(

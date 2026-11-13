@@ -19,6 +19,8 @@
 //!                           straight) found in the window, 1 m back from it, looking down at the well
 //!   LR_SHOT_PROP=type       with a run: stand LR_SHOT_DIST metres (default 3) from the nearest prop of that type in the streamed window
 //!                           (e.g. sewerOutflowPipe on level -1), looking at it; LR_SHOT_PITCH tilts the view (radians, default 0.1)
+//!   LR_SHOT_ARCH=1          with a run: stand LR_SHOT_DIST metres (default 5) before the nearest hall arch, looking along
+//!                           the hall at it; LR_SHOT_BACK=1 stands on the other side
 //!   LR_SHOT_PAUSE=...       with a run: pause | statistics | players | settings | dossier | confirm
 //!   LR_SHOT_ADMIN=n         with a run: the admin menu on tab n (0 STATUS .. 9 FIELDS)
 //!   LR_SHOT_MAP=1           with a run: the full map
@@ -2490,6 +2492,9 @@ pub async fn run(
                 if let Some(ptype) = env("LR_SHOT_PROP") {
                     shot_at_prop(&mut g, &ptype);
                 }
+                if env("LR_SHOT_ARCH").is_some() {
+                    shot_at_arch(&mut g);
+                }
                 if let Ok(turn) = std::env::var("LR_SHOT_YAW") {
                     g.p.yaw = turn.parse().unwrap_or(0.0);
                 }
@@ -2992,6 +2997,38 @@ fn shot_remote(g: &Game) -> RemoteView {
         emote: None,
         hide_since: None,
     }
+}
+
+/// `LR_SHOT_ARCH=1`: stand in the hall `LR_SHOT_DIST` metres (default 5) before the hall arch nearest the player,
+/// looking along the hall at it; `LR_SHOT_BACK=1` stands on its other side.
+fn shot_at_arch(g: &mut Game) {
+    let from = g.p.pos;
+    let (_, arches) = crate::render::world_mesh::hall_solids(&g.fac);
+    let dist: f32 = env("LR_SHOT_DIST").and_then(|d| d.parse().ok()).unwrap_or(5.0);
+    let side = if env("LR_SHOT_BACK").is_some() { -1.0 } else { 1.0 };
+    let mut by_distance: Vec<(f32, f32)> = arches.iter().map(|c| (c.x, c.z)).collect();
+    by_distance.sort_by(|a, b| {
+        let d = |p: &(f32, f32)| (p.0 - from.0).powi(2) + (p.1 - from.1).powi(2);
+        d(a).total_cmp(&d(b))
+    });
+    for c in by_distance {
+        // the hall runs along the axis on which the floor is open both ways from the arch
+        for along in [(1.0f32, 0.0f32), (0.0, 1.0)] {
+            let at = (c.0 - along.0 * dist * side, c.1 - along.1 * dist * side);
+            let clear = (1..=dist.ceil() as i32).all(|k| {
+                let p = (c.0 - along.0 * k as f32 * side, c.1 - along.1 * k as f32 * side);
+                !g.fac.is_wall_cell(p.0.floor() as i32, p.1.floor() as i32)
+            });
+            if clear && g.fac.can_occupy(at.0 as f64, at.1 as f64, 0.3) {
+                g.p.pos = at;
+                g.p.yaw = (-(c.0 - at.0)).atan2(-(c.1 - at.1));
+                g.p.pitch = env("LR_SHOT_PITCH").and_then(|d| d.parse().ok()).unwrap_or(0.12);
+                eprintln!("LR_SHOT_ARCH: arch over {c:?}, player at {at:?} ({} arches in the window)", arches.len());
+                return;
+            }
+        }
+    }
+    eprintln!("LR_SHOT_ARCH: no hall arch with {dist} m of open hall before it ({} arches in the window)", arches.len());
 }
 
 /// `LR_SHOT_PROP=type`: stand `LR_SHOT_DIST` metres from the prop of that type nearest the player, on open floor, looking at it.

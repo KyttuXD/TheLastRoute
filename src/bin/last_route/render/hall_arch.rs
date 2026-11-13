@@ -208,6 +208,12 @@ fn hall_arch(view: &ChunkView, x: i32, z: i32, d: (i32, i32), base: Vec3, n: Vec
     }
     if view.sewer {
         sewer_haunch(x, z, base, n, width as f32, hall_top, (wall, trim), out);
+        // Not in Godot: where the far side is real wall too (a walled hall, not a walkway beside a channel), its
+        // pilaster springs the same rib back, so the hall is ribbed from both walls. Godot draws the one rib only,
+        // which reads as half an arch with its keystone hanging in the middle of the ceiling (KT, 2026-11-13).
+        if view.inside(far.0, far.1) && (view.brick)(far.0, far.1) {
+            sewer_haunch(far.0, far.1, base + n * width as f32, -n, width as f32, hall_top, (wall, trim), out);
+        }
         return;
     }
     let half = width as f32 * 0.5 - PILASTER_DEPTH;
@@ -329,6 +335,27 @@ mod tests {
     /// A hall `width` cells wide running the whole chunk along x, its near wall on row 9.
     fn hall_along_x(width: i32) -> Vec<Vec<bool>> {
         carved(&[(0, 10, SIZE, width)])
+    }
+
+    #[test]
+    fn a_walled_sewer_hall_is_ribbed_from_both_walls_and_a_walkway_from_one() {
+        // a hall three cells wide between two brick walls, long enough for the open runs
+        let open = |x: i32, z: i32| (10..13).contains(&x) && (0..40).contains(&z);
+        let yes = |_: i32, _: i32| true;
+        let no = |_: i32, _: i32| false;
+        let h = |_: i32, _: i32| 3.3f32;
+        let walled = ChunkView { size: 45, sewer: true, open: &open, brick: &yes, room: &no, ramp: &no, height: &h };
+        let mut out = Decor::default();
+        wall_face(&walled, 9, 15, (1, 0), &mut out);
+        let ribs: Vec<f32> = out.log.iter().filter_map(|e| if let ArchEntry::Haunch { centre, .. } = e { Some(centre.x) } else { None }).collect();
+        assert_eq!(ribs.len(), 2, "one rib from each wall");
+        assert!((ribs[0] + ribs[1] - 2.0 * 11.5).abs() < 1e-3, "mirrored about the hall's middle: {ribs:?}");
+        // beside a channel (the far side is not brick) there is the one rib, as in Godot
+        let near_only = |x: i32, _: i32| x < 10;
+        let canal = ChunkView { size: 45, sewer: true, open: &open, brick: &near_only, room: &no, ramp: &no, height: &h };
+        let mut one = Decor::default();
+        wall_face(&canal, 9, 15, (1, 0), &mut one);
+        assert_eq!(one.log.iter().filter(|e| matches!(e, ArchEntry::Haunch { .. })).count(), 1);
     }
 
     #[test]
@@ -473,17 +500,18 @@ mod tests {
     /// its far edge.
     #[test]
     fn sewer_ribs_meet_the_ceiling_and_stay_over_their_half_of_the_walkway() {
-        for width in 2..=11 {
+        for width in 2..=11i32 {
             let decor = decor_of(&hall_along_x(width), true, &|_, _| false, &|_, _| false);
-            assert_eq!(decor.log.len(), 4, "width {width}");
-            assert_eq!(decor.boxes.len(), 14 * 3 + 4 * 7, "width {width}");
+            // a hall walled on both sides is ribbed from both walls (two ribs where Godot has one)
+            assert_eq!(decor.log.len(), 8, "width {width}");
+            assert_eq!(decor.boxes.len(), 14 * 3 + 8 * 7, "width {width}");
             for entry in &decor.log {
                 let ArchEntry::Haunch { spring, lowest, top, ceiling, reach, width: w, cell, .. } = *entry else { panic!("{entry:?}") };
                 assert!((top - ceiling).abs() < 0.001, "the rib does not meet the ceiling");
                 assert!(lowest >= spring - 0.2, "the rib hangs {} m below its spring line", spring - lowest);
                 assert!(spring >= 1.9, "the rib springs at {spring} m, in the walkway's headroom");
                 assert!(reach <= w * 0.5 + 0.001, "the rib reaches {reach} m over a {w}-cell walkway");
-                assert_eq!(cell.1, 9);
+                assert!(cell.1 == 9 || cell.1 == 10 + width, "a rib springs from one of the hall's two walls: {cell:?}");
             }
         }
     }

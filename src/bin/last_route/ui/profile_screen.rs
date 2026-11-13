@@ -6,7 +6,8 @@
 //! Every string and number is data/ui/profiles.json (`lr.profiles_ui/1`), checked by [`Labels::parse`]. The rules
 //! (names, index, trash, lock) are shared/profiles.rs; this file only draws and forwards.
 
-use super::style::{hex, METER_LOW, REF_ACCENT, REF_ACCENT_EDGE, REF_BODY, REF_INK, REF_INSET, REF_ON_AMBER, REF_PANEL, REF_PANEL_EDGE};
+// the game's own palette (ui/style.rs `pal`): the same reds, ambers and near-black as the title, not the old purples
+use super::style::{pal, METER_LOW};
 use crate::app::instance::{self, Picker};
 use crate::shared::profiles::{self, Index, LockState, ProfileError};
 use macroquad::prelude::*;
@@ -15,7 +16,6 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const FILE: &str = "ui/profiles.json";
-const BACKGROUND: Color = hex(0x0d080f);
 
 /// data/ui/profiles.json.
 #[derive(Clone, Debug, PartialEq)]
@@ -257,9 +257,9 @@ impl Pen<'_> {
     fn button(&self, r: Rect, text: &str, primary: bool) -> bool {
         let hover = self.hovered(r);
         let (face, edge, ink) = if primary {
-            (if hover { REF_ACCENT_EDGE } else { REF_ACCENT }, REF_ACCENT_EDGE, REF_ON_AMBER)
+            (if hover { pal().accent_edge } else { pal().accent }, pal().accent_edge, pal().ink)
         } else {
-            (if hover { REF_PANEL_EDGE } else { REF_INSET }, REF_PANEL_EDGE, REF_INK)
+            (if hover { pal().panel_edge } else { pal().inset }, pal().panel_edge, pal().ink)
         };
         draw_rectangle(r.x, r.y, r.w, r.h, face);
         draw_rectangle_lines(r.x, r.y, r.w, r.h, (2.0 * self.s).max(1.0), edge);
@@ -307,6 +307,7 @@ pub async fn run(start: Picker) {
     let mut held: Vec<bool> = vec![];
     let mut held_at = f64::NEG_INFINITY;
 
+    let mut shot_frames = 0u32;
     loop {
         crate::app::gfx::boot_guard_tick();
         let clock = get_time();
@@ -335,7 +336,7 @@ pub async fn run(start: Picker) {
         let focus_name = index.profiles.get(focus).map(|p| p.name.clone()).unwrap_or_default();
         let focus_held = held.get(focus).copied().unwrap_or(false);
 
-        clear_background(BACKGROUND);
+        clear_background(pal().backdrop);
         let (sw, sh) = (screen_width(), screen_height());
         let (mx, my) = mouse_position();
         let pen = Pen {
@@ -352,9 +353,9 @@ pub async fn run(start: Picker) {
         let button_h = 30.0 * s;
         let gap = 8.0 * s;
         let mut y = 28.0 * s;
-        pen.text(&l.kicker, x0, y, 11.0, REF_ACCENT);
+        pen.text(&l.kicker, x0, y, 11.0, pal().amber);
         y += 18.0 * s;
-        pen.text(&l.title, x0, y, 22.0, REF_INK);
+        pen.text(&l.title, x0, y, 22.0, pal().ink);
         y += 34.0 * s;
         if !notice.is_empty() {
             for line in pen.wrap(&notice, w, 11.0) {
@@ -373,27 +374,27 @@ pub async fn run(start: Picker) {
                 let visible = (((sh - y - below) / row_h).floor().max(1.0) as usize).min(index.profiles.len().max(1));
                 top = scroll_top(focus, top, visible, index.profiles.len());
                 let list = Rect::new(x0, y, w, row_h * visible as f32);
-                draw_rectangle(list.x, list.y, list.w, list.h, REF_PANEL);
+                draw_rectangle(list.x, list.y, list.w, list.h, pal().panel);
                 for (i, p) in index.profiles.iter().enumerate().skip(top).take(visible) {
                     let r = Rect::new(x0, y + row_h * (i - top) as f32, w, row_h);
                     let focused = i == focus;
                     if focused {
-                        draw_rectangle(r.x, r.y, r.w, r.h, REF_INSET);
-                        draw_rectangle(r.x, r.y, 3.0 * s, r.h, REF_ACCENT);
+                        draw_rectangle(r.x, r.y, r.w, r.h, pal().inset);
+                        draw_rectangle(r.x, r.y, 3.0 * s, r.h, pal().accent);
                     } else if pen.hovered(r) {
-                        draw_rectangle(r.x, r.y, r.w, r.h, REF_PANEL_EDGE);
+                        draw_rectangle(r.x, r.y, r.w, r.h, pal().panel_edge);
                     }
                     let text_top = r.y + (row_h - 14.0 * s) * 0.5;
-                    pen.text(&p.name, r.x + pad, text_top, 14.0, if focused { REF_INK } else { REF_BODY });
+                    pen.text(&p.name, r.x + pad, text_top, 14.0, if focused { pal().ink } else { pal().body });
                     let in_use = held.get(i).copied().unwrap_or(false);
                     let (side, col) = if in_use {
                         (l.in_use_tag.clone(), METER_LOW)
                     } else if p.last_used == 0 {
-                        (l.never_used.clone(), REF_BODY)
+                        (l.never_used.clone(), pal().body)
                     } else {
                         let unix = i64::try_from(p.last_used).unwrap_or(i64::MAX);
                         let time = crate::app::updater::time_rules().format(unix, crate::app::updater::time_zone());
-                        (l.last_used.replace("{time}", &time), REF_BODY)
+                        (l.last_used.replace("{time}", &time), pal().body)
                     };
                     let side_top = r.y + (row_h - 11.0 * s) * 0.5;
                     pen.text(&side, r.x + r.w - pad - pen.width(&side, 11.0), side_top, 11.0, col);
@@ -405,7 +406,7 @@ pub async fn run(start: Picker) {
                         }
                     }
                 }
-                draw_rectangle_lines(list.x, list.y, list.w, list.h, (2.0 * s).max(1.0), REF_PANEL_EDGE);
+                draw_rectangle_lines(list.x, list.y, list.w, list.h, (2.0 * s).max(1.0), pal().panel_edge);
                 y += list.h + gap;
                 // START, NEW PROFILE, DELETE, QUIT
                 let bw = (w - gap * 3.0) / 4.0;
@@ -424,7 +425,7 @@ pub async fn run(start: Picker) {
                 }
                 y += button_h + gap;
                 for hint in &l.hints {
-                    pen.text(hint, x0, y, 10.0, REF_BODY);
+                    pen.text(hint, x0, y, 10.0, pal().body);
                     y += 16.0 * s;
                 }
                 if is_key_pressed(KeyCode::Up) && focus > 0 {
@@ -454,16 +455,16 @@ pub async fn run(start: Picker) {
                 if is_key_pressed(KeyCode::Backspace) {
                     typed.pop();
                 }
-                pen.text(&l.new_title, x0, y, 14.0, REF_INK);
+                pen.text(&l.new_title, x0, y, 14.0, pal().ink);
                 y += 24.0 * s;
                 let field = Rect::new(x0, y, w, row_h);
-                draw_rectangle(field.x, field.y, field.w, field.h, REF_INSET);
-                draw_rectangle_lines(field.x, field.y, field.w, field.h, (2.0 * s).max(1.0), REF_ACCENT);
+                draw_rectangle(field.x, field.y, field.w, field.h, pal().inset);
+                draw_rectangle_lines(field.x, field.y, field.w, field.h, (2.0 * s).max(1.0), pal().accent);
                 // a caret that blinks twice a second
                 let caret = if (clock * 2.0) as i64 % 2 == 0 { "_" } else { "" };
-                pen.text(&format!("{typed}{caret}"), x0 + pad, y + (row_h - 14.0 * s) * 0.5, 14.0, REF_INK);
+                pen.text(&format!("{typed}{caret}"), x0 + pad, y + (row_h - 14.0 * s) * 0.5, 14.0, pal().ink);
                 y += row_h + gap;
-                pen.text(&l.new_hint, x0, y, 10.0, REF_BODY);
+                pen.text(&l.new_hint, x0, y, 10.0, pal().body);
                 y += 18.0 * s;
                 let bw = (w - gap) / 2.0;
                 if pen.button(Rect::new(x0, y, bw, button_h), &l.create_label, true) || enter_pressed() {
@@ -481,10 +482,10 @@ pub async fn run(start: Picker) {
                 } else {
                     (l.in_use_title.clone(), l.in_use_note.replace("{name}", &focus_name), &l.continue_label, &l.back_label)
                 };
-                pen.text(&title, x0, y, 14.0, REF_INK);
+                pen.text(&title, x0, y, 14.0, pal().ink);
                 y += 24.0 * s;
                 for line in pen.wrap(&note, w, 11.0) {
-                    pen.text(&line, x0, y, 11.0, REF_BODY);
+                    pen.text(&line, x0, y, 11.0, pal().body);
                     y += 15.0 * s;
                 }
                 y += gap;
@@ -569,6 +570,14 @@ pub async fn run(start: Picker) {
                 index = fresh;
                 held_at = f64::NEG_INFINITY;
                 mode = Mode::List;
+            }
+        }
+        // LR_PROFILE_SHOT=file.png: save the screen after a moment and leave (a picture for the docs and for checks)
+        if let Ok(path) = std::env::var("LR_PROFILE_SHOT") {
+            shot_frames += 1;
+            if shot_frames == 20 {
+                get_screen_data().export_png(&path);
+                return;
             }
         }
         next_frame().await;
