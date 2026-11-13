@@ -80,9 +80,16 @@ triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
   did not change (the Mac was in use during part of the runs, so the averages scatter).
 - **Tried and undone:** building the neighbour levels one frame after the window move. Two tests failed (code
   relies on a flight in reach having its neighbour level in the same frame).
-- What is left, in order: the window move itself (about 100 ms on the Mac Pro: the grid, the adopt step, the first
-  mesh part and the hunters' re-placement all in one frame), which needs the next window prepared ahead of the
-  crossing; fewer draw calls in the HUD.
+- **Second cut (same day):** `approach_chunks` only looked west and north once its margin was over half a chunk,
+  and the shipped margin was 64 m, so a crossing east or south generated its chunks in the crossing frame. It now
+  looks at every edge in reach (margin 22 m). And within 12 m of an edge the window beyond it is put together in a
+  quiet frame (`window ahead`), so the crossing frame only adopts it. On the Mac Pro, 30 second stress flights, old
+  and new alternately, two each: frames over 100 ms 12 and 8 before, 2 and 1 after; over 60 ms 26 and 21 before,
+  11 and 11 after. The runs scatter a lot there (the worst single frame was about 200 ms in three of the four), so
+  read these as "fewer long frames", not as a new worst case.
+- What is left: the adopt step and the hunters' re-placement in the crossing frame; fewer draw calls in the HUD.
+- **LOW tier at 0.35 of the window** (it was 0.25): twice the pixels in the 3D view. Its cost on a slow graphics
+  card is not measured: the stress runs above did not get slower, but they may not run on the LOW tier.
 
 ## Not known yet
 
