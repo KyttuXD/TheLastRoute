@@ -41,10 +41,122 @@ pub fn texture(r: TexRef) -> Option<Texture2D> {
             .entry((r.group, r.kind))
             .or_insert_with(|| {
                 let (w, h, px) = r.paint()?;
+                let (w, h, px) = detail().apply(r.group, w, h, px);
                 Some(upload(w, h, &px))
             })
             .clone()
     })
+}
+
+// -- texture detail (data/render/texture_detail.json) ----------------------------------------------------------------
+
+const DETAIL_PATH: &str = "render/texture_detail.json";
+
+/// How much detail each group of painted textures keeps on the graphics card: (group, shrink, levels).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Detail {
+    groups: Vec<(String, u16, u16)>,
+}
+
+impl Detail {
+    pub fn parse(text: &str) -> Result<Detail, String> {
+        let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let groups = v.get("groups").and_then(|g| g.as_object()).ok_or("groups must be an object")?;
+        let mut out = vec![];
+        for (name, row) in groups {
+            let n = |key: &str, lo: u64, hi: u64| {
+                row.get(key).and_then(|x| x.as_u64()).filter(|x| (lo..=hi).contains(x)).ok_or_else(|| format!("groups.{name}.{key} must be a whole number from {lo} to {hi}"))
+            };
+            out.push((name.clone(), n("shrink", 1, 8)? as u16, n("levels", 2, 256)? as u16));
+        }
+        Ok(Detail { groups: out })
+    }
+
+    /// The texture as it is uploaded: shrunk by the group's factor (blocks of texels averaged; a side the factor does
+    /// not divide is left alone) and with each colour channel rounded to the group's number of levels. Alpha is kept.
+    pub fn apply(&self, group: &str, w: u16, h: u16, px: Vec<u8>) -> (u16, u16, Vec<u8>) {
+        let Some(&(_, shrink, levels)) = self.groups.iter().find(|(g, _, _)| g == group) else { return (w, h, px) };
+        let (mut w, mut h, mut px) = (w, h, px);
+        let s = shrink as usize;
+        if s > 1 && w as usize % s == 0 && h as usize % s == 0 {
+            let (nw, nh) = (w as usize / s, h as usize / s);
+            let mut out = vec![0u8; nw * nh * 4];
+            for y in 0..nh {
+                for x in 0..nw {
+                    let mut sum = [0u32; 4];
+                    for dy in 0..s {
+                        for dx in 0..s {
+                            let at = ((y * s + dy) * w as usize + x * s + dx) * 4;
+                            for c in 0..4 {
+                                sum[c] += px[at + c] as u32;
+                            }
+                        }
+                    }
+                    let n = (s * s) as u32;
+                    for c in 0..4 {
+                        out[(y * nw + x) * 4 + c] = ((sum[c] + n / 2) / n) as u8;
+                    }
+                }
+            }
+            (w, h, px) = (nw as u16, nh as u16, out);
+        }
+        if levels < 256 {
+            let top = (levels - 1) as u32;
+            for texel in px.chunks_exact_mut(4) {
+                for c in texel.iter_mut().take(3) {
+                    let step = (*c as u32 * top + 127) / 255;
+                    *c = (step * 255 / top) as u8;
+                }
+            }
+        }
+        (w, h, px)
+    }
+}
+
+/// The embedded detail table (data/render/texture_detail.json), parsed once.
+pub fn detail() -> &'static Detail {
+    static DETAIL: OnceLock<Detail> = OnceLock::new();
+    DETAIL.get_or_init(|| {
+        let text = crate::content::embedded::data_under("")
+            .find(|(p, _)| *p == DETAIL_PATH)
+            .map(|(_, t)| t)
+            .expect("data/render/texture_detail.json is embedded by build.rs");
+        Detail::parse(text).expect("data/render/texture_detail.json is valid")
+    })
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn the_shipped_table_shrinks_and_narrows_the_walls_only() {
+        let d = detail();
+        let (w, h, px) = crate::render::textures::paint("wall", "panel", 0).expect("a wall paints");
+        let colours = |px: &[u8]| px.chunks_exact(4).map(|t| [t[0], t[1], t[2]]).collect::<std::collections::HashSet<_>>().len();
+        let before = colours(&px);
+        let (nw, nh, out) = d.apply("wall", w, h, px.clone());
+        assert_eq!((nw, nh), (w / 2, h / 2), "a wall is half the size each way");
+        assert_eq!(out.len(), nw as usize * nh as usize * 4);
+        assert!(colours(&out) <= before, "and has no more colours than it had");
+        let (fw, fh, floor) = crate::render::textures::paint("floor", "metal0", 0).expect("a floor paints");
+        assert_eq!(d.apply("floor", fw, fh, floor.clone()), (fw, fh, floor), "a group that is not listed is left as painted");
+    }
+
+    #[test]
+    fn shrink_averages_blocks_and_levels_round_each_channel() {
+        let d = Detail::parse(r#"{ "groups": { "g": { "shrink": 2, "levels": 2 } } }"#).unwrap();
+        // 2 x 2 texels: 0, 100, 200, 60 average to 90, which rounds down to black at two levels; alpha is kept
+        let px = vec![0, 0, 0, 255, 100, 100, 100, 255, 200, 200, 200, 255, 60, 60, 60, 255];
+        assert_eq!(d.apply("g", 2, 2, px), (1, 1, vec![0, 0, 0, 255]));
+        let keep = Detail::parse(r#"{ "groups": { "g": { "shrink": 1, "levels": 256 } } }"#).unwrap();
+        assert_eq!(keep.apply("g", 1, 1, vec![9, 8, 7, 6]), (1, 1, vec![9, 8, 7, 6]));
+        // a side the factor does not divide is not shrunk
+        let odd = Detail::parse(r#"{ "groups": { "g": { "shrink": 2, "levels": 256 } } }"#).unwrap();
+        assert_eq!(odd.apply("g", 3, 1, vec![1; 12]).0, 3);
+        assert!(Detail::parse(r#"{ "groups": { "g": { "shrink": 0, "levels": 16 } } }"#).is_err());
+        assert!(Detail::parse(r#"{ "groups": { "g": { "shrink": 2, "levels": 1 } } }"#).is_err());
+    }
 }
 
 // -- surface themes (data/surface_themes.json) ---------------------------------------------------------------------

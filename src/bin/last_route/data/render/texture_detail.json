@@ -1,0 +1,7 @@
+{
+  "schema": "lr.texture_detail/1",
+  "_about": "How much detail the painted surface textures keep when they go to the graphics card (render/surfaces.rs `Detail`). The painters still paint the Godot original's texels byte for byte (render/textures); this is applied afterwards, per group (wall, floor, ceiling, duct; a group not listed is left as painted). shrink: each side is divided by this whole number (1 keeps the size; 2 turns a 32 x 128 wall into 16 x 64) by averaging blocks of texels. levels: how many steps each colour channel keeps (256 keeps every colour; 16 gives a small palette). KT asked on 2026-11-12 for smaller wall textures with a smaller palette across the whole map.",
+  "groups": {
+    "wall": { "shrink": 2, "levels": 24 }
+  }
+}
