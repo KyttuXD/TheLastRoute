@@ -19,6 +19,7 @@ Flags (everything else goes to the game; \"--\" ends the flags):
   --rollback         mark the current build bad and go back to the previous one (a higher build on the site is installed again)
   --force            install the site's build even when it is the current one or was marked bad (never a lower build)
   --update-first     check and install before starting (the default is to start at once and update for the next start)
+  --no-update        never look for an update: start the installed build as it is (the first start still installs one)
   --no-launch        install, then stop without starting the game
   --verify           check every installed file's sha256 before starting
   --channel NAME     use the builds under native-NAME (the default channel is native)
@@ -56,7 +57,7 @@ pub fn parse(args: Vec<OsString>, env_pubkey: Option<String>, default_dir: impl 
     let mut channel = String::new();
     let (mut dir, mut base, mut web, mut platform, mut os): (Option<PathBuf>, Option<String>, Option<String>, Option<String>, Option<String>) =
         (None, None, None, None, None);
-    let (mut mode, mut force, mut update_first, mut no_launch, mut test_mode, mut deep) = (Mode::Run, false, false, false, false, false);
+    let (mut mode, mut force, mut update_first, mut no_update, mut no_launch, mut test_mode, mut deep) = (Mode::Run, false, false, false, false, false, false);
     while let Some(arg) = it.next() {
         let Some(text) = arg.to_str().map(str::to_string) else {
             game.push(arg);
@@ -84,6 +85,7 @@ pub fn parse(args: Vec<OsString>, env_pubkey: Option<String>, default_dir: impl 
             "--rollback" => mode = Mode::Rollback,
             "--force" => force = true,
             "--update-first" => update_first = true,
+            "--no-update" => no_update = true,
             "--no-launch" => no_launch = true,
             "--verify" => deep = true,
             "--test-mode" => test_mode = true,
@@ -104,6 +106,9 @@ pub fn parse(args: Vec<OsString>, env_pubkey: Option<String>, default_dir: impl 
             _ => game.push(arg),
         }
     }
+    if no_update && (force || update_first) {
+        return Parsed::Error("--no-update cannot be combined with --force or --update-first".into());
+    }
     if !lr_update::manifest::valid_channel(&channel) {
         return Parsed::Error("the channel must be lower case letters, digits and dashes".into());
     }
@@ -115,6 +120,7 @@ pub fn parse(args: Vec<OsString>, env_pubkey: Option<String>, default_dir: impl 
     cfg.mode = mode;
     cfg.force = force;
     cfg.update_first = update_first;
+    cfg.no_update = no_update;
     cfg.no_launch = no_launch;
     cfg.test_mode = test_mode;
     cfg.verify_deep = deep;
@@ -176,6 +182,17 @@ mod tests {
         let c = cfg(&["--force", "--channel", "beta", "--headless", "--test-suite", "a.json", "--check"]);
         assert!(c.force && c.channel == "beta" && c.mode == Mode::Check);
         assert_eq!(c.game_args, vec![OsString::from("--headless"), "--test-suite".into(), "a.json".into()]);
+    }
+
+    #[test]
+    fn no_update_is_a_launcher_flag_and_cannot_be_combined_with_an_update() {
+        assert!(cfg(&["--no-update"]).no_update);
+        assert!(!cfg(&[]).no_update, "updates are on unless asked off");
+        assert!(matches!(p(&["--no-update", "--force"]), Parsed::Error(_)));
+        assert!(matches!(p(&["--update-first", "--no-update"]), Parsed::Error(_)));
+        // after `--` it is the game's flag
+        let c = cfg(&["--", "--no-update"]);
+        assert!(!c.no_update && c.game_args == vec![OsString::from("--no-update")]);
     }
 
     #[test]

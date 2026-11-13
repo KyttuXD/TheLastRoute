@@ -516,7 +516,7 @@ pub fn run(cfg: &Config) -> Outcome {
             return Outcome { kind: Kind::Installed, exit_code: 0, build: Some(build), message: format!("build {build} is installed"), opened: None };
         }
         // Check for a newer build while the game runs (not when it was just done above).
-        let background = if cfg.update_first || cfg.force {
+        let background = if cfg.update_first || cfg.force || cfg.no_update {
             None
         } else {
             let (cfg2, store2, log2, cancel2) = (cfg.clone(), store.clone(), log.clone(), cancel.clone());

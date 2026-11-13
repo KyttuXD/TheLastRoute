@@ -173,6 +173,34 @@ fn update_first_runs_the_new_build_at_once() {
 }
 
 #[test]
+fn no_update_starts_the_installed_build_and_never_looks_for_a_newer_one() {
+    let env = Env::new("noupdate");
+    env.publish(1, "");
+    run(&env.cfg());
+    env.publish(2, "");
+    let mut cfg = env.cfg();
+    cfg.no_update = true;
+    let out = run(&cfg);
+    assert_eq!(out.build, Some(1));
+    let s = env.state();
+    assert_eq!((s.current, s.previous), (Some(1), None), "build 2 was neither downloaded nor switched to");
+    assert!(!env.build_dir(2).exists(), "nothing of the newer build is on disk");
+    // the same start without the flag does pick it up for the next start
+    run(&env.cfg());
+    assert_eq!(env.state().current, Some(2));
+}
+
+#[test]
+fn no_update_still_installs_a_first_build() {
+    let env = Env::new("noupdatefirst");
+    env.publish(1, "");
+    let mut cfg = env.cfg();
+    cfg.no_update = true;
+    let out = run(&cfg);
+    assert_eq!(out.build, Some(1), "a first start needs a build, flag or not");
+}
+
+#[test]
 fn a_bad_download_is_refused_and_the_old_build_stays() {
     let env = Env::new("badsha");
     env.publish(1, "");

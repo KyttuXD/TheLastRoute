@@ -151,6 +151,7 @@ Anything the launcher does not know goes to the game unchanged (`--headless`, `-
 | `--dry-run` | Like a normal start, but only say what would be downloaded and started. Changes nothing, starts nothing. |
 | `--force` | Install the site's build even if it is the current one or was marked bad (never a lower build than ever installed). Implies `--update-first`. |
 | `--update-first` | Check and install before starting. |
+| `--no-update` | Never look for an update: start the installed build as it is. A first start with nothing installed still installs one. Cannot be combined with `--force` or `--update-first`. Updates are otherwise automatic (in the background, ready for the next start). |
 | `--no-launch` | Install, then stop. |
 | `--verify` | Re-hash every installed file before starting. |
 | `--rollback` | Mark the current build bad and make `previous` current. Exit 1 if there is nothing to go back to. |
@@ -171,6 +172,9 @@ cannot be used: no build for this platform, unreachable, or a failed check. No d
 build must have a higher number and another commit than the running one. Windows and Linux download just the program file and
 replace the running executable as before; macOS downloads the whole bundle to a hidden folder beside the running one and swaps it.
 A game started by the launcher (`LR_LAUNCHER=1`) does no update check at all: the launcher owns updates, so they cannot disagree.
+Updating is on by default for every native app (the game checks at start, the launcher in the background). `--no-update` on the
+command line turns the check off for that run, for the game and for the launcher (a development build, a screenshot, a stress run
+and a movie capture never check either). The browser builds have no command line: an open tab polls `version.json` and reloads.
 `LR_UPDATE_SITE_URL` may point the game at a local test site; any non-localhost value is ignored.
 
 Target state (not done): the game keeps no network update code and reads `state.json` plus a progress file the launcher writes, which

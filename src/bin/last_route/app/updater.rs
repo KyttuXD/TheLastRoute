@@ -9,6 +9,7 @@
 //! A newer build is put in place and started; the old program is kept beside it until the next start. A build made
 //! without CI (LR_BUILD_NUMBER 0) never checks, so a development build is not replaced. A game started by the
 //! launcher (`LR_LAUNCHER=1`) never checks either: the launcher keeps builds up to date, so the two cannot disagree.
+//! Updating is on by default; `--no-update` on the command line turns the check off for that run.
 
 use crate::net::config::PRIMARY_BASE_URL;
 use crate::net::http::{self, Method, Request};
@@ -395,6 +396,11 @@ fn initial_status(build: u64, launcher: bool) -> UpdateStatus {
     }
 }
 
+/// Whether `--no-update` is among `args`: the player asked for no update check this run.
+pub fn no_update_in(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--no-update")
+}
+
 /// True when the launcher started this game (it sets `LR_LAUNCHER=1`).
 fn started_by_launcher() -> bool {
     std::env::var("LR_LAUNCHER").is_ok_and(|v| v == "1")
@@ -444,8 +450,10 @@ fn apply_offer(handle: &Mutex<UpdateStatus>, build: u64, revision: &str, offer: 
 /// is logged, shown, and never stops the game from opening.
 pub fn start_check() -> UpdateHandle {
     remove_leftover();
+    // the launcher, or `--no-update`: nothing is checked and nothing is shown
+    let no_update = no_update_in(&std::env::args().collect::<Vec<_>>());
     let launcher = started_by_launcher();
-    let handle: UpdateHandle = Arc::new(Mutex::new(initial_status(BUILD, launcher)));
+    let handle: UpdateHandle = Arc::new(Mutex::new(initial_status(BUILD, launcher || no_update)));
     let marker = marker_path().and_then(|p| take_marker(&p, UpdaterText::standard()));
     if BUILD == 0 || cfg!(target_arch = "wasm32") {
         crate::lr_info!("update: this is a local or browser build (no CI build number), so no update check");
@@ -453,6 +461,10 @@ pub fn start_check() -> UpdateHandle {
     }
     if let Some(built) = marker {
         set(&handle, UpdateStatus::Updated(built));
+    }
+    if no_update {
+        crate::lr_info!("update: --no-update was given, so no update check");
+        return handle;
     }
     if launcher {
         crate::lr_info!("update: the launcher started this game and keeps builds up to date, so no update check here");
@@ -822,6 +834,19 @@ pub fn now_unix() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn updates_are_on_unless_no_update_is_given() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!no_update_in(&v(&["last_route"])), "an ordinary start updates");
+        assert!(!no_update_in(&v(&["last_route", "--offline", "--profile", "TWO"])));
+        assert!(no_update_in(&v(&["last_route", "--no-update"])));
+        assert!(no_update_in(&v(&["last_route", "--offline", "--no-update", "--profile", "TWO"])));
+        assert!(!no_update_in(&v(&["last_route", "--no-updates"])), "only the exact flag");
+        // the status a game that was asked not to update shows: nothing, like a launcher-started one
+        assert_eq!(initial_status(7, true), UpdateStatus::Idle);
+        assert_eq!(initial_status(7, false), UpdateStatus::Checking);
+    }
+
     use super::*;
 
     #[cfg(target_os = "macos")]
