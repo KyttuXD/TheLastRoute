@@ -103,7 +103,11 @@ panic = "abort"
 # opt-level stays at the default 3: -Os and -Oz would shrink only the code section (a fifth of the wasm, the rest is embedded
 # assets) and cost speed. Cargo has no per-target profile, so these settings apply to every release target, native included.
 lto = "fat"
-codegen-units = 1
+# 16 units, not 1 (2026-11-12): fat LTO still optimises the whole program as one, so the game runs the same (stress
+# run, four runs each way: 0.862 ms a frame with 16, 0.866 ms with 1), and the build before the LTO step runs on every
+# core: 72 s against 122 s here with the dependencies built. Thin LTO was faster still but 5% slower to play
+# (docs/COMPILE_SPEED.md).
+codegen-units = 16
 
 # CI builds (cargo build --profile ci) keep the dev settings and line tables for backtraces, without full debug info.
 [profile.ci]

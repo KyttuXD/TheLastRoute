@@ -29,13 +29,17 @@ defaults:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    # Two halves side by side, so a push is checked in the time of the longer one (docs/CI_SPEED_PLAN.md):
+    #   unit:   the game's unit tests (the one large test program)
+    #   suites: the library's and the server's tests, the game built for the headless suites, the other programs checked
+    name: test (${{ matrix.part }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-22.04"]' || '["ubuntu-22.04","windows-latest"]') }}
+        part: [unit, suites]
     steps:
       - uses: actions/checkout@v6
 
@@ -54,29 +58,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: cache
         with:
-          key: test-server-${{ matrix.os }}
+          key: test-server-${{ matrix.os }}-${{ matrix.part }}
 
       - name: Build times header
         shell: bash
         run: |
-          printf '### Build times (test, ${{ matrix.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '### Build times (test ${{ matrix.part }}, ${{ matrix.os }})\n\n| step | os | cache | elapsed |\n|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
 
       # One run over one crate graph. No src or tests file is cfg-gated on the server feature, so
       # the lib and last_route suites run the same tests as before; the feature only adds lr_server.
       - name: cargo test --profile ci
+        if: matrix.part == 'unit'
         shell: bash
         env:
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
           t0=$(date +%s); date -u +"start %FT%TZ"
           trap 'echo "| cargo test --profile ci | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
-          cargo test --locked --profile ci --lib --bin last_route --bin lr_server --features server
+          cargo test --locked --profile ci --bin last_route --features server
 
       # The ci profile is the test profile without full debug info, and it reuses the test build's
       # dependency artifacts. A separate release build was a second full compile of the crate.
       # Only the game is built (the headless suites below run it). The other programs are type-checked, which is
       # enough to catch a break in them and costs a fraction of building and linking four more programs.
+      - name: cargo test --profile ci (library and server)
+        if: matrix.part == 'suites'
+        shell: bash
+        run: cargo test --locked --profile ci --lib --bin lr_server --features server
+
       - name: cargo build --profile ci --bins
+        if: matrix.part == 'suites'
         shell: bash
         env:
           CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
@@ -88,13 +99,14 @@ jobs:
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites
+        if: matrix.part == 'suites'
         run: ./target/ci/last_route${{ runner.os == 'Windows' && '.exe' || '' }} --test-suite "tests/*.json" --out target/test-reports/suite-report.json
 
       # The self-test is not run here: it needs a real OpenGL context and an audio device, which
       # hosted runners do not have (Windows fails on the pixel format and hangs). Run it locally.
 
       - uses: actions/upload-artifact@v6
-        if: always()
+        if: always() && matrix.part == 'suites'
         continue-on-error: true
         with:
           name: test-reports-${{ matrix.os }}

@@ -20,6 +20,7 @@ lr_update (4.8 s), cc (4.6 s) and miniquad (4.1 s), built four at a time.
 | `cargo check`, first time | 13 s |
 | Release build (fat LTO, one codegen unit) | 107 s clean, 96 s with the dependencies built |
 | Release build with thin LTO and 16 codegen units | 48 s clean, 39 s with the dependencies built |
+| Release build, fat LTO with 16 codegen units (the profile since 2026-11-12) | 79 s clean, 72 s with the dependencies built (113 s and 122 s with one unit, measured the same hour) |
 
 What follows from it:
 
@@ -54,7 +55,8 @@ What follows from it:
 - `dev`: `opt-level = 2`, dependencies at 3, line tables only.
 - `fast` (`cargo build --profile fast`): `opt-level = 1`, dependencies at 2, incremental.
 - `ci`: dev with line tables only; what CI tests with.
-- `release`: fat LTO, one codegen unit, no debug info; what is shipped.
+- `release`: fat LTO, 16 codegen units, no debug info; what is shipped. Sixteen units play the same as one (0.862 ms
+  against 0.866 ms a frame, four stress runs each) and build about 40% faster.
 
 `.cargo/config.toml` only sets macOS `split-debuginfo=unpacked`.
 

@@ -101,7 +101,7 @@ jobs:
           NIGHTLY_TITLE: Nightly server (Linux x86_64)
         run: sh packaging/nightly.sh dist/lr_server-linux-x86_64 dist/lr_server-linux-x86_64.sha256
 
-  # Intel Mac: its own build, its own zip. Runs on the Intel runner image.
+  # Intel Mac: its own build, its own zip.
   # Records the native side of production: one deployment per push, linked to the nightly release and
   # paired with the web deployment (deploy-web.yml) through the same commit. Runs only after all native builds.
   production:
@@ -119,8 +119,10 @@ jobs:
           echo "- native release: https://github.com/KyttuXD/TheLastRoute/releases/tag/nightly (commit ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
           echo "- web: https://lastrouterust.games.kyttuslab.org (the web deploy for this commit is in deploy-web)" >> "$GITHUB_STEP_SUMMARY"
 
+  # Built on the Apple Silicon runner (it is about twice as fast as the Intel one, which took 8 to 9 minutes): the
+  # x86_64 target is cross-compiled, which packaging/macos/build_app.sh already does for a universal build.
   macos-intel:
-    runs-on: macos-15-intel
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master

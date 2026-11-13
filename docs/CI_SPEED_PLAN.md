@@ -40,6 +40,11 @@ Main cause of slow Windows tests (inferred): `test.yml` (cache key `test-server-
 | test | After the unit tests only the game is built for the headless suites; the server, Night Watch and the two LR Story programs are type-checked (`cargo check --bins`) in place of built and linked (2026-11-12) | The step was 95 s |
 | test | `timeout-minutes: 40` (2026-11-12) | Bounds a hung run |
 | Release | Thin LTO was measured and rejected (2026-11-12): the build is 2.2 times faster, the game 5% slower (COMPILE_SPEED.md) | The release builds stay as they are; they are the floor of build.yml |
+| test | Split into two halves that run side by side (2026-11-12): `unit` (the game's unit tests) and `suites` (library and server tests, the game built for the headless suites, the other programs checked) | A push is checked in the time of the longer half |
+| build macOS Intel | Cross-compiled on the Apple Silicon runner (2026-11-12) | The Intel runner took 8 to 9 minutes for the same build |
+| Release | `codegen-units = 16` with fat LTO (2026-11-12): plays the same, builds about 40% faster | Every release job (Windows, Linux, both Macs, web) |
+
+Goal (KT, 2026-11-12): every job of a push done in under 5 minutes.
 
 ## Step timings on a push (run of 2026-11-12, commit 0b82938, warm caches)
 
