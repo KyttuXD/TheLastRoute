@@ -9,6 +9,18 @@ Every build goes to a rolling pre-release in GitHub Releases, not to Actions art
 | `nightly-nw` | Night Watch (`src/bin/night_watch`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-nw.yml` | By hand only |
 | `nightly-lrs` | LR Story (`src/bin/lr_story`), Windows, Linux, macOS Intel and Apple Silicon | `.github/workflows/nightly-lrs.yml` | By hand only |
 
+The `nightly` release also holds the launcher (docs/LAUNCHER.md), built by the same jobs on every push to `main`:
+`lr_launcher-windows-x86_64.exe`, `lr_launcher-linux-x86_64` and `lr_launcher-macos-universal.zip` (an `.app`). An existing
+device installs it once from there; after that the launcher keeps the game current from the same release. These steps are
+`continue-on-error`, so a launcher failure never stops the game builds from publishing. The macOS one has not run on a Mac yet.
+A launcher published before `crates/lr_update/keys/trusted.txt` has a key cannot install anything.
+
+The `nightly` release also holds the signed native build the launcher and the in-game updater download, as flat files per platform
+(Windows and Linux x86_64 from CI): `native-<platform>-latest.json` and, for the newest 2 builds,
+`native-<platform>-builds-<N>-manifest.json`, `...-manifest.json.sig` and `...-f0.z`, `f1.z` and so on. They are written by
+`packaging/native/publish-github.sh` (secret `LR_NATIVE_SIGNING_KEY`, step `continue-on-error`); see
+[LAUNCHER.md](LAUNCHER.md#github-nightly-as-the-source). Do not delete them by hand.
+
 The legacy Mac app is built by its own job with an old compiler ([MACOS_SNOW_LEOPARD.md](MACOS_SNOW_LEOPARD.md)). That job and
 its renderer check may fail without stopping the other builds from being published. The old `nightly-legacy`
 release is no longer written to.

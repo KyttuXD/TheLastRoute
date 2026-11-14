@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub const HELP: &str = "\
-lr_launcher: installs and starts the newest native build of The Last Route from the website.
+lr_launcher: installs and starts the newest native build of The Last Route from the GitHub nightly release.
 
   lr_launcher [flags] [game arguments]
 
@@ -137,7 +137,8 @@ pub fn parse(args: Vec<OsString>, env_pubkey: Option<String>, default_dir: impl 
                 None => return Parsed::Error("LR_NATIVE_PUBKEY must be 64 hex digits".into()),
             }
         }
-        if web.is_none() {
+        // A GitHub release address is not a page to play in: keep the website as the web version.
+        if web.is_none() && !lr_update::fetch::is_github_release_url(&b) {
             cfg.web_url = b.clone();
         }
         cfg.base_url = b;
@@ -223,7 +224,7 @@ mod tests {
         let run = |base: &str| parse(vec!["--base-url".into(), base.into()], Some(key.clone()), |_| Some(PathBuf::from("/x")));
         let Parsed::Run(local) = run("http://127.0.0.1:8000") else { panic!() };
         assert!(local.trusted.contains(&[5u8; 32]));
-        let Parsed::Run(real) = run("https://lastrouterust.games.kyttuslab.org") else { panic!() };
+        let Parsed::Run(real) = run(lr_update::fetch::NIGHTLY_URL) else { panic!() };
         assert!(!real.trusted.contains(&[5u8; 32]), "the env key must not widen trust for the real site");
     }
 

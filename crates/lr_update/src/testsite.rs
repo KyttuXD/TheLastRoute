@@ -33,6 +33,8 @@ struct Inner {
     files: HashMap<String, Vec<u8>>,
     faults: HashMap<String, Fault>,
     hits: Vec<String>,
+    /// path -> Location, answered with a 302 before any file lookup.
+    redirects: HashMap<String, String>,
 }
 
 pub struct TestSite {
@@ -86,12 +88,16 @@ fn handle(mut stream: TcpStream, inner: &Mutex<Inner>) {
     }
     let text = String::from_utf8_lossy(&buf).to_string();
     let path = text.lines().next().unwrap_or("").split(' ').nth(1).unwrap_or("/").trim_start_matches('/').split('?').next().unwrap_or("").to_string();
-    let (body, fault) = {
+    let (body, fault, redirect) = {
         let mut g = inner.lock().unwrap();
         g.hits.push(path.clone());
-        (g.files.get(&path).cloned(), g.faults.get(&path).cloned())
+        (g.files.get(&path).cloned(), g.faults.get(&path).cloned(), g.redirects.get(&path).cloned())
     };
     let head = |status: &str, extra: &str| format!("HTTP/1.1 {status}\r\n{extra}Connection: close\r\n\r\n");
+    if let Some(location) = redirect {
+        let _ = stream.write_all(head("302 Found", &format!("Location: {location}\r\nContent-Length: 0\r\n")).as_bytes());
+        return;
+    }
     match (body, fault) {
         (_, Some(Fault::Close)) => {
             let _ = stream.shutdown(Shutdown::Both);
@@ -170,6 +176,11 @@ impl TestSite {
 
     pub fn fault(&self, path: &str, fault: Fault) {
         self.inner.lock().unwrap().faults.insert(path.to_string(), fault);
+    }
+
+    /// Answers `path` with a 302 to `location` (a full URL, normally another loopback address).
+    pub fn redirect(&self, path: &str, location: &str) {
+        self.inner.lock().unwrap().redirects.insert(path.to_string(), location.to_string());
     }
 
     pub fn clear_faults(&self) {

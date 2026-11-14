@@ -58,6 +58,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last_route-windows-x86_64.exe
+      # The launcher (docs/LAUNCHER.md) rides along with the nightly build so an existing device can install it. It is
+      # small and never compiles the game; a failure here must not stop the game build from publishing.
+      - name: Build and publish the launcher
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo build --release -p lr_launcher --bin lr_launcher
+          cp target/release/lr_launcher.exe dist/lr_launcher-windows-x86_64.exe
+          sh packaging/nightly.sh dist/lr_launcher-windows-x86_64.exe
+      # The signed native build the launcher and the in-game updater read from the nightly release (docs/LAUNCHER.md).
+      # A signing problem must never stop the game build, so this step may fail. macOS-universal is not built by CI yet.
+      - name: Publish the signed native build
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LR_NATIVE_SIGNING_KEY: ${{ secrets.LR_NATIVE_SIGNING_KEY }}
+        run: |
+          if [ -z "$LR_NATIVE_SIGNING_KEY" ]; then
+            echo "::notice::LR_NATIVE_SIGNING_KEY is not set; the signed native build was not published"
+            exit 0
+          fi
+          umask 077
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s\n' "$LR_NATIVE_SIGNING_KEY" > "$KEY_FILE"
+          SIGN_KEY="$KEY_FILE" \
+            sh packaging/native/publish-github.sh windows-x86_64 dist/last_route-windows-x86_64.exe "${{ github.run_number }}" "${{ github.sha }}"
 
   linux:
     runs-on: ubuntu-22.04
@@ -90,6 +122,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last-route-linux-x86_64.tar.gz
+      - name: Build and publish the launcher
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo build --release -p lr_launcher --bin lr_launcher
+          cp target/release/lr_launcher dist/lr_launcher-linux-x86_64
+          sh packaging/nightly.sh dist/lr_launcher-linux-x86_64
+      # The signed native build the launcher and the in-game updater read from the nightly release (docs/LAUNCHER.md).
+      # A signing problem must never stop the game build, so this step may fail. macOS-universal is not built by CI yet.
+      - name: Publish the signed native build
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LR_NATIVE_SIGNING_KEY: ${{ secrets.LR_NATIVE_SIGNING_KEY }}
+        run: |
+          if [ -z "$LR_NATIVE_SIGNING_KEY" ]; then
+            echo "::notice::LR_NATIVE_SIGNING_KEY is not set; the signed native build was not published"
+            exit 0
+          fi
+          umask 077
+          KEY_FILE="$(mktemp)"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s\n' "$LR_NATIVE_SIGNING_KEY" > "$KEY_FILE"
+          SIGN_KEY="$KEY_FILE" \
+            sh packaging/native/publish-github.sh linux-x86_64 dist/last-route-linux-x86_64.tar.gz "${{ github.run_number }}" "${{ github.sha }}"
       - name: Collect the server build
         run: |
           mkdir -p dist
@@ -154,6 +214,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh packaging/nightly.sh dist/last_route-macos-x86_64.zip
+      # One universal launcher app (Intel and Apple Silicon) for both Mac builds. Not yet run on a Mac (docs/LAUNCHER.md),
+      # so it may fail without stopping the game build.
+      - name: Build and publish the launcher
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sh packaging/native/build-launcher.sh
+          (cd dist/launcher && zip -qry ../lr_launcher-macos-universal.zip "KYTTU The Last Route.app")
+          sh packaging/nightly.sh dist/lr_launcher-macos-universal.zip
 
   # Apple Silicon Mac: its own build, its own zip. Runs on the Apple Silicon runner image.
   macos-arm64:
