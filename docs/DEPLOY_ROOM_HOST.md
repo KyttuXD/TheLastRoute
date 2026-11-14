@@ -1,8 +1,19 @@
 # Deploying the Rust room host on VPS 2 (approval list, NOT RUN)
 
-**STATUS: NOTHING IN THIS LIST HAS BEEN RUN.** No server was contacted when it was written. AGENTS.md: never change vps1, vps2 or vps3
-without KT's approval of the exact steps. KT approves step by step. Background and evidence: [SERVERS.md](SERVERS.md) ("CREATE ROOM says
-BUILD MISMATCH", "Public route"), [KT_BUG_LIST.md](KT_BUG_LIST.md) items 10, 11 and 22.
+**STATUS (2026-11-14, KT approved the list; run by an agent session):**
+
+| Step | Result |
+|---|---|
+| 1 read-only checks | Done. Ubuntu 24.04, glibc 2.39, `libasound.so.2` present (step 3 not needed), both units active, paths and user as assumed. |
+| 2 download | Done: nightly build 148 (commit d134eef, the commit of the live web build), tarball SHA-256 `f972838f...`, `last_route` SHA-256 `078f6477...`. |
+| 4 install binary | Done with `deploy-vps2.sh`: `/opt/lastroute-rust/current` now points at release `078f6477...`; `previous` is `20261108-030838`. Nothing restarted. |
+| 5 smoke test | Done: the binary starts and asks for a host token or spawn ticket, as expected. It ran as root over ssh and wrote `/root/.local/share/KYTTU/...`; that folder was removed afterwards (run it as `lastroute-godot` next time). |
+| 6, 7 patch, `agent.env`, swap, restart | **Not needed, not run.** A dry run showed the live backend already contains the patch (applied 2026-11-08) and `agent.env` already has `LASTROUTE_RUST_BIN=/opt/lastroute-rust/current/last_route` (since 2026-11-07). The BUILD MISMATCH came back because the installed host binary (build of 2026-11-08) had drifted from the web build. Step 4 replaced it, and the agent starts `current/last_route` for each new room, so no restart was needed. The dry run changed nothing (the temporary files in `/tmp` were removed). |
+| 8 CREATE ROOM check | **Open, needs KT:** sign in on the Rust site and CREATE ROOM, then `curl .../api/enet/rooms/CODE`. Rooms spawned before 05:08 UTC on 2026-11-14 still run the old file. |
+| 10 public route unit | **Not installed, stopped on purpose.** The Node directory on port 8205 is shared with the Godot site, and the Godot backend has its own `PUBLC` public route (`public_route.mjs`). A Rust `PUBLC` host would take that code for Godot players too. Needs KT's decision (a separate directory or port, or a different code for the Rust route). |
+| 11 `client_host_fallback`, 12 secrets and vps3 account | **Not done, pending KT** (step 11 redeploys vps3). |
+
+Run `apply-node-patch.sh` with `bash`, not `sh` (dash has no `pipefail`).
 
 Scripts in the repo (all default to a dry run): `packaging/room-host/deploy-vps2.sh`, `packaging/room-host/apply-node-patch.sh`,
 `packaging/public-route/lastroute-public-route.service` (+ `.env.example`).
@@ -34,7 +45,7 @@ Never put a GitHub token on vps2, never paste secrets in commands, keep `agent.e
    Expect it to start and be refused for lack of a spawn ticket. A missing-library error means step 3. Check that nothing was written under `/root`.
    Restarts: nothing. Lost: nothing.
 6. Patch a copy of the Node backend: `scp docs/patches/node-hosted-build.patch packaging/room-host/apply-node-patch.sh vps2:/tmp/`, then
-   `ssh vps2 'DRY_RUN=1 sh /tmp/apply-node-patch.sh /opt/lastroute-godot/current/backend /tmp/node-hosted-build.patch'` (dry run on a temporary copy), then `ssh vps2 'DRY_RUN=0 sh /tmp/apply-node-patch.sh /opt/lastroute-godot/current/backend /tmp/node-hosted-build.patch'`.
+   `ssh vps2 'DRY_RUN=1 bash /tmp/apply-node-patch.sh /opt/lastroute-godot/current/backend /tmp/node-hosted-build.patch'` (dry run on a temporary copy), then `ssh vps2 'DRY_RUN=0 bash /tmp/apply-node-patch.sh /opt/lastroute-godot/current/backend /tmp/node-hosted-build.patch'`.
    It makes `backend.new`, patches it with `patch -p1` (not `git apply`), runs `node --test` there if node is on the PATH (else it says so: run the tests by hand
    with the node under `/opt/node`), and writes `backend.swap.sh` without running it. Stop on any failed hunk or test. Restarts: nothing, the live backend is untouched.
    Rollback: `rm -rf /opt/lastroute-godot/current/backend.new /opt/lastroute-godot/current/backend.swap.sh`.
