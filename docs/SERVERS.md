@@ -193,6 +193,9 @@ waits (retrying every 2 s) while a runner holds the code. Its guests never becom
    (`--backend` names the loopback directory, which is also the relay; `--seed TEXT` keeps one world across restarts;
    `--idle-minutes` is ignored for the public room). No host token and no region-agent change: the region agent only spawns hosts
    for hosted codes that hold a spawn ticket, and the public code never has one.
+   The unit and an env example are in the repo (not installed): [`packaging/public-route/lastroute-public-route.service`](../packaging/public-route/lastroute-public-route.service),
+   service user `lr-publicroute`; the numbered steps are in [DEPLOY_ROOM_HOST.md](DEPLOY_ROOM_HOST.md). The binary is the one from the room host deployment
+   (same libraries, same commit rule, see "CREATE ROOM says BUILD MISMATCH").
 3. After the unit has been seen holding `PUBLC` (`GET /api/enet/rooms/PUBLC` lists it), set `client_host_fallback` to `false`
    and ship a client build. Until then the stand-in below keeps the route working.
 4. `lr_server` on vps3 has no WebSocket hub, so a server process can only be reached through the Node hub on vps2; the UDP
@@ -276,21 +279,40 @@ CREATE ROOM dialog with the line written in it instead of a 4 second flash on th
 **What the server needs (not done; nothing on any server was changed).** The one directory on vps2 also serves the Godot web build
 (`lastroutegodot.games.kyttuslab.org`, same port 8205, same agent), so pointing `LASTROUTE_GODOT_BIN` at the Rust binary would fix this
 site and break that one. The patch [patches/node-hosted-build.patch](patches/node-hosted-build.patch) (against
-`/opt/lastroute-godot/current/backend`, with tests; it applies cleanly to the copy read on 2026-11-07) lets one agent run both:
+`/opt/lastroute-godot/current/backend`, with tests) lets one agent run both. It applies with `patch -p1` (the first `region_agent.mjs` hunk needs fuzz 1) to the Godot repo's
+`backend/`, the source of the live copy; it does **not** apply with `git apply`, and this repo's own `backend/` already contains it. Use
+[`packaging/room-host/apply-node-patch.sh`](../packaging/room-host/apply-node-patch.sh) (a dry run on a copy, tests on the copy, a swap script that is
+written but not run). The live copy was last read 2026-11-07 and may have drifted:
 
 1. `server.mjs` passes `build: "rust"` from the create body on to `regions.requestSpawn`; `regions.mjs` keeps it (only the exact value
    `rust`) in the queued spawn options; `region_agent.mjs` runs `LASTROUTE_RUST_BIN` for such a room (no `--path`, and `--difficulty 0`
    is passed, which the Godot branch drops, so a RELAXED room is RELAXED) and the Godot host for every other room. With
    `LASTROUTE_RUST_BIN` unset nothing changes.
-2. Put a Linux x86_64 build of the Rust game on vps2, e.g. `/opt/lastroute-rust/current/last_route` (`packaging/linux/build.sh`; mode 755,
-   readable by `lastroute-godot`). The agent's command line (`--headless -- --dedicated-host CODE --port P --idle-minutes M --ws-rooms
+2. Put a Linux x86_64 build of the Rust game on vps2, e.g. `/opt/lastroute-rust/current/last_route` (mode 755, readable by `lastroute-godot`;
+   [`packaging/room-host/deploy-vps2.sh`](../packaging/room-host/deploy-vps2.sh), dry run by default). The binary is dynamically linked to
+   `libasound.so.2` (plus libgcc_s, libm, libc) and the CI build (ubuntu-22.04) needs **glibc 2.35 or newer**: check with `ldd` on vps2 first
+   (read-only); installing `libasound2` (`libasound2t64` on Ubuntu 24.04) is a package change KT must approve. No build is needed on vps2: take the
+   CI tarball `last-route-linux-x86_64.tar.gz` from the nightly release on KT's PC (the repo's token stays off vps2) and copy it over. The agent's command line (`--headless -- --dedicated-host CODE --port P --idle-minutes M --ws-rooms
    [--seed S] [--difficulty D] [--backend=http://127.0.0.1:8205]`, ticket and region in the environment) is exactly what
    `headless/dedicated.rs` reads (test `the_godot_agents_command_line_is_understood`).
-3. Apply and test: `cd /opt/lastroute-godot/current && patch -p1 < node-hosted-build.patch && (cd backend && node --test region_agent.test.mjs regions.test.mjs)`,
+3. Apply and test (on a copy, with `patch -p1`, never `git apply`): `cd /opt/lastroute-godot/current && cp -a backend backend.new && (cd backend.new && ...)`, which `apply-node-patch.sh` does, then swap the directories;
    add `LASTROUTE_RUST_BIN=/opt/lastroute-rust/current/last_route` to `/etc/lastroute-agent/agent.env`, restart `lastroute-godot-test` and
    `lastroute-region-agent` (a directory restart drops every room and bumps `reloadId`: pick a quiet moment).
 4. Check: sign in, CREATE ROOM, then `curl -H 'Accept: application/json' https://lastrouterust.games.kyttuslab.org/api/enet/rooms/CODE`
    must show `"dedicated":true` and the Rust client's `protocol` (the 8 digits in `YOU ...` of any mismatch line).
+
+**Things that go with this deployment** (found by the 2026-11-13 audit):
+- **Same commit as the web build.** The room host binary must be built from the same commit as the wasm that is served: the protocol
+  fingerprint depends on the RPC table and `RUST_WIRE_VERSION`. After any wire change the next web deploy brings BUILD MISMATCH back until the
+  host binary is replaced too. The binary cannot print its fingerprint yet; a `last_route --print-protocol` flag (a source change) is a follow-up
+  so a script can compare it with a live room.
+- **`client_host_fallback` cannot be flipped at run time on vps2.** The live backend is the Godot repo's and has no `/api/public/settings` route
+  (this repo's `backend/` has `public_settings.mjs`; the patch does not add the route), so the client's settings fetch fails there and only the
+  shipped `data/net/public_route.json` applies. Set it to `false` by a client data change (after `PUBLC` is seen held by the process) or by deploying
+  this repo's backend as a separate instance (KT_BUG_LIST 11).
+- **A merge to `main` restarts vps3.** `.github/workflows/deploy-server.yml` deploys `lr_server` on every push to `main` that touches `src/**`,
+  `crates/**` or the Cargo files (the previous binary stays in `/opt/lastroute-rust/previous`; `lr-server-swap` rolls back a failed health check).
+  Connected players on vps3 are dropped. Merge when KT is ready. The room host binary has no such auto-deploy.
 
 Also seen: each refused create leaves a Godot host holding one of the region's 9 slots until it idles out (10 minutes; `free` was 5 of 9
 with four of them), so repeated tries hit `NO_FREE_REGION` for a while. `lr_server` (vps3) has no `/api/rooms/hosted/create` at all

@@ -1,0 +1,32 @@
+# The public route (code PUBLC) as a server process on VPS 2: no player host, never idle-closed, re-registers itself.
+# NOT installed. KT approves the exact steps first: docs/DEPLOY_ROOM_HOST.md (install to /etc/systemd/system/).
+# Needs /opt/lastroute-rust/current/last_route (packaging/room-host/deploy-vps2.sh) and the Node backend on 127.0.0.1:8205.
+# The directory is also the relay: --backend names it, --ws-rooms uses its WebSocket hub. No host token, no spawn ticket.
+# Unit name: lastroute-public-route.service. Service user lr-publicroute (created by hand once, see the doc).
+[Unit]
+Description=Last Route public route PUBLC (dedicated host process)
+After=network-online.target lastroute-godot-test.service
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=lr-publicroute
+Group=lr-publicroute
+EnvironmentFile=-/etc/lastroute-public-route/lastroute-public-route.env
+Environment=HOME=/var/lib/lastroute-public
+WorkingDirectory=/var/lib/lastroute-public
+ExecStart=/opt/lastroute-rust/current/last_route --headless -- --dedicated-host PUBLC --backend=http://127.0.0.1:8205 --ws-rooms
+StateDirectory=lastroute-public
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/lastroute-public
+
+[Install]
+WantedBy=multi-user.target

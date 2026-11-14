@@ -56,6 +56,10 @@ start fade follows the clock, so two shots differ by one overall brightness fact
 The menu sits at about 144 MB. What holds the memory, and everything tried, is in [RAM_PASS.md](RAM_PASS.md); the
 triangle budget of props is in [PERF_TRIANGLES.md](PERF_TRIANGLES.md).
 
+FPS LIMIT defaults to UNLIMITED (0; the slider's top stop is UNLIMITED too), and on Linux VSYNC and the cap are live
+(vendored `window::set_swap_interval`, see [GRAPHICS_API.md](GRAPHICS_API.md)). The cost is one relaxed atomic load a
+frame. The browser stays paced by requestAnimationFrame.
+
 ## One core, and a slow machine (2026-11-12)
 
 - **One core on KT's PC:** the stress run pinned to one core (`taskset -c 0`) averages 1.04 ms a frame (960 fps),

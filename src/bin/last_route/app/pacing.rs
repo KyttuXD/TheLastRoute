@@ -3,7 +3,8 @@
 //! VSYNC: miniquad (0.4.11) creates the GL context with swap interval 1 unless the window config
 //! sets `platform.swap_interval`, and it never changes it afterwards. `main.rs` sets the creation
 //! value from the saved setting, and `apply_vsync` changes the live context when the row is
-//! toggled (on Windows, through the WGL_EXT_swap_control entry point the context was made with; on
+//! toggled (on Linux, through `window::set_swap_interval`, which the vendored GLX/EGL loops apply just
+//! before the next swap; on Windows, through the WGL_EXT_swap_control entry point the context was made with; on
 //! macOS, through NSOpenGLContext's swap interval parameter, or under Metal through the CAMetalLayer's
 //! displaySyncEnabled). On macOS miniquad forces the creation value to 0 whatever the config says, so the
 //! first frame's `apply_vsync` is what turns vsync on.
@@ -30,8 +31,8 @@ pub fn swap_interval_for(on: bool) -> i32 {
 }
 
 /// Applies the VSYNC row to the live GL context. Returns whether the change took effect. Windows
-/// and macOS change the swap interval at run time; elsewhere the creation-time value stays until
-/// the next launch, and the FPS LIMIT still paces the loop.
+/// macOS and Linux change the swap interval at run time; in the browser and on Android the creation-time
+/// value stays (requestAnimationFrame and the compositor pace the frame), and the FPS LIMIT still paces the loop.
 pub fn apply_vsync(on: bool) -> bool {
     let interval = swap_interval_for(on);
     let state = if on { "on" } else { "off" };
@@ -168,7 +169,16 @@ fn set_metal_display_sync(on: bool) -> bool {
     true
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Linux: miniquad's GLX and EGL loops (X11 and Wayland) apply the requested interval on the GL thread just
+/// before the next swap (vendor/miniquad `window::set_swap_interval`), so the change is live.
+#[cfg(all(not(windows), not(target_os = "macos"), not(target_arch = "wasm32"), not(target_os = "android")))]
+fn set_swap_interval(interval: i32) -> bool {
+    macroquad::miniquad::window::set_swap_interval(interval);
+    true
+}
+
+/// The browser's requestAnimationFrame and the phones' compositors pace the frame; no live change.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn set_swap_interval(_interval: i32) -> bool {
     false
 }

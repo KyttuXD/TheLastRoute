@@ -122,6 +122,10 @@ fn native_display() -> &'static Mutex<native::NativeDisplayData> {
 
 /// Window and associated to window rendering context related functions.
 /// in macroquad <= 0.3, it was ctx.screen_size(). Now it is window::screen_size()
+/// Last Route patch: the swap interval asked for through `window::set_swap_interval`; -1 is "no request".
+#[allow(dead_code)]
+pub(crate) static SWAP_INTERVAL_REQUEST: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
 pub mod window {
     use super::*;
 
@@ -438,6 +442,14 @@ pub mod window {
         crate::native::macos::FRAME_PACER_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
         #[cfg(not(target_os = "macos"))]
         let _ = enabled;
+    }
+
+    /// Last Route patch: asks the Linux GL loops (GLX, and EGL on X11 and Wayland) to change the swap interval of
+    /// the live context. The loop reads the request once per frame and calls the GL function only when the value
+    /// differs from the one it last set. Negative values are ignored. Other systems ignore the call (Windows and
+    /// macOS are changed by the game through their own entry points).
+    pub fn set_swap_interval(interval: i32) {
+        crate::SWAP_INTERVAL_REQUEST.store(interval, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(target_vendor = "apple")]

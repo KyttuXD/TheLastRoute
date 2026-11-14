@@ -47,6 +47,16 @@ Pacer switch:
    CVDisplayLink at the top of every iteration, which caps it at the display's refresh rate even with the swap
    interval at 0. The static `FRAME_PACER_ENABLED` (default true, the stock behaviour) is read every iteration.
 
+Linux live swap interval:
+
+7b. `src/lib.rs`, `src/native/linux_x11.rs` (GLX loop and EGL loop), `src/native/linux_wayland.rs` (EGL loop):
+   `window::set_swap_interval(i32)` stores the wanted interval in the static `SWAP_INTERVAL_REQUEST` (an
+   `AtomicI32`, -1 = no request). Each loop keeps `last_swap_interval` (starting at the config value) and, once per
+   frame just before the buffer swap, does one relaxed load; only when the request is >= 0 and differs does it call
+   `glXSwapIntervalEXT/MESA` (through `Glx::swap_interval`) or `eglSwapInterval` on the GL thread. Without the
+   patch the creation-time interval stayed until the next launch, so VSYNC OFF and an FPS LIMIT above the refresh
+   needed a restart on Linux. Other systems ignore the call.
+
 GL / WebGL fix (all GL targets, wasm included):
 
 8. `src/graphics/gl.rs` `delete_texture` and `src/graphics/gl/cache.rs` `GlCache::forget_texture`: upstream has the

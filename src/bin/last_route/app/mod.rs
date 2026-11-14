@@ -383,6 +383,13 @@ pub async fn load_world_booted(boot: &mut crate::ui::boot::BootLoader) -> World 
     crate::lr_info!("startup timing: signal step {} ms{}", t.elapsed().as_millis(), perf::rss_note());
     perf::trim_heap();
     crate::lr_info!("startup timing: heap trimmed{}", perf::rss_note());
+    // the embedded blobs were read once by the load; give their resident pages back (Linux, read-only segments only)
+    {
+        use crate::content::embedded::{ASSET_FILES, DATA_FILES};
+        let blobs: Vec<&[u8]> = ASSET_FILES.iter().map(|(_, b)| *b).chain(DATA_FILES.iter().map(|(_, t)| t.as_bytes())).collect();
+        let freed = perf::release_blob_pages(&blobs);
+        crate::lr_info!("startup timing: embedded pages released {} KB{}", freed / 1024, perf::rss_note());
+    }
     World {
         content,
         catalog,
@@ -651,6 +658,7 @@ pub async fn run(
     // the lobby's room seed text (ROOM-<code>-<hex>); the run seed is its djb2
     let mut room = route::new_room_text();
     let mut pz = Pause::default();
+    let mut trim_gate = perf::TrimGate::default();
     let mut map_open = false;
     // the fullscreen map's pan, zoom and double click (ui/map.rs); recentred each time it opens
     let mut map_view = map::FullView::default();
@@ -825,6 +833,14 @@ pub async fn run(
         }
         // only a frame that drew the 3D world counts towards the AUTO pick and the governor (not menus, loading or the pause screen)
         let in_play = playing.is_some() && loading.is_none() && !pz.open && !stress_on;
+        // hand freed heap pages back at a moment that already stalls (level switch, window recentre, menu or pause opening),
+        // at most once per TrimGate::MIN_GAP seconds; never on an ordinary frame
+        {
+            let (origin, level) = playing.as_ref().map_or(((0, 0), 0), |g| (g.window_origin(), g.fac.level));
+            if trim_gate.observe(get_time(), playing.is_none() || pz.open, origin, level) {
+                perf::trim_heap();
+            }
+        }
         let live = qm.update(&settings.quality, settings.adaptive_quality, settings.fps_limit, raw_dt * 1000.0, in_play);
         qm.publish(&live, &settings.quality);
         tg = targets_scaled(Some(tg), live.render_scale);

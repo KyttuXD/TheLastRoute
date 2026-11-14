@@ -1223,6 +1223,7 @@ where
         let mut cursor_icon = crate::CursorIcon::Default;
         let mut cursor_visible = true;
 
+        let mut last_swap_interval = conf.platform.swap_interval.unwrap_or(1);
         while !crate::native_display().try_lock().unwrap().quit_ordered {
             while let Ok(request) = rx.try_recv() {
                 match request {
@@ -1323,6 +1324,12 @@ where
                 display.update_requested = false;
                 event_handler.update();
                 event_handler.draw();
+                // Last Route patch: a live swap interval change (window::set_swap_interval), one relaxed load per frame
+                let want = crate::SWAP_INTERVAL_REQUEST.load(std::sync::atomic::Ordering::Relaxed);
+                if want >= 0 && want != last_swap_interval {
+                    last_swap_interval = want;
+                    (libegl.eglSwapInterval)(egl_display, want);
+                }
                 (libegl.eglSwapBuffers)(egl_display, egl_surface);
             }
         }
