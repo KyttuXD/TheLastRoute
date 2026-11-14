@@ -43,9 +43,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Only the link name -lasound is needed (the game declares its ALSA calls itself), so the runtime library the image
+      # already has is enough with a libasound.so link; the -dev package is installed only if that library is missing.
       - name: Linux packages
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libasound2-dev || (sudo apt-get update && sudo apt-get install -y libasound2-dev)
+        run: |
+          L=/usr/lib/x86_64-linux-gnu
+          ls $L/libasound* || true
+          if [ ! -e $L/libasound.so ]; then
+            if [ -e $L/libasound.so.2 ]; then sudo ln -s $L/libasound.so.2 $L/libasound.so
+            else sudo apt-get install -y libasound2-dev || (sudo apt-get update && sudo apt-get install -y libasound2-dev); fi
+          fi
 
       # The Rust version is pinned in rust-toolchain.toml; this installs the same version (keep both in step).
       - uses: dtolnay/rust-toolchain@master
@@ -95,7 +103,8 @@ jobs:
           t0=$(date +%s); date -u +"start %FT%TZ"
           trap 'echo "| cargo build --profile ci --bins | ${{ runner.os }} | cache-hit: ${CACHE_HIT:-n/a} | $(( $(date +%s) - t0 ))s |" >> "$GITHUB_STEP_SUMMARY"; date -u +"end   %FT%TZ"' EXIT
           cargo build --locked --profile ci --bin last_route --features server
-          cargo check --locked --profile ci --bins --features server
+          # last_route is built on the line above; list every other bin of Cargo.toml and src/bin/ here
+          cargo check --locked --profile ci --features server --bin lr_server --bin lr_story_server --bin lr_story --bin night_watch
 
       # Exit 0 pass, 1 fail, 2 nothing ran. The JSON report is kept as an artifact.
       - name: Headless test suites

@@ -3,8 +3,9 @@
 # Linux server. The release is replaced in place on every push to main (packaging/nightly.sh).
 # Intel and Apple Silicon macOS are separate builds and separate files: last_route-macos-x86_64.zip and
 # last_route-macos-arm64.zip. The legacy Intel Mac app (OS X 10.5 to 10.11, docs/MACOS_SNOW_LEOPARD.md) is one more
-# file of the same "nightly" release, last_route-macos-legacy.zip: its two jobs (macos-legacy-renderer, macos-legacy)
-# are continue-on-error and nothing needs them, so a failure there never blocks the other builds. The repository is public, so GitHub-hosted runners (including macOS) are free.
+# file of the same "nightly" release, last_route-macos-legacy.zip: its two jobs are continue-on-error and
+# nothing needs them, so a failure there never blocks the other builds. macos-legacy (the slowest, about 10 minutes) runs as its
+# own workflow, build-legacy.yml, so this run is not held up by it; macos-legacy-renderer stays here. The repository is public, so GitHub-hosted runners (including macOS) are free.
 name: build
 on:
   push:
@@ -302,52 +303,3 @@ jobs:
 
   # The legacy app itself, built with the MacPorts Darwin 10 compiler (Rust 1.77, emulated TLS): a runtime probe, then
   # the game build, then last_route-macos-legacy.zip goes to the nightly release next to the other builds.
-  macos-legacy:
-    runs-on: macos-15-intel
-    continue-on-error: true
-    env:
-      CARGO_BUILD_JOBS: "4"
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Fetch the Darwin 10 compiler (sha256 checked, private folder)
-        run: sh packaging/macos/legacy/bootstrap-runtime.sh "$RUNNER_TEMP/lr-snow-runtime"
-      - name: Runtime probe
-        shell: bash
-        run: |
-          root="$RUNNER_TEMP/lr-snow-runtime"
-          export DYLD_LIBRARY_PATH="$root/support/opt/local/lib:$root/compiler/lib:/usr/lib"
-          export MACOSX_DEPLOYMENT_TARGET=10.6
-          "$root/compiler/bin/rustc" -Vv
-          "$root/compiler/bin/rustc" --edition=2021 --target x86_64-apple-darwin \
-            packaging/macos/legacy/probe.rs -L "native=$root/support/opt/local/lib" \
-            -C link-arg=-lMacportsLegacySystem.B -o "$root/runtime-probe"
-          otool -L "$root/runtime-probe" | tee runtime-probe-libraries.txt
-          otool -l "$root/runtime-probe" > runtime-probe-load-commands.txt
-          "$root/runtime-probe" | tee runtime-probe-result.txt
-      # One legacy app for OS X 10.5 to 10.11: built for 10.5 (Leopard), the system the Mac Pro 3,1 shipped with.
-      - name: Legacy game build (OS X 10.5 and later)
-        shell: bash
-        run: |
-          set -o pipefail
-          rustup toolchain install 1.77.0 --profile minimal --no-self-update
-          sh packaging/macos/legacy/bootstrap-leopard.sh "$RUNNER_TEMP/lr-snow-runtime" 2>&1 | tee legacy-bootstrap.txt
-          bash packaging/macos/legacy/build-experiment.sh "$RUNNER_TEMP/lr-snow-runtime" 10.5 2>&1 | tee legacy-game-build.txt
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: macos-legacy-runtime-reports
-          path: |
-            runtime-probe-*.txt
-            legacy-*.txt
-            target/test-reports/legacy-*
-            dist/last_route-macos-legacy.zip
-          retention-days: 3
-          if-no-files-found: warn
-      - name: Publish to nightly
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: sh packaging/nightly.sh dist/last_route-macos-legacy.zip
