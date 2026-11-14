@@ -285,10 +285,7 @@ impl ReservedRooms {
         if !self.admin_rooms.is_empty() {
             value["adminRooms"] = Value::Object(self.admin_rooms.clone());
         }
-        let mut out = Vec::new();
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
-        let mut serializer = serde_json::Serializer::with_formatter(&mut out, formatter);
-        serde::Serialize::serialize(&value, &mut serializer).ok();
+        let out = one_space_pretty(&value);
         if let Err(error) = crate::util::write_atomic(&self.store_path, &out) {
             log_error(&format!("Reserved rooms: could not write {}: {error}", self.store_path.display()));
         }
@@ -644,10 +641,33 @@ impl ReservedRooms {
     }
 }
 
+/// The store file's layout: pretty JSON with one space per level (serde_json's own pretty printer uses two). Strings
+/// never contain a raw newline, so every line starts with structural indentation only.
+fn one_space_pretty(value: &Value) -> Vec<u8> {
+    let text = serde_json::to_string_pretty(value).unwrap_or_default();
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let lead = line.len() - line.trim_start_matches(' ').len();
+        out.push_str(&line[lead / 2..]);
+    }
+    out.into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::system_clock;
+
+    #[test]
+    fn one_space_pretty_matches_the_old_formatter_layout() {
+        let v = json!({ "a": { "b": [1, [], {}], "c": "x\n  y" }, "d": [] });
+        let text = String::from_utf8(one_space_pretty(&v)).unwrap();
+        assert_eq!(text, "{\n \"a\": {\n  \"b\": [\n   1,\n   [],\n   {}\n  ],\n  \"c\": \"x\\n  y\"\n },\n \"d\": []\n}");
+    }
+
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("lr_reserved_{name}_{}", hex(&random_bytes(6))));

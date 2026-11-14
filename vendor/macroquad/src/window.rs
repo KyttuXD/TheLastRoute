@@ -126,9 +126,6 @@ where
 {
     std::panic::set_hook(Box::new(move |info| {
         let message = format!("{info:?}");
-        #[cfg(feature = "backtrace")]
-        let backtrace_string = format!("{:?}", backtrace::Backtrace::new());
-        #[cfg(not(feature = "backtrace"))]
         let backtrace_string = format!("Macroquad compiled without \"backtrace\" feature");
         crate::logging::error!("{}", message);
         crate::logging::error!("{}", backtrace_string);
