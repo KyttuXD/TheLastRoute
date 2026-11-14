@@ -245,6 +245,8 @@ three runners, and the systemd unit itself.
 
 ## CREATE ROOM says BUILD MISMATCH on the web build (found 2026-11-07)
 
+**Update 2026-11-14:** on vps2 the Node patch and `LASTROUTE_RUST_BIN` were already in place (since 2026-11-07/08). The mismatch came from the installed host binary (build of 2026-11-08) drifting from the served web build. On 2026-11-14 the nightly Linux build 148 (commit d134eef, the commit of the live web build) was installed with `packaging/room-host/deploy-vps2.sh`; nothing was restarted. Whenever the wire changes, install the new nightly the same way. Status of each step: [DEPLOY_ROOM_HOST.md](DEPLOY_ROOM_HOST.md). Still open: the end-to-end CREATE ROOM check by KT, and the public route process (`PUBLC` is shared with the Godot site on the same directory).
+
 **Report:** pressing CREATE ROOM (online) on https://lastrouterust.games.kyttuslab.org shows `BUILD MISMATCH // HOST ... YOU ...`
 (or `HOST UNVERSIONED`) and the room is not entered.
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Prepares docs/patches/node-hosted-build.patch for the Node backend on VPS 2, on a COPY: sh packaging/room-host/apply-node-patch.sh [BACKEND_DIR] [PATCH]
+# Prepares docs/patches/node-hosted-build.patch for the Node backend on VPS 2, on a COPY: bash packaging/room-host/apply-node-patch.sh [BACKEND_DIR] [PATCH]
 #   BACKEND_DIR  the live backend folder (default /opt/lastroute-godot/current/backend). Run this ON the server, from anywhere.
 #   PATCH        the patch file (default docs/patches/node-hosted-build.patch next to this repo, or ./node-hosted-build.patch)
 #
