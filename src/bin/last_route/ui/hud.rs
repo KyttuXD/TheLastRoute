@@ -402,7 +402,7 @@ pub fn draw_hud_with_runners(
         let size = fs(7.0);
         shadowed(a, &sub, c.x - tw(a, F::Body, &sub, size) * 0.5, v.y * 0.78, size, p.body);
     }
-    if g.p.hidden.is_none() && g.escape.is_none() {
+    if g.p.hidden.is_none() && g.escape.is_none() && !g.rest.asleep() {
         if let Some(pr) = g.focus_prompt() {
             let pr = with_interact_key(&pr);
             let size = fs(10.0);
@@ -616,6 +616,15 @@ pub fn draw_hud_with_runners(
             Rect::new(0.0, 0.0, v.x, v.y),
             rgba(0.0, 0.0, 0.0, g.fade.min(1.0)),
         );
+    }
+    // asleep, the screen is dark (game/bed.rs): the wake prompt is the one text drawn over that fade
+    if g.rest.asleep() && g.p.hidden.is_none() && g.escape.is_none() {
+        if let Some(pr) = g.rest_prompt() {
+            let pr = with_interact_key(&pr);
+            let size = fs(10.0);
+            let c = (v * 0.5).round();
+            shadowed(a, &pr, c.x - tw(a, F::Body, &pr, size) * 0.5, c.y + 16.0, size, p.ink);
+        }
     }
     drawn
 }

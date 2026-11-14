@@ -132,7 +132,8 @@
       "room_centre": { "weight": 2.0, "acts": { "look_around": 3, "idle": 2, "crouch": 1, "sprint_burst": 1, "emote": 1 } },
       "locker": { "weight": 2.0, "acts": { "check_locker": 1 } },
       "door": { "weight": 2.0, "acts": { "check_door": 1, "sprint_burst": 0.5 } },
-      "relay": { "weight": 1.5, "acts": { "inspect_relay": 1, "sprint_burst": 0.5 } }
+      "relay": { "weight": 1.5, "acts": { "inspect_relay": 1, "sprint_burst": 0.5 } },
+      "bed": { "weight": 0.4, "acts": { "nap": 1 } }
     },
     "durations": {
       "look_around": [2.0, 4.0],
@@ -142,8 +143,11 @@
       "idle": [2.0, 5.0],
       "crouch": [2.0, 4.0],
       "sprint_burst": [0.8, 1.6],
-      "emote": [2.0, 3.0]
+      "emote": [2.0, 3.0],
+      "nap": [20.0, 40.0]
     },
+    "nap": { "gap": 90.0, "wake_hunter_distance": 6.0, "wake_chase_distance": 14.0, "hunter_clear_distance": 20.0, "leader_clear_distance": 2.0, "lie_height": 0.6 },
+    "_nap_note": "Rust-only (Godot teammates never sleep). A bot with nothing else to do may walk to a bed (hunter point of interest \"bed\") within range of the runner and lie on it for 20 to 40 s. It wakes when a hunter of its level is within wake_hunter_distance (seen or not), a chasing one is within wake_chase_distance, it hears a noise, another intent takes over, or the runner goes out of range. gap is the least seconds between two naps of one bot; a bed is not picked while a hunter is within hunter_clear_distance of the bot, within leader_clear_distance of the runner, or when another bot has it. The bot's position stays the stand cell beside the bed, so the wire is unchanged (a guest sees it standing); docs/SLEEP.md",
     "_source": "Rust-only figures: when no hunter is near and no errand or goal applies, a bot acts like a player who has stopped to look about. It picks a point from the hunter points of interest (hunters/activities.rs: room centres, lockers, relays, doors) or stays where it is, walks there (sprint_burst runs), does an activity for a few seconds (look around, check a locker or a door, inspect a relay, idle, crouch, play an emote from data/player/emotes.json), then pauses. range is the farthest it goes from the runner; past it the follow intent walks it back and it resumes once it is back in follow range. Weights are relative; durations and pauses are [min, max] seconds.",
     "_return_note": "return_distance 6.0 m and return_timeout 8 s are KT-pass picks (2026-11-08), not Godot figures: a bot past range walks back until it is within return_distance (and the follow range), and after return_timeout it follows plainly (follow_only) until it is back inside range. follow_only_timeout 10 s is also a KT-pass pick: a plain follow that has not closed in by goals.stuck.progress metres for that long is dropped with a fresh route, so follow_only never holds a bot that cannot route (bots have no teleport-to-runner rule)"
   },

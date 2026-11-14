@@ -76,5 +76,35 @@ is not ported; the wake is the distance, noise and torch rules only.
   which means downed, so nothing is sent (Godot replicates `asleep` and draws "z Z").
 - Passing out at full drowsiness and the tired slow-down (`pass_out`, `slow_below` in the data) are not wired.
 - Accidental sleep (Godot solo: 50 s idle in a bed, then 8 s drowsy) and the getting-up glide.
-- Player NPC teammates lying in beds (they walk past beds, sleep is not wired for them yet).
+- Player NPC teammates lying in beds: done as a bot nap, see "Bot naps" below (guests still see them standing).
 - A drowsiness bar on the HUD.
+
+## Prompt fixes (bed-fixes)
+
+- The asleep prompt ("ASLEEP // [SPACE] WAKE // [E] GET UP") is drawn after the sleep fade in `ui/hud.rs`, so it stays
+  readable under the dark fill. It is the only HUD text drawn while asleep.
+- A lying runner whose drowsiness is at or under `wake_at` sees the `lying_rested` text (TOO AWAKE TO SLEEP) instead of
+  the SLEEP offer, since the sleep key would answer NOT TIRED.
+- Not done yet: bed reach and aim are still measured to the mattress centre (long beds can be missed from a corner),
+  bunks compete with their hiding-spot target, the texts hard-code [SPACE], and the headless sim has no bed target.
+
+## Bot naps
+
+Rust-only: the Godot NPC teammates never sleep (`npc_teammates.gd` has no sleep, bed or nap).
+
+- A bot that reaches the "life" intent (no hunter, errand or goal to deal with) may pick the hunter point of interest
+  "bed" (`life.poi.bed`, weight 0.4, act `nap`), walk to its stand cell and lie on the mattress for `life.durations.nap`
+  (20 to 40 s). The mattress centre and long axis come from `hunters/activities.rs` `points_of_interest`, as for hunter naps.
+- Data (`data/npcs.json`, `life.nap`): `gap` (90 s a bot stays off the beds after it gets up), `wake_hunter_distance` (6 m, any hunter
+  of its level, seen or not), `wake_chase_distance` (14 m, a chasing hunter), `hunter_clear_distance` (20 m, no bed is
+  picked with a hunter that close), `leader_clear_distance` (2 m, no bed beside the runner, who may lie on it) and
+  `lie_height` (feet height on the mattress).
+- It wakes (stands, pauses) when the time ends, a hunter is inside the wake distance, it hears a noise, another intent
+  (flee, hide, revive, goal) takes over, or the runner goes out of `life.range`. No startle stun.
+- A bed another bot walks to or lies on is skipped (`Peer.napping`, read from the tick's peer list: no new world scan).
+  A hunter may still nap on the same bed: cosmetic only, no reservation between the two systems.
+- The bot's position stays the stand cell beside the bed, so catches, saves and the wire read that spot, as for the player's
+  bed. The wire is unchanged: guests (and old hosts) see the bot standing there. Only the host draws it lying
+  (`net/runner_figure.rs` `BotView.lie`, `lie_feet`, `lie_yaw`).
+- To check by eye: the head end and the height on the mattress (the lay clip is the downed clip; the yaw is derived from the
+  hunter nap, not seen in the game yet).

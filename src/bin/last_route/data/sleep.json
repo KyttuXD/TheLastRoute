@@ -39,6 +39,7 @@
     "stir_cooldown_s": 3.0,
     "text": {
       "lying": "LYING DOWN // FATIGUE {fatigue}% // [SPACE] SLEEP // [E] GET UP",
+      "lying_rested": "LYING DOWN // FATIGUE {fatigue}% // TOO AWAKE TO SLEEP // [E] GET UP",
       "asleep": "ASLEEP // [SPACE] WAKE // [E] GET UP",
       "fell_asleep": "ASLEEP",
       "awake": "AWAKE",

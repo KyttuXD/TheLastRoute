@@ -32,6 +32,7 @@ pub struct PropRule {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BedText {
     pub lying: String,
+    pub lying_rested: String,
     pub asleep: String,
     pub fell_asleep: String,
     pub awake: String,
@@ -107,6 +108,7 @@ pub fn parse(src: &str) -> Result<BedRules, String> {
         stir_cooldown_s: num(b, "stir_cooldown_s")?,
         text: BedText {
             lying: text(t, "lying")?,
+            lying_rested: text(t, "lying_rested")?,
             asleep: text(t, "asleep")?,
             fell_asleep: text(t, "fell_asleep")?,
             awake: text(t, "awake")?,
@@ -437,7 +439,7 @@ impl Game {
     }
 
     /// The prompt while the runner sits, lies or sleeps, None when it does not.
-    pub(super) fn rest_prompt(&self) -> Option<String> {
+    pub(crate) fn rest_prompt(&self) -> Option<String> {
         if self.rest.sitting() {
             return Some(sit_rules().text.seated.clone());
         }
@@ -445,7 +447,14 @@ impl Game {
             return None;
         }
         let t = &rules().text;
-        let line = if self.rest.asleep() { &t.asleep } else { &t.lying };
+        // too awake to fall asleep (the sleep key answers NOT TIRED): say so instead of offering SLEEP
+        let line = if self.rest.asleep() {
+            &t.asleep
+        } else if self.meters.drowsiness <= sleep_cfg().wake_at {
+            &t.lying_rested
+        } else {
+            &t.lying
+        };
         let max = sleep_cfg().max.max(1e-3);
         let fatigue = (self.meters.drowsiness / max * 100.0).clamp(0.0, 100.0).round() as i32;
         Some(line.replace("{fatigue}", &fatigue.to_string()))
@@ -884,6 +893,24 @@ mod tests {
         g.fac.props[i].offset = (0.0, seating().default_reach + 1.0);
         assert_ne!(g.find_focus(), Some(Focus::Bed(i)));
         assert!(!g.lie_down(i), "out of reach");
+    }
+
+    #[test]
+    fn a_lying_runner_too_awake_to_sleep_is_told_so_and_a_tired_one_is_offered_sleep() {
+        let (mut g, i, _content, _catalog) = bed_game("ROOM-BED-7");
+        assert!(g.lie_down(i));
+        g.meters.drowsiness = 0.0;
+        let prompt = g.rest_prompt().expect("the lying prompt");
+        assert!(prompt.contains("TOO AWAKE") && !prompt.contains("[SPACE] SLEEP"), "{prompt}");
+        press_jump(&mut g);
+        assert!(!g.rest.asleep(), "NOT TIRED keeps the runner awake");
+        g.meters.drowsiness = sleep_cfg().max;
+        let prompt = g.rest_prompt().expect("the lying prompt");
+        assert!(prompt.contains("[SPACE] SLEEP"), "{prompt}");
+        press_jump(&mut g);
+        assert!(g.rest.asleep());
+        // the HUD draws this prompt over the sleep fade (ui/hud.rs), so it has to be there while asleep
+        assert_eq!(g.rest_prompt().as_deref(), Some(rules().text.asleep.as_str()));
     }
 
     #[test]

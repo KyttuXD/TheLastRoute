@@ -315,6 +315,24 @@ mod tests {
     }
 
     #[test]
+    fn the_wire_state_of_a_napping_bot_has_the_keys_of_a_standing_one() {
+        let content = crate::content::Content::load();
+        let catalog = crate::world::catalog::Catalog::load();
+        let mut g = crate::game::Game::new_infinite_sim(crate::config::Difficulty::Standard, 7, "ROOM-NPC-NAP", 0, &content, &catalog);
+        let (spot, level) = (g.p.pos, g.runner_level());
+        assert!(g.npc_spawn_at(1, 70, spot, level) >= 1, "the fixture makes a bot");
+        let standing = g.npcs[0].clone();
+        let mut napping = standing.clone();
+        napping.life.phase = crate::game::npc::LifePhase::Do;
+        napping.life.act = Some(crate::game::npc::LifeAct::Nap);
+        napping.life.axis = (1.0, 0.0);
+        assert!(napping.life.lying().is_some());
+        let keys = |n: &crate::game::npc::Npc| wire_state(n, (0, 0)).keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&standing), keys(&napping), "a nap adds no key");
+        assert_eq!(wire_state(&standing, (0, 0)).get("x"), wire_state(&napping, (0, 0)).get("x"), "the position stays the stand cell");
+    }
+
+    #[test]
     fn a_remove_and_a_quiet_npc_are_both_forgotten() {
         let t0 = Instant::now();
         let mut guest = NpcSync::default();
