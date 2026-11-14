@@ -145,3 +145,22 @@ The workflows now write the compile step's elapsed seconds and the cache-hit fla
 | macOS arm64 | | | | |
 | macOS Intel | | | | |
 | test linux | | | | |
+
+## 2026-11-14 pass (dependency and compile audit)
+
+Measured on run 43537179164 (build) and 43537179399 (test): macos-legacy 10.8 min (the build step 589 s: about 50 s setup, 60 s
+dependencies cold, 480 s the game crate with fat LTO on the Intel runner), test unit 7.3 min (180 s compile, 194 s running 4099
+tests), everything else 2.5 to 5 min. A clean local build is 68 s of which the game crate is 50 s; the registry dependencies
+cost almost nothing on a warm cache, so dropping more crates saves seconds, not minutes (rustls 6.5 s, lr_update 4.8 s, cc 4.3 s,
+ring build script 3.7 s).
+
+Done: the legacy Mac build is its own workflow (`build-legacy.yml`), so the build run is no longer held by it; the unit job
+links `libasound.so` to the runtime library the runner already has (no apt install); the suites job type-checks the other
+bins without checking `last_route` a second time.
+
+Checked and left (each saves under 10 s or was refuted): `debug = 0` for the ci profile (about 6 s, and it would lose file and
+line in test backtraces), caching the legacy dependency build (0 to 25 s), the Rosetta variant of the legacy build (refuted).
+
+Needs KT's decision, because they change what ships or are large: thin LTO or fewer codegen units for the legacy Mac release
+(about 4 minutes of the 8 in the game crate step; frame time on the old Macs would have to be measured), and splitting the game
+crate so an edit rebuilds one part (the only route to about 3 minutes; a large refactor).
