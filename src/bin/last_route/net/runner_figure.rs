@@ -716,6 +716,21 @@ pub struct BotView<'a> {
     /// Crouching, and the emote playing (id, play counter); None for no emote.
     pub crouch: bool,
     pub emote: Option<(&'a str, u32)>,
+    /// Lying on a bed (host bots only): the mattress centre, the bed's long axis (head end first) and the feet's height
+    /// above the drawn floor. None for a bot that stands; a guest draws every bot standing (the wire is unchanged).
+    pub lie: Option<((f32, f32), (f32, f32), f32)>,
+}
+
+/// Where the feet of a bot lying on a bed go: `NAP_HALF_BODY` back from the mattress centre along the axis, at `y`.
+pub fn lie_feet(centre: (f32, f32), axis: (f32, f32), y: f32) -> Vec3 {
+    let half = crate::render::anim::hunter_activity_pose::NAP_HALF_BODY;
+    vec3(centre.0 - axis.0 * half, y, centre.1 - axis.1 * half)
+}
+
+/// The yaw of a bot lying with its head at +`axis`: the rig's lay clip puts the head behind the body, as the hunter
+/// nap does (render/anim/hunter_activity_pose.rs `nap_root`).
+pub fn lie_yaw(axis: (f32, f32)) -> f32 {
+    axis.0.atan2(axis.1)
 }
 
 /// Draws NPC teammates with the runner mannequin and the same driver, each wearing its skin (see [`bot_skin`]). A bot's
@@ -741,9 +756,20 @@ pub fn draw_bots(a: &Assets, bots: &[BotView]) {
         });
         let mut state = spec.map(|s| bot_state(&s.bots, speed, b.climbing, b.falling)).unwrap_or_default();
         state.crouching = b.crouch;
+        if b.lie.is_some() {
+            state.crouching = false;
+            state.lying = true;
+        }
         let tex = pick(&bot_skin(b.name, skins), &|id| a.skin_texture(id).is_some());
         let (look_yaw, look_pitch) = BOT_LOOK.with(|m| m.borrow().get(b.name).copied()).unwrap_or((0.0, 0.0));
-        draw_driven(a, key, vec3(b.at.0, b.y, b.at.1), b.facing, look_yaw, look_pitch, &tex, false, &state, None, b.emote, dt, epoch);
+        let (pos, facing) = match b.lie {
+            Some((centre, axis, up)) => {
+                let feet = lie_feet(centre, axis, b.y + up);
+                (feet, lie_yaw(axis))
+            }
+            None => (vec3(b.at.0, b.y, b.at.1), b.facing),
+        };
+        draw_driven(a, key, pos, facing, look_yaw, look_pitch, &tex, false, &state, None, b.emote, dt, epoch);
     }
     // a bot that was not drawn this pass loses its look
     BOT_LOOK.with(|m| m.borrow_mut().retain(|name, _| bots.iter().any(|b| b.name == name)));
@@ -1127,6 +1153,23 @@ mod tests {
         let all: Vec<String> = rig.bones.iter().map(|b| b.name.clone()).collect();
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         assert!(peak(&rig, "idle", &all) <= 10.0, "the idle clip barely moves any joint");
+    }
+
+    #[test]
+    fn a_lying_bot_is_drawn_lying_with_its_feet_on_the_mattress() {
+        let mut state = RunnerState::default();
+        state.lying = true;
+        assert_eq!(state.pose(), Pose::Lie);
+        assert!(holds_head(&state), "a lying bot keeps its head straight");
+        // a bed centred at (5.5, 5.5) lying along +x: the feet 0.8 m back, at the bed height
+        let feet = lie_feet((5.5, 5.5), (1.0, 0.0), 0.6);
+        let half = crate::render::anim::hunter_activity_pose::NAP_HALF_BODY;
+        assert!((feet.x - (5.5 - half)).abs() < 1e-5 && (feet.z - 5.5).abs() < 1e-5 && (feet.y - 0.6).abs() < 1e-5, "{feet:?}");
+        let feet = lie_feet((5.5, 5.5), (0.0, -1.0), 0.0);
+        assert!((feet.z - (5.5 + half)).abs() < 1e-5, "{feet:?}");
+        // the head end is the axis: the yaw turns +Z onto it
+        let yaw = lie_yaw((1.0, 0.0));
+        assert!((yaw.sin() - 1.0).abs() < 1e-5 && yaw.cos().abs() < 1e-5);
     }
 
     #[test]

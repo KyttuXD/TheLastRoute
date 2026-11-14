@@ -37,7 +37,7 @@ fn bot(at: (f32, f32)) -> Npc {
 
 /// A scene of `fac` with no hunter, no spot and nobody down.
 fn scene(fac: &Facility) -> Scene<'_> {
-    Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots: &[], search_all: &[], downed: &[] }
+    Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots: &[], search_all: &[], downed: &[], peers: &[] }
 }
 
 fn relay_at(c: Cell) -> Spot {

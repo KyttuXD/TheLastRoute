@@ -1814,6 +1814,8 @@ pub struct Peer {
     pub solid: bool,
     /// The edge the bot walks: its key, the node it set out from and the metres walked (`lead_gap`).
     pub lane: Option<(EdgeKey, Node, f32)>,
+    /// The mattress centre of the bed the bot walks to or lies on.
+    pub napping: Option<(f32, f32)>,
 }
 
 /// What a bot can look at this frame.
@@ -1874,6 +1876,15 @@ fn start_reply(n: &mut Npc, lv: &Lively) -> bool {
 /// the "life" intent acted (the bot is idle in the spare-time sense).
 fn liven(n: &mut Npc, ar: &Around, life_ran: bool, t: &Tuning, dt: f32) {
     let lv = &t.lively;
+    // a bot lying on a bed keeps its head still
+    if n.life.lying().is_some() {
+        n.life.head_yaw = 0.0;
+        n.life.head_pitch = 0.0;
+        n.life.gaze = None;
+        n.life.gaze_left = 0.0;
+        n.life.react = None;
+        return;
+    }
     if lv.max_yaw <= 0.0 && lv.max_pitch <= 0.0 {
         return;
     }
@@ -2019,10 +2030,12 @@ pub enum LifeAct {
     Crouch,
     SprintBurst,
     Emote,
+    /// Lies on a bed (data poi "bed"); Rust-only, Godot teammates never sleep.
+    Nap,
 }
 
 impl LifeAct {
-    pub const ALL: [LifeAct; 8] = [
+    pub const ALL: [LifeAct; 9] = [
         LifeAct::LookAround,
         LifeAct::CheckLocker,
         LifeAct::CheckDoor,
@@ -2031,6 +2044,7 @@ impl LifeAct {
         LifeAct::Crouch,
         LifeAct::SprintBurst,
         LifeAct::Emote,
+        LifeAct::Nap,
     ];
 
     pub fn name(self) -> &'static str {
@@ -2043,6 +2057,7 @@ impl LifeAct {
             LifeAct::Crouch => "crouch",
             LifeAct::SprintBurst => "sprint_burst",
             LifeAct::Emote => "emote",
+            LifeAct::Nap => "nap",
         }
     }
 
@@ -2093,6 +2108,19 @@ pub struct LifeTuning {
     pub poi: Vec<LifePoi>,
     /// [min, max] seconds of each activity.
     pub durations: Vec<(LifeAct, (f32, f32))>,
+    /// Least seconds between the starts of two naps of one bot (data `life.nap.gap`).
+    pub nap_gap: f32,
+    /// Metres within which any hunter of the bot's level wakes a napper, and within which a chasing one does
+    /// (`life.nap.wake_hunter_distance`, `wake_chase_distance`).
+    pub nap_wake_hunter: f32,
+    pub nap_wake_chase: f32,
+    /// A bed is not picked while a hunter of the bot's level is within this many metres of the bot
+    /// (`life.nap.hunter_clear_distance`).
+    pub nap_hunter_clear: f32,
+    /// A bed is not picked within this many metres of the runner, who may be lying on it (`life.nap.leader_clear_distance`).
+    pub nap_leader_clear: f32,
+    /// Metres above the floor of the feet of a lying bot (`life.nap.lie_height`; data/seating.json's bed height).
+    pub nap_lie_height: f32,
 }
 
 impl Default for LifeTuning {
@@ -2114,6 +2142,12 @@ impl Default for LifeTuning {
             emotes: vec![],
             poi: vec![],
             durations: vec![],
+            nap_gap: 90.0,
+            nap_wake_hunter: 6.0,
+            nap_wake_chase: 14.0,
+            nap_hunter_clear: 20.0,
+            nap_leader_clear: 2.0,
+            nap_lie_height: 0.6,
         }
     }
 }
@@ -2170,6 +2204,12 @@ impl LifeTuning {
                 .as_object()
                 .map(|m| m.iter().filter_map(|(k, p)| LifeAct::from_name(k).map(|a| (a, pair(p, (2.0, 3.5))))).collect())
                 .unwrap_or_default(),
+            nap_gap: num(&v["nap"], "gap", d.nap_gap),
+            nap_wake_hunter: num(&v["nap"], "wake_hunter_distance", d.nap_wake_hunter),
+            nap_wake_chase: num(&v["nap"], "wake_chase_distance", d.nap_wake_chase),
+            nap_hunter_clear: num(&v["nap"], "hunter_clear_distance", d.nap_hunter_clear),
+            nap_leader_clear: num(&v["nap"], "leader_clear_distance", d.nap_leader_clear),
+            nap_lie_height: num(&v["nap"], "lie_height", d.nap_lie_height),
         }
     }
 
@@ -2218,6 +2258,9 @@ pub struct LifeState {
     pub emote: Option<String>,
     pub emote_seq: u32,
     pub since_emote: f32,
+    /// The long axis of the bed of the nap in progress (unit, head end first), and seconds since the last nap began.
+    pub axis: (f32, f32),
+    pub since_nap: f32,
     /// The last activities done, newest last (at most `PICKED_KEPT`).
     pub picked: Vec<LifeAct>,
     /// The bot's personality (an index into `lively.personalities`), drawn once from its name and slot.
@@ -2295,6 +2338,8 @@ impl Default for LifeState {
             emote: None,
             emote_seq: 0,
             since_emote: f32::MAX,
+            axis: (0.0, 0.0),
+            since_nap: f32::MAX,
             picked: vec![],
             personality: None,
             head_yaw: 0.0,
@@ -2333,6 +2378,25 @@ impl LifeState {
         self.hold = 0.0;
         self.clock = pause;
     }
+
+    /// The mattress centre and the long axis (head end first) while the bot lies on a bed, else None. Host-only: the
+    /// bot's position stays the stand cell beside the bed, so the wire, saves and hunters read that spot as before.
+    pub fn lying(&self) -> Option<((f32, f32), (f32, f32))> {
+        (self.phase == LifePhase::Do && self.act == Some(LifeAct::Nap)).then_some((self.focus, self.axis))
+    }
+
+    /// The mattress centre while the bot walks to or lies on a bed: the bed is taken for the other bots.
+    fn bed_claim(&self) -> Option<(f32, f32)> {
+        (self.act == Some(LifeAct::Nap) && self.phase != LifePhase::Pause).then_some(self.focus)
+    }
+}
+
+/// True when a napping bot at `at` must wake: a hunter of its level within `hunter_r`, or a chasing one within `chase_r`.
+fn nap_disturbed(seen: &[Seen], at: (f32, f32), hunter_r: f32, chase_r: f32) -> bool {
+    seen.iter().any(|&(c, chasing)| {
+        let d = pdist(at, c);
+        d < hunter_r || (chasing && d < chase_r)
+    })
 }
 
 /// A weighted draw: `roll` in 0..1 picks from `list`. None when every weight is zero.
@@ -2372,6 +2436,10 @@ fn life_begin(n: &mut Npc, l: &LifeTuning, lv: &Lively, rng: &mut Rng) {
     let mut length = l.duration(act, rng.next_f32());
     match act {
         LifeAct::Crouch => n.life.crouching = true,
+        LifeAct::Nap => {
+            n.life.crouching = false;
+            n.life.since_nap = 0.0;
+        }
         // a door check may be a crouch-peek round the corner
         LifeAct::CheckDoor => n.life.crouching = rng.next_f32() < personality_of(n, lv).peek_chance,
         LifeAct::Emote => {
@@ -2428,6 +2496,14 @@ fn life_pick(n: &mut Npc, sc: &Scene, t: &Tuning) {
         {
             continue;
         }
+        if poi.kind == crate::hunters::activities::PoiKind::Bed
+            && (n.life.since_nap < l.nap_gap
+                || pdist(poi.focus, sc.leader) < l.nap_leader_clear
+                || sc.seen.iter().any(|&(c, _)| pdist(n.at, c) < l.nap_hunter_clear)
+                || sc.peers.iter().any(|q| q.id != n.id && q.level == n.level && q.napping.map_or(false, |f| pdist(f, poi.focus) < 0.5)))
+        {
+            continue;
+        }
         cands.push((Some(i), p.weight));
     }
     let facing_now = (-n.facing.sin(), -n.facing.cos());
@@ -2458,6 +2534,7 @@ fn life_pick(n: &mut Npc, sc: &Scene, t: &Tuning) {
     n.life.target = target;
     n.life.focus = focus;
     n.life.base = dir_to(target, focus, facing_now);
+    n.life.axis = choice.map_or((0.0, 0.0), |i| pois[i].axis);
     if let Some(i) = choice {
         n.life.recent.push(pois[i].id());
         while n.life.recent.len() > l.recent {
@@ -2532,6 +2609,9 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
         return false;
     }
     n.life.since_emote = (n.life.since_emote + dt).min(f32::MAX / 2.0);
+    if n.life.lying().is_none() {
+        n.life.since_nap = (n.life.since_nap + dt).min(f32::MAX / 2.0);
+    }
     if !n.life.started {
         n.life.started = true;
         let mut rng = life_rng(n);
@@ -2548,7 +2628,11 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
         LifePhase::Walk => {
             n.life.clock -= dt;
             let running = n.life.act == Some(LifeAct::SprintBurst);
-            if pdist(n.at, n.life.target) <= l.arrive || n.life.clock <= 0.0 {
+            let timed_out_short = n.life.clock <= 0.0 && n.life.act == Some(LifeAct::Nap) && pdist(n.at, n.life.target) > l.arrive + 0.5;
+            if timed_out_short {
+                // never lie on a mattress the bot did not reach
+                n.life.interrupt(l.pause.0);
+            } else if pdist(n.at, n.life.target) <= l.arrive || n.life.clock <= 0.0 {
                 let mut rng = life_rng(n);
                 life_begin(n, l, &t.lively, &mut rng);
             } else if n.life.hold > 0.0 {
@@ -2575,10 +2659,17 @@ fn life(n: &mut Npc, sc: &Scene, t: &Tuning, dt: f32, presses: &mut Vec<Cell>) -
                 Some(LifeAct::CheckLocker) | Some(LifeAct::CheckDoor) | Some(LifeAct::InspectRelay) => {
                     Some(crate::hunters::activities::dir_to(n.at, n.life.focus, n.life.base))
                 }
+                Some(LifeAct::Nap) => Some(crate::hunters::activities::dir_to(n.at, n.life.focus, n.life.base)),
                 _ => None,
             };
             if let Some(dir) = look {
                 turn(n, heading_yaw(dir), dt);
+            }
+            // a napper wakes for a hunter close by (seen or not) or a noise
+            if n.life.act == Some(LifeAct::Nap)
+                && (n.heard.is_some() || nap_disturbed(sc.seen, n.at, l.nap_wake_hunter, l.nap_wake_chase))
+            {
+                n.life.clock = 0.0;
             }
             if n.life.clock <= 0.0 {
                 let mut rng = life_rng(n);
@@ -2783,6 +2874,8 @@ struct Scene<'a> {
     search_all: &'a [(i32, (f32, f32))],
     /// The downed bodies a bot may walk to: level, place, and the bot id (None for the runner).
     downed: &'a [(i32, (f32, f32), Option<u32>)],
+    /// The other bots (a bed one walks to or lies on is taken).
+    peers: &'a [Peer],
 }
 
 /// The step cost a bot plans across levels with: deep water on its own level, and with `avoid_search` the cells within
@@ -3006,6 +3099,7 @@ fn peer_of(q: &Npc, downed: bool) -> Peer {
         y: q.y,
         solid: !(downed || q.walk.is_some() || q.hidden.is_some()),
         lane: q.walk.as_ref().map(|w| (w.key, w.from, w.s)),
+        napping: q.life.bed_claim(),
     }
 }
 
@@ -4016,7 +4110,7 @@ impl Game {
         // the runner's body for the collision pass: not while it is down or inside a locker
         let runner_body = (!self.runner_downed() && self.p.hidden.is_none()).then(|| (leader, self.p.y()));
         let runner_emoting = self.emote.active().is_some();
-        for n in self.npcs.iter_mut() {
+        for (bot_ix, n) in self.npcs.iter_mut().enumerate() {
             // a downed bot lies still until it is revived or leaves the floor
             if self.downed_npcs.contains_key(&n.id) {
                 n.walking = false;
@@ -4078,6 +4172,7 @@ impl Game {
                 spots: &s.spot_cache.spots,
                 search_all: &s.search_all,
                 downed: &s.downed,
+                peers: &s.peers,
             };
             // a bot on a flight or ladder finishes the edge before it thinks about anything else
             if n.walk.is_some() {
@@ -4154,6 +4249,8 @@ impl Game {
                     }
                 }
             }
+            // a bed claimed this tick is visible to the bots that think after this one
+            s.peers[bot_ix].napping = n.life.bed_claim();
         }
         separate_bots(&mut self.npcs, &mut s.peers, &s.bodies, &facs, runner_body, &t.collision, dt, &mut s.grid);
         self.npc_press_doors(&s.presses);
@@ -5746,7 +5843,7 @@ mod water_tests {
     }
 
     fn goal_scene<'a>(fac: &'a Facility, spots: &'a [Spot]) -> Scene<'a> {
-        Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots, search_all: &[], downed: &[] }
+        Scene { fac, disabled: &[], leader: (0.0, 0.0), seen: &[], searching: &[], runner_level: 0, nav: None, loot: &[], spots, search_all: &[], downed: &[], peers: &[] }
     }
 
     #[test]
@@ -7109,6 +7206,162 @@ mod life_tests {
         for _ in 0..(seconds * 60.0) as usize {
             g.update_npcs_with(1.0 / 60.0, t);
         }
+    }
+
+    /// A bed of the test floor a few metres from the runner (None when the floor has no open spot there).
+    fn put_bed(g: &mut Game) -> Option<(f32, f32)> {
+        let p = g.p.pos;
+        let mut spot = None;
+        'search: for dx in 3..7 {
+            for dz in -4..5 {
+                let at = (p.0 + dx as f32, p.1 + dz as f32);
+                if let Some(o) = g.fac.nearest_open(at.0, at.1, 0.5) {
+                    if pdist(o, p) > 3.0 && g.fac.has_line_of_sight(p, o) {
+                        spot = Some(o);
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let o = spot?;
+        g.fac.props.push(crate::world::facility::Prop {
+            id: "TEST:BED".to_string(),
+            cell: Cell::new(o.0.floor() as i32, o.1.floor() as i32),
+            ptype: "singleBed".to_string(),
+            room: 0,
+            rotation: 0,
+            mount_y: None,
+            solid: false,
+            half: (1.0, 0.5),
+            offset: (0.0, 0.0),
+            door: None,
+            sewer: None,
+            crawl_under: false,
+        });
+        g.hunters.clear();
+        Some(o)
+    }
+
+    /// The tuning where a bot's only spot is a bed and its pauses are short.
+    fn bed_only(gap: f32, recent: u64) -> Tuning {
+        tuned(&["life"], |v| {
+            v["life"]["poi"] = serde_json::json!({ "bed": { "weight": 1.0, "acts": { "nap": 1 } } });
+            v["life"]["pause"] = serde_json::json!([0.1, 0.2]);
+            v["life"]["spawn_pause"] = serde_json::json!([0.2, 3.0]);
+            v["life"]["recent"] = serde_json::json!(recent);
+            // the one bed is where the bot stands after a nap, so it must be pickable again from there
+            v["life"]["min_distance"] = serde_json::json!(0.0);
+            v["life"]["durations"]["nap"] = serde_json::json!([4.0, 5.0]);
+            v["life"]["nap"]["gap"] = serde_json::json!(gap);
+        })
+    }
+
+    /// Steps the bots and counts the frames at which a bot starts lying.
+    fn nap_starts(g: &mut Game, t: &Tuning, seconds: f32) -> usize {
+        let mut was = vec![false; g.npcs.len()];
+        let mut starts = 0;
+        for _ in 0..(seconds * 60.0) as usize {
+            g.update_npcs_with(1.0 / 60.0, t);
+            for (i, n) in g.npcs.iter().enumerate() {
+                let now = n.life.lying().is_some();
+                if now && !was[i] {
+                    starts += 1;
+                }
+                was[i] = now;
+            }
+        }
+        starts
+    }
+
+    #[test]
+    fn an_idle_bot_walks_to_a_bed_and_naps() {
+        let mut g = with_bot();
+        let Some(bed) = put_bed(&mut g) else { return };
+        let t = bed_only(90.0, 4);
+        let mut lay = false;
+        for _ in 0..(40.0 * 60.0) as usize {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            let n = &g.npcs[0];
+            if let Some((centre, axis)) = n.life.lying() {
+                assert!(pdist(n.at, n.life.target) <= t.life.arrive + 0.05, "lies at the stand cell");
+                assert!(!n.walking && !n.life.crouching);
+                assert!(pdist(centre, bed) < 1e-3 && (axis.0 * axis.0 + axis.1 * axis.1 - 1.0).abs() < 1e-3, "{centre:?} {axis:?}");
+                lay = true;
+                break;
+            }
+        }
+        assert!(lay, "the bot lay down on the bed");
+    }
+
+    #[test]
+    fn a_napper_wakes_for_a_close_hunter_whether_seen_or_not() {
+        let seen: Vec<Seen> = vec![((10.0, 0.0), false), ((30.0, 0.0), true)];
+        assert!(!nap_disturbed(&seen, (0.0, 0.0), 6.0, 14.0), "a far hunter and a far chaser let it sleep");
+        assert!(nap_disturbed(&[((5.0, 0.0), false)], (0.0, 0.0), 6.0, 14.0), "a hunter within 6 m wakes it");
+        assert!(nap_disturbed(&[((10.0, 0.0), true)], (0.0, 0.0), 6.0, 14.0), "a chaser at 10 m wakes it");
+        assert!(!nap_disturbed(&[], (0.0, 0.0), 6.0, 14.0), "another level's hunters are not in the list");
+    }
+
+    #[test]
+    fn a_napping_bot_gets_up_for_a_noise_and_when_the_runner_goes_out_of_range() {
+        let mut g = with_bot();
+        if put_bed(&mut g).is_none() {
+            return;
+        }
+        let t = bed_only(0.0, 0);
+        let lie = |g: &mut Game| {
+            for _ in 0..(40.0 * 60.0) as usize {
+                g.update_npcs_with(1.0 / 60.0, &t);
+                if g.npcs[0].life.lying().is_some() {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(lie(&mut g));
+        g.npcs[0].heard = Some(((0.0, 0.0), 1.0));
+        run(&mut g, &t, 0.1);
+        assert!(g.npcs[0].life.lying().is_none(), "a noise wakes it");
+        assert!(lie(&mut g), "it lies down again");
+        g.p.pos = (g.p.pos.0 + t.life.range + 20.0, g.p.pos.1);
+        run(&mut g, &t, 0.1);
+        assert!(g.npcs[0].life.lying().is_none(), "the runner went out of range");
+    }
+
+    #[test]
+    fn naps_are_spaced_by_nap_gap_and_a_taken_bed_is_skipped() {
+        let mut g = with_bot();
+        if put_bed(&mut g).is_none() {
+            return;
+        }
+        assert_eq!(nap_starts(&mut g, &bed_only(1000.0, 0), 60.0), 1, "one nap, then the gap holds it");
+        let mut g = with_bot();
+        put_bed(&mut g);
+        assert!(nap_starts(&mut g, &bed_only(0.0, 0), 60.0) >= 2, "no gap: it naps again");
+        // two bots, one bed: never both on it at once
+        let mut g = game();
+        let p = g.p.pos;
+        assert_eq!(g.npc_spawn(2, 70, (p.0, 1.6, p.1), (0.0, 1.0, 0.0)), 2);
+        put_bed(&mut g);
+        let t = bed_only(0.0, 0);
+        for _ in 0..(60.0 * 60.0) as usize {
+            g.update_npcs_with(1.0 / 60.0, &t);
+            let lying = g.npcs.iter().filter(|n| n.life.lying().is_some()).count();
+            assert!(lying <= 1, "two bots on one bed");
+        }
+    }
+
+    #[test]
+    fn the_standard_data_lists_a_bed_nap() {
+        let t = Tuning::get();
+        assert!(t.life.poi.iter().any(|p| p.kind == "bed" && p.weight > 0.0 && p.acts.iter().any(|(a, _)| *a == LifeAct::Nap)));
+        assert!(t.life.durations.iter().any(|(a, (lo, hi))| *a == LifeAct::Nap && *lo > 0.0 && hi >= lo));
+        assert!(t.life.nap_gap > 0.0 && t.life.nap_wake_hunter > 0.0 && t.life.nap_wake_chase >= t.life.nap_wake_hunter);
+        let mut names: Vec<&str> = LifeAct::ALL.iter().map(|a| a.name()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), LifeAct::ALL.len(), "act names are unique");
+        assert_eq!(LifeAct::from_name("nap"), Some(LifeAct::Nap));
     }
 
     #[test]

@@ -1029,6 +1029,7 @@ pub fn draw_scene(
                 falling: edge == Some(crate::hunters::flight_edges::EdgeKind::Drop),
                 crouch: n.life.crouching,
                 emote: n.life.emote.as_deref().map(|e| (e, n.life.emote_seq)),
+                lie: n.life.lying().map(|(c, a)| (c, a, crate::game::npc::Tuning::get().life.nap_lie_height)),
             }
         })
         .collect();
@@ -1046,6 +1047,8 @@ pub fn draw_scene(
         falling: false,
         crouch: n.crouch,
         emote: Some(n.emote.as_str()).filter(|e| !e.is_empty()).map(|e| (e, n.emote_seq)),
+        // the wire carries no lying bot: a guest draws it standing at the stand cell
+        lie: None,
     }));
     // the host's own bots hand their head look to the figure code (a guest's synced looks were set by npc_sync::views)
     crate::net::wiring::set_bot_looks(&g.npcs);
