@@ -7,3 +7,4 @@
 # then paste the printed public key on a line below, rebuild the launcher and the game, and keep a second line free for
 # rotation (add the new key, ship, then publish with the new private key, later remove the old line).
 # With no key here, native updates fail closed: the launcher falls back to the web version and the game keeps its old updater.
+36ba5a3309d27bea719c588a933248644e3cd322f0b2ae2d1056a2e7176d3d2b
