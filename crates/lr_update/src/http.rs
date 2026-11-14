@@ -7,7 +7,11 @@
 //!
 //! What it does: one request per connection (`Connection: close`, `Accept-Encoding: identity`), a connect timeout, a stall
 //! timeout per read, an overall deadline, `Content-Length`, chunked and read-until-close bodies, a size cap, cancellation.
-//! What it does not do: redirects (a 3xx is an error: the site does not redirect files), proxies, resuming.
+//! Redirects: a 3xx is an error, except for GitHub release downloads (`fetch::is_github_release_url`), which answer
+//! 302 to `objects.githubusercontent.com`. For those, up to 3 hops are followed (301/302/303/307/308, absolute https
+//! `Location` only, no userinfo, host `github.com` or `*.githubusercontent.com`, no loops). The size cap, timeouts,
+//! cancel and the caller's checks apply to the final answer unchanged.
+//! What it does not do: other redirects, proxies, resuming.
 //! Plain `http://` is accepted here for loopback test servers; the policy for real sites (https only) is in `fetch.rs`.
 
 use std::io::{Read, Write};
@@ -55,7 +59,12 @@ pub struct Options {
     /// The most body bytes accepted.
     pub limit: u64,
     pub user_agent: String,
+    /// Tests only: follow redirects between loopback servers (plain http allowed). Production code never sets this.
+    pub follow_loopback_redirects: bool,
 }
+
+/// The most redirects followed for one request.
+pub const MAX_REDIRECTS: usize = 3;
 
 impl Options {
     pub fn new(limit: u64) -> Options {
@@ -65,6 +74,7 @@ impl Options {
             deadline: Duration::from_secs(1800),
             limit,
             user_agent: format!("LastRouteLauncher/{}", env!("CARGO_PKG_VERSION")),
+            follow_loopback_redirects: false,
         }
     }
 
@@ -218,6 +228,31 @@ fn resolve(host: &str, port: u16, deadline: Instant) -> Result<Vec<SocketAddr>, 
     }
 }
 
+/// Which redirect targets a request may follow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Follow {
+    No,
+    /// GitHub release downloads: https to github.com or *.githubusercontent.com.
+    Github,
+    /// Tests: loopback hosts only.
+    Loopback,
+}
+
+fn redirect_target_allowed(mode: Follow, url: &str) -> bool {
+    let Ok(t) = parse_url(url) else { return false };
+    let host = t.host.to_ascii_lowercase();
+    match mode {
+        Follow::No => false,
+        Follow::Github => t.https && t.port == 443 && (host == "github.com" || host.ends_with(".githubusercontent.com")),
+        Follow::Loopback => is_loopback_host(&host),
+    }
+}
+
+enum Step {
+    Done(u64),
+    Redirect(String),
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -231,9 +266,49 @@ pub fn get_to(
     sink: &mut dyn Write,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<u64, HttpError> {
+    let first = parse_url(url)?;
+    let mode = if crate::fetch::is_github_release_url(url) {
+        Follow::Github
+    } else if options.follow_loopback_redirects && is_loopback_host(&first.host) {
+        Follow::Loopback
+    } else {
+        Follow::No
+    };
+    let mut current = url.to_string();
+    let mut seen = vec![current.clone()];
+    loop {
+        // each hop gets the full time: a GitHub download is always a redirect plus a second TLS handshake
+        let deadline = Instant::now() + options.deadline;
+        match get_once(&current, options, cancel, sink, progress, deadline, mode)? {
+            Step::Done(n) => return Ok(n),
+            Step::Redirect(next) => {
+                if seen.len() > MAX_REDIRECTS {
+                    return Err(HttpError::Protocol("too many redirects".into()));
+                }
+                if !redirect_target_allowed(mode, &next) {
+                    return Err(HttpError::Protocol("redirect to an address that is not allowed".into()));
+                }
+                if seen.contains(&next) {
+                    return Err(HttpError::Protocol("redirect loop".into()));
+                }
+                seen.push(next.clone());
+                current = next;
+            }
+        }
+    }
+}
+
+fn get_once(
+    url: &str,
+    options: &Options,
+    cancel: Option<&AtomicBool>,
+    sink: &mut dyn Write,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+    deadline: Instant,
+    mode: Follow,
+) -> Result<Step, HttpError> {
     let target = parse_url(url)?;
     let started = Instant::now();
-    let deadline = started + options.deadline;
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Relaxed));
     if cancelled() {
         return Err(HttpError::Cancelled);
@@ -309,11 +384,18 @@ pub fn get_to(
     let status: u16 = status_parts.next().and_then(|s| s.parse().ok()).ok_or_else(|| HttpError::Protocol("bad status line".into()))?;
     let headers: Vec<(String, String)> = lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))).collect();
     let header = |name: &str| headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+    if mode != Follow::No && matches!(status, 301 | 302 | 303 | 307 | 308) {
+        // Only an absolute address is taken: no relative Location, no scheme-less one.
+        return match header("location") {
+            Some(l) if !l.is_empty() => Ok(Step::Redirect(l.to_string())),
+            _ => Err(HttpError::Protocol("redirect without a location".into())),
+        };
+    }
     if !(200..300).contains(&status) {
         return Err(HttpError::Status(status));
     }
     if status == 204 {
-        return Ok(0);
+        return Ok(Step::Done(0));
     }
     if header("content-encoding").is_some_and(|v| !v.eq_ignore_ascii_case("identity")) {
         return Err(HttpError::Protocol("the server compressed the body although identity was asked".into()));
@@ -365,7 +447,7 @@ pub fn get_to(
             let size = u64::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| HttpError::Protocol("bad chunk size".into()))?;
             pending.drain(..line_end + 2);
             if size == 0 {
-                return Ok(written);
+                return Ok(Step::Done(written));
             }
             let mut left = size;
             while left > 0 {
@@ -412,7 +494,7 @@ pub fn get_to(
     drop(pending);
     loop {
         if length.is_some_and(|total| written >= total) {
-            return Ok(written);
+            return Ok(Step::Done(written));
         }
         if cancelled() {
             return Err(HttpError::Cancelled);
@@ -422,7 +504,7 @@ pub fn get_to(
         if n == 0 {
             return match length {
                 Some(_) => Err(HttpError::Protocol("the body ended early".into())),
-                None => Ok(written),
+                None => Ok(Step::Done(written)),
             };
         }
         let mut data = &chunk[..n];
@@ -438,4 +520,116 @@ pub fn get_bytes(url: &str, options: &Options, cancel: Option<&AtomicBool>) -> R
     let mut out = Vec::new();
     get_to(url, options, cancel, &mut out, &mut |_, _| {})?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testsite::TestSite;
+
+    fn opts(limit: u64) -> Options {
+        Options { follow_loopback_redirects: true, ..Options::quick(limit, 5) }
+    }
+
+    #[test]
+    fn follows_one_redirect() {
+        let site = TestSite::start();
+        site.put("real.bin", b"hello".to_vec());
+        site.redirect("start", &format!("{}/real.bin", site.url));
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &opts(100), None).unwrap(), b"hello");
+        assert_eq!(site.hits(), vec!["start", "real.bin"]);
+    }
+
+    #[test]
+    fn production_options_never_follow() {
+        let site = TestSite::start();
+        site.put("real.bin", b"hello".to_vec());
+        site.redirect("start", &format!("{}/real.bin", site.url));
+        let plain = Options::quick(100, 5);
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &plain, None), Err(HttpError::Status(302)));
+        assert_eq!(site.hits(), vec!["start"]);
+    }
+
+    #[test]
+    fn follows_up_to_three_hops_not_four() {
+        let site = TestSite::start();
+        site.put("end", b"ok".to_vec());
+        site.redirect("a", &format!("{}/b", site.url));
+        site.redirect("b", &format!("{}/c", site.url));
+        site.redirect("c", &format!("{}/end", site.url));
+        assert_eq!(get_bytes(&format!("{}/a", site.url), &opts(100), None).unwrap(), b"ok");
+        site.redirect("c", &format!("{}/d", site.url));
+        site.redirect("d", &format!("{}/end", site.url));
+        assert!(matches!(get_bytes(&format!("{}/a", site.url), &opts(100), None), Err(HttpError::Protocol(_))));
+    }
+
+    #[test]
+    fn refuses_loops() {
+        let site = TestSite::start();
+        site.redirect("a", &format!("{}/b", site.url));
+        site.redirect("b", &format!("{}/a", site.url));
+        let e = get_bytes(&format!("{}/a", site.url), &opts(100), None).unwrap_err();
+        assert!(matches!(&e, HttpError::Protocol(w) if w.contains("loop")), "{e:?}");
+        site.redirect("self", &format!("{}/self", site.url));
+        assert!(get_bytes(&format!("{}/self", site.url), &opts(100), None).is_err());
+    }
+
+    #[test]
+    fn refuses_other_hosts_userinfo_and_relative() {
+        let site = TestSite::start();
+        for (i, target) in [
+            "http://example.com/x".to_string(),
+            "https://github.com/x".to_string(),
+            format!("http://user:pw@127.0.0.1:{}/real", site.url.rsplit(':').next().unwrap()),
+            "/real".to_string(),
+            "real".to_string(),
+            "ftp://127.0.0.1/x".to_string(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = format!("r{i}");
+            site.redirect(&path, target);
+            let e = get_bytes(&format!("{}/{path}", site.url), &opts(100), None);
+            assert!(matches!(e, Err(HttpError::Protocol(_))), "{target}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn github_mode_allows_only_github_https_hosts() {
+        let ok = |u: &str| redirect_target_allowed(Follow::Github, u);
+        assert!(ok("https://github.com/a/b"));
+        assert!(ok("https://objects.githubusercontent.com/x?y=1"));
+        assert!(ok("https://release-assets.githubusercontent.com/x"));
+        assert!(!ok("http://github.com/a"));
+        assert!(!ok("http://objects.githubusercontent.com/x"));
+        assert!(!ok("https://evilgithubusercontent.com/x"));
+        assert!(!ok("https://githubusercontent.com.evil.org/x"));
+        assert!(!ok("https://github.com.evil.org/x"));
+        assert!(!ok("https://user@github.com/x"));
+        assert!(!ok("https://github.com:8443/x"));
+        assert!(!ok("https://127.0.0.1/x"));
+        assert!(!ok("/relative"));
+        assert!(!redirect_target_allowed(Follow::No, "https://github.com/a"));
+        assert!(!redirect_target_allowed(Follow::Loopback, "https://github.com/a"));
+        assert!(redirect_target_allowed(Follow::Loopback, "http://127.0.0.1:9/a"));
+    }
+
+    #[test]
+    fn size_cap_applies_after_a_redirect() {
+        let site = TestSite::start();
+        site.put("big.bin", vec![7u8; 500]);
+        site.redirect("start", &format!("{}/big.bin", site.url));
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &opts(100), None), Err(HttpError::TooLarge));
+        site.fault("big.bin", crate::testsite::Fault::Chunked);
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &opts(100), None), Err(HttpError::TooLarge));
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &opts(500), None).unwrap().len(), 500);
+    }
+
+    #[test]
+    fn error_status_after_a_redirect_is_reported() {
+        let site = TestSite::start();
+        site.redirect("start", &format!("{}/missing", site.url));
+        assert_eq!(get_bytes(&format!("{}/start", site.url), &opts(100), None), Err(HttpError::Status(404)));
+    }
 }

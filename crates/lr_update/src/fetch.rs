@@ -55,11 +55,40 @@ pub fn base_url_allowed(url: &str) -> Result<(), String> {
     Err("the site address must be https (plain http only for localhost)".into())
 }
 
+/// The GitHub release that holds the nightly native builds (flat asset names, see `Site::url`).
+pub const NIGHTLY_URL: &str = "https://github.com/KyttuXD/TheLastRoute/releases/download/nightly";
+
+/// Whether `base` is a GitHub release download URL: https, host exactly github.com (no userinfo, no port), and a
+/// path with `/releases/download/`.
+pub fn is_github_release_url(base: &str) -> bool {
+    let Some(head) = base.get(..8) else { return false };
+    if !head.eq_ignore_ascii_case("https://") {
+        return false;
+    }
+    let rest = &base[8..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    if !authority.eq_ignore_ascii_case("github.com") {
+        return false;
+    }
+    let path = tail.split(['?', '#']).next().unwrap_or("");
+    path.contains("/releases/download/")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// `<base>/<root>/<platform>/<rel>`: the website.
+    Tree,
+    /// `<base>/<root>-<platform>-<rel with / as ->`: the assets of a GitHub release.
+    Flat,
+}
+
 /// One platform's builds on the website.
 #[derive(Clone, Debug)]
 pub struct Site {
     base: String,
     root: String,
+    layout: Layout,
     pub platform: String,
     pub trusted: Vec<[u8; 32]>,
     /// The timeout for the small files (latest.json, manifest, signature).
@@ -67,16 +96,31 @@ pub struct Site {
 }
 
 impl Site {
+    /// The layout is flat when `base_url` is a GitHub release download URL, a tree otherwise.
     pub fn new(base_url: &str, channel: &str, platform: &str, trusted: Vec<[u8; 32]>) -> Result<Site, String> {
+        let layout = if is_github_release_url(base_url) { Layout::Flat } else { Layout::Tree };
+        Site::with_layout(base_url, channel, platform, trusted, layout)
+    }
+
+    /// Like `new`, but always the flat layout (tests serve flat names from a loopback site).
+    pub fn new_flat(base_url: &str, channel: &str, platform: &str, trusted: Vec<[u8; 32]>) -> Result<Site, String> {
+        Site::with_layout(base_url, channel, platform, trusted, Layout::Flat)
+    }
+
+    fn with_layout(base_url: &str, channel: &str, platform: &str, trusted: Vec<[u8; 32]>, layout: Layout) -> Result<Site, String> {
         base_url_allowed(base_url)?;
         if !manifest::valid_channel(channel) {
             return Err("the channel must be lower case letters, digits and dashes".into());
         }
-        Ok(Site { base: base_url.trim_end_matches('/').to_string(), root: manifest::site_root(channel), platform: platform.to_string(), trusted, quick_seconds: 4 })
+        Ok(Site { base: base_url.trim_end_matches('/').to_string(), root: manifest::site_root(channel), layout, platform: platform.to_string(), trusted, quick_seconds: 4 })
     }
 
+    /// The address of `rel` (`latest.json`, `builds/N/manifest.json`, ...). The names inside the files never change.
     pub fn url(&self, rel: &str) -> String {
-        format!("{}/{}/{}/{rel}", self.base, self.root, self.platform)
+        match self.layout {
+            Layout::Tree => format!("{}/{}/{}/{rel}", self.base, self.root, self.platform),
+            Layout::Flat => format!("{}/{}-{}-{}", self.base, self.root, self.platform, rel.replace('/', "-")),
+        }
     }
 
     fn small(&self, rel: &str, limit: u64, cancel: Option<&AtomicBool>) -> Result<Vec<u8>, HttpError> {
@@ -87,7 +131,9 @@ impl Site {
     pub fn fetch_latest(&self, cancel: Option<&AtomicBool>) -> Result<Latest, FetchError> {
         let bytes = match self.small("latest.json", manifest::MAX_LATEST_BYTES, cancel) {
             Ok(b) => b,
-            Err(HttpError::Status(404)) | Err(HttpError::Status(403)) => return Err(FetchError::NoNativeBuild),
+            Err(HttpError::Status(404)) => return Err(FetchError::NoNativeBuild),
+            // the website answers 403 for a missing folder; on GitHub a 403 is a rate limit or an expired link, a real error
+            Err(HttpError::Status(403)) if self.layout == Layout::Tree => return Err(FetchError::NoNativeBuild),
             Err(e) => return Err(from_http(e)),
         };
         Latest::parse(&bytes).map_err(FetchError::Site)
@@ -149,5 +195,38 @@ mod tests {
         let beta = Site::new("https://example.org", "beta", "macos-universal", vec![]).unwrap();
         assert_eq!(beta.url("builds/3/manifest.json"), "https://example.org/native-beta/macos-universal/builds/3/manifest.json");
         assert!(Site::new("https://example.org", "../x", "p", vec![]).is_err());
+    }
+
+    #[test]
+    fn github_release_urls_are_recognised_strictly() {
+        assert!(is_github_release_url(NIGHTLY_URL));
+        assert!(is_github_release_url("https://github.com/KyttuXD/TheLastRoute/releases/download/nightly/"));
+        assert!(is_github_release_url("HTTPS://GitHub.com/a/b/releases/download/t"));
+        assert!(!is_github_release_url("http://github.com/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://example.org/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://github.com.evil.example/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://evil.example/github.com/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://github.com@evil.example/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://github.com:pw@evil.example/a/b/releases/download/nightly"));
+        assert!(!is_github_release_url("https://evil.example?x=github.com/a/releases/download/"));
+        assert!(!is_github_release_url("https://github.com/KyttuXD/TheLastRoute/releases/latest"));
+        assert!(!is_github_release_url("https://github.com"));
+        assert!(!is_github_release_url(""));
+        assert!(!is_github_release_url("é"));
+    }
+
+    #[test]
+    fn flat_names_join_the_path_with_dashes() {
+        let site = Site::new(NIGHTLY_URL, "", "linux-x86_64", vec![]).unwrap();
+        assert_eq!(site.url("latest.json"), format!("{NIGHTLY_URL}/native-linux-x86_64-latest.json"));
+        assert_eq!(site.url("builds/157/manifest.json"), format!("{NIGHTLY_URL}/native-linux-x86_64-builds-157-manifest.json"));
+        assert_eq!(site.url("builds/157/manifest.json.sig"), format!("{NIGHTLY_URL}/native-linux-x86_64-builds-157-manifest.json.sig"));
+        assert_eq!(site.url("builds/157/f0.z"), format!("{NIGHTLY_URL}/native-linux-x86_64-builds-157-f0.z"));
+        let beta = Site::new(&format!("{NIGHTLY_URL}/"), "beta", "windows-x86_64", vec![]).unwrap();
+        assert_eq!(beta.url("latest.json"), format!("{NIGHTLY_URL}/native-beta-windows-x86_64-latest.json"));
+        let forced = Site::new_flat("http://127.0.0.1:8741", "", "windows-x86_64", vec![]).unwrap();
+        assert_eq!(forced.url("builds/2/f1.z"), "http://127.0.0.1:8741/native-windows-x86_64-builds-2-f1.z");
+        let tree = Site::new("http://127.0.0.1:8741", "", "windows-x86_64", vec![]).unwrap();
+        assert_eq!(tree.url("latest.json"), "http://127.0.0.1:8741/native/windows-x86_64/latest.json");
     }
 }

@@ -1,6 +1,6 @@
 //! Update on start. Before the game opens, it looks for the newest build of this platform in two places:
 //!
-//! 1. The website's signed native builds (`updater_site.rs`, the same files the launcher installs, docs/LAUNCHER.md).
+//! 1. The GitHub nightly release's signed native builds (`updater_site.rs`, the same files the launcher installs, docs/LAUNCHER.md).
 //!    No key is needed: the ed25519 signature and the file hashes are the trust.
 //! 2. The old update server (vps3, `/api/updates/debug/<platform>`), used when the site has no build for this platform,
 //!    cannot be reached, or fails a check. It downloads with the download key (the file `download-key` in the game's
@@ -165,7 +165,7 @@ fn swap_bundle(bundle: &Path, new_bundle: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The website build is unpacked beside the running bundle: put it in place of the running one.
+/// The nightly-release build is unpacked beside the running bundle: put it in place of the running one.
 #[cfg(target_os = "macos")]
 fn install_staged_bundle(new_bundle: &Path) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -476,7 +476,7 @@ pub fn start_check() -> UpdateHandle {
     handle
 }
 
-/// The website's signed builds first, then the old server (only with a download key) when the site cannot be used.
+/// The nightly release's signed builds first, then the old server (only with a download key) when the site cannot be used.
 // (on a Mac every arm of the match ends the check, so the old server below is never asked there)
 #[cfg_attr(target_os = "macos", allow(unreachable_code, unused_variables))]
 fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
@@ -492,7 +492,7 @@ fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
         SiteOutcome::Unavailable(why) => {
             #[cfg(target_os = "macos")]
             {
-                crate::lr_info!("update: the website has nothing usable ({why}); checking the nightly release on GitHub");
+                crate::lr_info!("update: the signed native build is not usable ({why}); checking the nightly zip on GitHub");
                 match github_update(handle) {
                     Ok(true) => start_installed(),
                     Ok(false) => return,
@@ -504,7 +504,7 @@ fn check_thread(handle: &Mutex<UpdateStatus>, key: Option<&str>) {
                 }
             }
             #[cfg(not(target_os = "macos"))]
-            crate::lr_info!("update: the website has nothing usable ({why}); trying the old update server");
+            crate::lr_info!("update: the signed native build is not usable ({why}); trying the old update server");
         }
     }
     let Some(key) = key else {
@@ -677,7 +677,7 @@ fn legacy_check(handle: &Mutex<UpdateStatus>, key: &str) {
     }
 }
 
-/// What the website source did.
+/// What the nightly release source did.
 #[cfg(not(target_arch = "wasm32"))]
 enum SiteOutcome {
     UpToDate,
@@ -690,7 +690,7 @@ enum SiteOutcome {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
-    // The legacy Mac app (OS X 10.5 to 10.11) must never take the website's Mac build: that one needs macOS 10.12 and
+    // The legacy Mac app (OS X 10.5 to 10.11) must never take the nightly release's Mac build: that one needs macOS 10.12 and
     // does not start on the old systems (it happened on a Mac Pro 3,1). It updates from the legacy file of the nightly release.
     if cfg!(lr_macos_legacy) {
         return SiteOutcome::Unavailable("the legacy Mac app updates from its own file in the nightly release".into());
@@ -706,7 +706,7 @@ fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
     let m = match found {
         Err(source::Unavailable(why)) => return SiteOutcome::Unavailable(why),
         Ok(source::SiteCheck::UpToDate) => {
-            crate::lr_info!("update: the website offers nothing newer than build {BUILD}");
+            crate::lr_info!("update: the nightly release offers nothing newer than build {BUILD}");
             stamp_check();
             if let Ok(mut s) = handle.lock() {
                 if !matches!(*s, UpdateStatus::Updated(_)) {
@@ -717,7 +717,7 @@ fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
         }
         Ok(source::SiteCheck::Newer(m)) => m,
     };
-    crate::lr_info!("update: the website offers build {} (this is {}); downloading {} files", m.build, BUILD, m.files.len());
+    crate::lr_info!("update: the nightly release offers build {} (this is {}); downloading {} files", m.build, BUILD, m.files.len());
     set(handle, UpdateStatus::Downloading { build: m.build, got: 0, total: 0 });
     let mac = cfg!(target_os = "macos");
     let stage_root = match site_stage_root(mac) {
@@ -750,7 +750,7 @@ fn site_update(handle: &Mutex<UpdateStatus>) -> SiteOutcome {
     }
 }
 
-/// Where the website build is unpacked first. On macOS it sits beside the running bundle (so the final rename stays on one
+/// Where the nightly-release build is unpacked first. On macOS it sits beside the running bundle (so the final rename stays on one
 /// volume); elsewhere in the temporary folder.
 #[cfg(not(target_arch = "wasm32"))]
 fn site_stage_root(mac: bool) -> Result<PathBuf, String> {

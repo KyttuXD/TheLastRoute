@@ -1,4 +1,4 @@
-//! The in-game updater's first source: the website's signed native builds (`native/<platform>/latest.json`, the
+//! The in-game updater's first source: the signed native builds on the GitHub nightly release (`native-<platform>-latest.json`, the
 //! same files the launcher installs, see docs/LAUNCHER.md). The old vps3 update API (`updater.rs`) stays as the
 //! fallback when the site has no build for this platform, cannot be reached, or fails a check.
 //!
@@ -15,8 +15,8 @@ use lr_update::manifest::{self, Manifest};
 use lr_update::osver;
 use std::path::{Path, PathBuf};
 
-/// The live site (the same host as the web build).
-pub const SITE_URL: &str = "https://lastrouterust.games.kyttuslab.org";
+/// The production source: the GitHub release tagged "nightly".
+pub const SITE_URL: &str = lr_update::fetch::NIGHTLY_URL;
 
 /// The site to ask. `LR_UPDATE_SITE_URL` may point at a local test site (http on loopback only); anything else is
 /// ignored, so the variable cannot send a player's game to another server.

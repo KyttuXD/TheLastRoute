@@ -1,13 +1,16 @@
 //! Everything the launcher flow needs to know, in one value, so tests can run the whole flow in-process with a fake
-//! website, a temp folder, their own keys and a fake browser.
+//! stand-in for the GitHub nightly release, a temp folder, their own keys and a fake browser.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The live site. Builds are under `/native/<platform>/`, the web build is its root page.
+/// The live website: its root page is the web build (opened when no native build can be used).
 pub const DEFAULT_SITE: &str = "https://lastrouterust.games.kyttuslab.org";
+
+/// Where the signed native builds come from by default: the GitHub release tagged "nightly".
+pub const DEFAULT_BASE: &str = lr_update::fetch::NIGHTLY_URL;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -80,7 +83,7 @@ impl Config {
     /// A configuration with the production defaults for `dir`.
     pub fn new(dir: PathBuf) -> Config {
         Config {
-            base_url: DEFAULT_SITE.to_string(),
+            base_url: DEFAULT_BASE.to_string(),
             web_url: DEFAULT_SITE.to_string(),
             channel: String::new(),
             platform: lr_update::manifest::this_platform().to_string(),

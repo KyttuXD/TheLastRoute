@@ -206,3 +206,31 @@ fn verify_installed_notices_missing_resized_and_changed_files() {
     assert!(verify_installed(&dir.join("s"), &m, false).unwrap_err().contains("missing"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_flat_named_release_downloads_and_verifies() {
+    // The same signed tree, re-served under GitHub-release style flat asset names.
+    let web = TestSite::start();
+    let key = test_keys::pair(1);
+    let program = (0..50_000u32).map(|i| (i % 241) as u8).collect::<Vec<u8>>();
+    let published = web.publish(&BuildSpec::simple(PLATFORM, 12, program.clone(), &key));
+    let flat = TestSite::start();
+    for rel in ["latest.json", "builds/12/manifest.json", "builds/12/manifest.json.sig", "builds/12/f0.z", "builds/12/f1.z"] {
+        let data = web.get(&format!("native/{PLATFORM}/{rel}")).unwrap();
+        flat.put(&format!("native-{PLATFORM}-{}", rel.replace('/', "-")), data);
+    }
+    let site = Site::new_flat(&flat.url, "", PLATFORM, vec![test_keys::public(&key)]).unwrap();
+    let latest = site.fetch_latest(None).unwrap();
+    assert_eq!(latest.build, 12);
+    let (m, _, _) = site.fetch_manifest(&latest, None).unwrap();
+    assert_eq!(m, published);
+    let dir = temp("flat");
+    install_build(&site, &m, &dir.join("s"), &dir.join("t"), None, None, &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read(dir.join("s/bin/game")).unwrap(), program);
+    assert!(verify_installed(&dir.join("s"), &m, true).is_ok());
+    assert!(flat.hits().iter().any(|h| h.ends_with("native-windows-x86_64-builds-12-f0.z")), "{:?}", flat.hits());
+    // the tree-layout site is not what the flat site reads
+    let tree = Site::new(&flat.url, "", PLATFORM, vec![test_keys::public(&key)]).unwrap();
+    assert_eq!(tree.fetch_latest(None), Err(FetchError::NoNativeBuild));
+    let _ = std::fs::remove_dir_all(&dir);
+}

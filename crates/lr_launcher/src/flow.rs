@@ -2,9 +2,9 @@
 //!
 //! 1. Read `state.json` and find the build to run (`current`), checking that it is still whole on disk.
 //! 2. A build is installed: start it at once and look for a newer one in the background (or first, with `--update-first`).
-//!    Nothing is installed: ask the site, download, verify, install, then start it.
+//!    Nothing is installed: ask the GitHub nightly release, download, verify, install, then start it.
 //! 3. No native build for this system, the OS is too old, the site refuses to verify, or the download fails: open the
-//!    web version in the default browser. Only when the site cannot be reached at all and nothing is installed does the
+//!    web version in the default browser. Only when the release cannot be reached at all and nothing is installed does the
 //!    launcher stop with a message (a browser would not get through either).
 //! 4. The game is started with the original arguments. A start that fails inside the startup window counts; after
 //!    `fail_limit` failures in a row the build is marked bad and the launcher goes back to the previous build.

@@ -1,13 +1,14 @@
-# Launcher: native builds delivered from the website
+# Launcher: native builds delivered from the GitHub nightly release
 
-The website is the update. A tiny native program, the **launcher**, asks `https://lastrouterust.games.kyttuslab.org` for the newest
-signed *native* build of this computer's platform, installs it into a per-user folder, and starts it. The game that runs is the
-same Rust binary KT's machines run today (Metal or OpenGL, many threads, no 32-bit wasm memory limit, no WebGL limits). The web
-version is only the fallback. Deploying to vps2 therefore reaches every desktop install on its next start, with no installer and
-no GitHub.
+The GitHub release `nightly` is the update (like VoxelRust), and every build in it is signed. A tiny native program, the
+**launcher**, asks `https://github.com/KyttuXD/TheLastRoute/releases/download/nightly` for the newest signed *native* build of this
+computer's platform, installs it into a per-user folder, and starts it. The game that runs is the same Rust binary KT's machines
+run today (Metal or OpenGL, many threads, no 32-bit wasm memory limit, no WebGL limits). The web version
+(`https://lastrouterust.games.kyttuslab.org`) is only the fallback. A push to `main` therefore reaches every desktop install on its
+next start, with no installer. See [GitHub nightly as the source](#github-nightly-as-the-source). The tree layout on the website
+below still works (tests, loopback sites, and `sh packaging/publish-native-vps2.sh` as the manual alternative).
 
-Status (2026-11-06): built and tested on Windows against a fake website on 127.0.0.1. **Nothing is on vps2 yet**, no signing key
-exists yet, and nothing was run on a Mac or Linux machine. [What is verified and what is not](#what-is-verified-and-what-is-not)
+Status (2026-11-06): built and tested on Windows against a fake website on 127.0.0.1. **Nothing is on the release yet**. The signing key exists (public half in `crates/lr_update/keys/trusted.txt`; the private key is KT's, outside the repo, and goes in the GitHub secret `LR_NATIVE_SIGNING_KEY`), and nothing was run on a Mac or Linux machine. [What is verified and what is not](#what-is-verified-and-what-is-not)
 lists it exactly.
 
 ```
@@ -34,13 +35,16 @@ lists it exactly.
 | Public keys the programs trust | `crates/lr_update/keys/trusted.txt` |
 | Build the launcher | `packaging/native/build-launcher.sh` |
 | Make and check a signed build tree | `packaging/native/manifest.mjs` |
-| Publish a build to vps2 | `packaging/publish-native-vps2.sh` |
-| In-game updater (website first, vps3 as fallback) | `src/bin/last_route/app/updater.rs`, `updater_site.rs` |
+| Publish a build to the GitHub nightly release (CI) | `packaging/native/publish-github.sh` |
+| Publish a build to vps2 (manual alternative) | `packaging/publish-native-vps2.sh` |
+| In-game updater (GitHub nightly first, vps3 as fallback) | `src/bin/last_route/app/updater.rs`, `updater_site.rs` |
 
 The crates do not depend on macroquad, so `cargo build -p lr_launcher` never compiles the game. The root `Cargo.toml` is now a
 workspace root (`members = [".", "crates/*"]`); `cargo test` and `cargo build` at the root still build only the game package.
 
 ## The website layout
+
+This is the tree layout. The GitHub release uses the same files under flat names (next section).
 
 Static files under the vps2 web root (`/srv/lr-rust-web`). `deploy-vps2.sh` (the web build) never deletes other folders, so
 `native/` survives web deploys. Caddy needs no change (it already serves static files and byte ranges; checked read-only).
@@ -94,6 +98,49 @@ This refuses a path inside the repository and refuses to overwrite a key. It pri
 to `trusted.txt`, rebuild the launcher and the game, and **back the private key up** (losing it means a new launcher with a new
 public key on every machine). For a rotation, add the new public key as a second line, ship, then publish with the new private key.
 Publishing needs `SIGN_KEY=<path to the pem>`.
+
+## GitHub nightly as the source
+
+The default source of the launcher and of the in-game updater is the `nightly` release of `KyttuXD/TheLastRoute`
+(`NIGHTLY_URL` in `crates/lr_update/src/fetch.rs`). Release assets are flat files, so the tree is flattened:
+
+```
+<root>-<platform>-<path with / as ->        root = native (or native-<channel>)
+native-linux-x86_64-latest.json
+native-linux-x86_64-builds-157-manifest.json
+native-linux-x86_64-builds-157-manifest.json.sig
+native-linux-x86_64-builds-157-f0.z
+```
+
+The contents do not change: `latest.json` still says `"manifest":"builds/157/manifest.json"` and the manifest still names `f0.z`;
+only the URL is mapped (`Site::url`, flat layout when the base is a GitHub release download URL). GitHub answers each download
+with a redirect to `objects.githubusercontent.com`; the client follows at most 3 redirects, only for GitHub release URLs, only
+over https and only to `github.com` or `*.githubusercontent.com`.
+
+**Why the signatures stay.** The release is writable by anyone with push rights on the repository or a leaked token. The manifest
+is still signed with KT's ed25519 key, and the launcher and game still check the signature, every sha256, the size caps and the
+no-downgrade rule. GitHub is only the host.
+
+**CI publishes it.** On every push to `main`, the Windows and Linux jobs of `.github/workflows/build.yml` run
+`packaging/native/publish-github.sh PLATFORM ARTIFACT BUILD REVISION` (BUILD is the run number, REVISION the commit). It builds
+and signs the tree, verifies it, uploads the build files, uploads `latest.json` LAST (`gh release upload --clobber`), then deletes
+the assets of builds of that platform older than the newest 2. The step is `continue-on-error`, so a signing problem never stops
+the game build. macOS-universal is not built by CI yet, so no macOS native build is published from there. Try it without a key or
+an upload: `DRY_RUN=1 sh packaging/native/publish-github.sh linux-x86_64 dist/last-route-linux-x86_64.tar.gz 1 abc123`
+(prints the flat file list and every `gh` command).
+
+**Add the key to GitHub (once).** The private key made by `node packaging/native/manifest.mjs keygen` stays outside the repo.
+Store it as a repository secret (the public key is already in `crates/lr_update/keys/trusted.txt`):
+
+```sh
+gh secret set LR_NATIVE_SIGNING_KEY --repo KyttuXD/TheLastRoute < ~/lr-native-signing.pem
+```
+
+Without the secret the step prints a notice and publishes nothing; the nightly game files are published as before.
+
+**Old devices.** A device without the launcher downloads it once from the same release (`lr_launcher-windows-x86_64.exe`,
+`lr_launcher-linux-x86_64`, `lr_launcher-macos-universal.zip`, see [RELEASES.md](RELEASES.md)). From then on the launcher keeps the
+game current from the `nightly` release.
 
 ## Install location and state
 
@@ -166,9 +213,9 @@ the real site never accepts it.
 
 ## The in-game updater
 
-`app/updater.rs` now looks at the website first (`updater_site.rs`, the same checks as the launcher: pointer, manifest hash,
-signature, every file's sha256, `min_os`) and uses the old vps3 update API (with the `download-key` file) only when the website
-cannot be used: no build for this platform, unreachable, or a failed check. No download key is needed for the website path. A newer
+`app/updater.rs` now looks at the nightly release first (`NIGHTLY_URL`) (`updater_site.rs`, the same checks as the launcher: pointer, manifest hash,
+signature, every file's sha256, `min_os`) and uses the old vps3 update API (with the `download-key` file) only when the nightly release
+cannot be used: no build for this platform, unreachable, or a failed check. No download key is needed for that path. A newer
 build must have a higher number and another commit than the running one. Windows and Linux download just the program file and
 replace the running executable as before; macOS downloads the whole bundle to a hidden folder beside the running one and swaps it.
 A game started by the launcher (`LR_LAUNCHER=1`) does no update check at all: the launcher owns updates, so they cannot disagree.
@@ -203,7 +250,10 @@ sh packaging/native/build-launcher.sh        # -> dist/launcher/
 Remove it again by deleting the launcher and the install folder above. Nothing else is touched: no registry entry, no service,
 no persistence.
 
-## Publish a native build
+## Publish a native build by hand
+
+CI does this for Windows and Linux on every push to `main` ([GitHub nightly as the source](#github-nightly-as-the-source)). The
+vps2 script below is the manual or alternative path and writes the tree layout on the website.
 
 1. Build the platform artifacts as before: `sh packaging/local/publish-local.sh build [windows|linux|macos|all]` (files appear in
    `dist-local/<N>/`). Do **not** run its `publish` step for the website; it publishes to vps3.
