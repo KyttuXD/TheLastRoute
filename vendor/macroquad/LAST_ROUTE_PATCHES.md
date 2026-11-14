@@ -28,3 +28,8 @@ Two build-only changes besides, neither of which changes what the crate does:
 To check or upgrade: `diff -ru <crate>/src vendor/macroquad/src` shows the atlas hunk and the `allow` line. `Cargo.toml` here carries the
 crate's own dependency table; `packaging/macos/legacy/stage-dependencies.sh` applies the same fix to the 0.4.14 copy
 the Snow Leopard build uses.
+
+Dependency trim (2026-11-13): `macroquad_macro` is gone (the game hand-expands the entry point, so `#[macroquad::main]`,
+`#[macroquad::test]` and the scene `CapabilityTrait` derive are removed), and so are the unused optional `log` and
+`backtrace` dependencies with the `log-rs` and `glam-serde` features. `set_panic_handler` always reports "Macroquad compiled
+without backtrace". The Snow Leopard build's 0.4.14 copy is untouched.
