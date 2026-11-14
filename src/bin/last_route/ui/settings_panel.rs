@@ -69,7 +69,7 @@ fn graphics_api_label(setting: &str, metal_now: bool, marker_forced: bool) -> St
 /// how the two rows work, with no measured numbers.
 const VSYNC_NOTES: [&str; 2] = [
     "VSYNC ON: LOCKED TO YOUR SCREEN'S REFRESH (60 OR 75 FPS)",
-    "VSYNC OFF: THE FPS LIMIT DECIDES; UNLIMITED = AS FAST AS IT RUNS",
+    "VSYNC OFF: THE FPS LIMIT DECIDES; UNLIMITED (TOP STOP) = AS FAST AS IT RUNS. BROWSER: SCREEN-PACED",
 ];
 
 /// The two lines under the GRAPHICS API row (macOS). The numbers are the stress-fly measurements on an Apple M4,
@@ -661,11 +661,7 @@ pub fn draw_settings(
                 .into();
                 changed = true;
             }
-            let fps = if st.fps_limit < 15.0 {
-                "UNLIMITED".to_string()
-            } else {
-                format!("{}", st.fps_limit as i32)
-            };
+            let fps = crate::app::settings::fps_limit_label(st.fps_limit);
             if let Some(v) = slider_row(
                 a,
                 ui,
@@ -678,7 +674,7 @@ pub fn draw_settings(
                 1000.0,
                 &fps,
             ) {
-                st.fps_limit = (v / 30.0).round() * 30.0;
+                st.fps_limit = crate::app::settings::snap_fps_limit(v);
                 changed = true;
             }
             if let Some(v) = slider_row(

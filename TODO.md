@@ -21,8 +21,8 @@ items rather than left in an ambiguous in-progress state.
 - [ ] Check the Mansion doors in a run on KT-MBA (the luxuryRoomDoor models and data are fine). Why: the doors are invisible in game, so the draw path is the suspect.
 - [x] Fix bed placement in furnished.rs so beds stop sticking out into the hallway. Why: a bed in the hallway blocks the way and breaks the room layout. (already done: furnished.rs:957)
 - [x] Account screen kicker reads "KYTTU - THE LAST ROUTE" (game retitled "KYTTU - The Last Route" on 2026-11-08; the macOS bundle keeps the folder name "KYTTU The Last Route.app" so the updater and installed copies still find it).
-- [ ] Deploy the public route process on vps2 (unit in docs/SERVERS.md), then set `client_host_fallback` to false. Why: the public route has no real host until then; the server change needs KT's approval.
-- [ ] Ship the CREATE ROOM build fix (docs/patches/node-hosted-build.patch and the region agent's Rust host). Why: CREATE ROOM is refused with BUILD MISMATCH on the live site.
+- [ ] Deploy the public route process on vps2 (unit in packaging/public-route/, steps in docs/DEPLOY_ROOM_HOST.md), then set `client_host_fallback` to false in the client data (the live backend has no /api/public/settings). Why: the public route has no real host until then; the server change needs KT's approval.
+- [ ] Ship the CREATE ROOM build fix (docs/patches/node-hosted-build.patch and the region agent's Rust host). Why: CREATE ROOM is refused with BUILD MISMATCH on the live site. Scripts: packaging/room-host/; the exact steps for KT to approve (not run): docs/DEPLOY_ROOM_HOST.md. Follow-up: a `last_route --print-protocol` flag (src change) so a script can check the host binary against the wasm.
 - [x] Admin STATUS should show the real server state in a hosted room, not always "SERVER OFFLINE (SOLO, NO SERVER)". Why: the status line misleads the admin. (already done: app/mod.rs (RoomStatus from NetSession))
 
 ## GitHub CI and deploy (2026-11-07, repo is public)
@@ -30,7 +30,7 @@ items rather than left in an ambiguous in-progress state.
 - [x] CI restored (.github/workflows/build.yml, test.yml): Windows, Linux, macOS Intel and macOS Apple Silicon are separate builds; nightly builds go to the "nightly" and "nightly-server" releases, not Actions artifacts.
 - [x] Web deploy from GitHub (.github/workflows/deploy-web.yml): push to main builds the wasm and runs packaging/web/deploy-vps2.sh as the restricted lr-deploy user. Secrets DEPLOY_SSH_KEY and DEPLOY_KNOWN_HOSTS are set; environment "production" exists.
 - [ ] Dry-run check on the first real deploy: watch the deploy-web run, then curl https://lastrouterust.games.kyttuslab.org/version.json.
-- [ ] Remove the stale NIGHTLY_SSH_KEY and NIGHTLY_KNOWN_HOSTS secrets (old vps3 publish, no longer used).
+- [ ] Remove the stale NIGHTLY_SSH_KEY and NIGHTLY_KNOWN_HOSTS secrets (old vps3 publish, no longer used). (commands in docs/DEPLOY_ROOM_HOST.md, step 12; needs KT's approval; packaging/publish-vps.sh stays until the vps3 update route is retired)
 - [ ] Decide whether the in-game macOS updater should pick the Intel or Apple Silicon zip (nightly now has separate files, no universal zip).
 - [x] Tests that read tests/parity/ or reference/ need those folders, which are now local-only (git history was rewritten to remove them). They skip or fail on a fresh clone; add a note or skip guard. (already done: shared/test_support.rs:1-9)
 - [ ] Ask KT before any server change beyond the lr-deploy user (vps2 deploy user created 2026-11-07).

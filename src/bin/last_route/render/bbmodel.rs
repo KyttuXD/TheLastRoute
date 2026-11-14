@@ -336,6 +336,12 @@ fn read_shape(j: &serde_json::Value, res_w: f32, res_h: f32) -> Option<Shape> {
     if parts.is_empty() {
         return None;
     }
+    // a parsed model stays for the session: hand back the spare capacity its growth left (a one-time cost at parse)
+    parts.shrink_to_fit();
+    groups.shrink_to_fit();
+    for p in &mut parts {
+        p.faces.shrink_to_fit();
+    }
     Some(Shape {
         parts,
         groups,

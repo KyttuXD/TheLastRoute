@@ -702,6 +702,186 @@ pub fn trim_heap() {
     }
 }
 
+/// Decides when the heap is handed back during play (see [`trim_heap`]). Streaming frees meshes and chunk buffers all
+/// through a run and glibc keeps those pages, so a trim at a moment that already stalls (a level switch, a window
+/// recentre, a menu or the pause screen opening) returns them. Rate-limited to one trim per [`TrimGate::MIN_GAP`]
+/// seconds; a missed event is dropped, never queued, so a trim never lands on an ordinary frame.
+#[derive(Debug, Default)]
+pub struct TrimGate {
+    last: Option<f64>,
+    prev: Option<(bool, (i32, i32), i32)>,
+}
+
+impl TrimGate {
+    /// The least time between two trims, in seconds.
+    pub const MIN_GAP: f64 = 20.0;
+
+    /// Feed one frame's state: whether a menu or the pause screen is up (or no run is), the streaming window's
+    /// origin and the player's level. Returns true on the frame a trim is due: the state just changed to a menu, or
+    /// the origin or level changed, and the last trim is at least `MIN_GAP` seconds old. The first call only
+    /// records the state.
+    pub fn observe(&mut self, now: f64, menu: bool, origin: (i32, i32), level: i32) -> bool {
+        let cur = (menu, origin, level);
+        let Some(prev) = self.prev.replace(cur) else {
+            return false;
+        };
+        let event = (menu && !prev.0) || (!menu && !prev.0 && (origin != prev.1 || level != prev.2));
+        if !event {
+            return false;
+        }
+        if self.last.is_some_and(|t| now - t < Self::MIN_GAP) {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+/// The page-aligned interior of each blob (the whole pages that lie entirely inside it), as sorted, merged
+/// `(start, end)` address ranges. A blob smaller than two pages may have no interior and gives nothing.
+#[allow(dead_code)] // used by release_blob_pages on Linux and by the tests
+fn page_interiors(blobs: &[(usize, usize)], page: usize) -> Vec<(usize, usize)> {
+    let mask = page.max(1) - 1;
+    let mut v: Vec<(usize, usize)> = blobs
+        .iter()
+        .filter_map(|&(ptr, len)| {
+            let start = ptr.checked_add(mask)? & !mask;
+            let end = ptr.checked_add(len)? & !mask;
+            (end > start).then_some((start, end))
+        })
+        .collect();
+    v.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(v.len());
+    for (s, e) in v {
+        match out.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => out.push((s, e)),
+        }
+    }
+    out
+}
+
+/// The ranges that may safely be dropped: each of `ranges` that lies wholly inside one read-only load segment
+/// (`loads`, no write flag, so never `.data.rel.ro`, `.got` or any relocated page) and touches none of the `relro`
+/// ranges. Anything else is left alone.
+#[allow(dead_code)] // used by release_blob_pages on Linux and by the tests
+fn safe_ranges(ranges: &[(usize, usize)], loads: &[(usize, usize)], relro: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    ranges
+        .iter()
+        .copied()
+        .filter(|&(s, e)| {
+            loads.iter().any(|&(ls, le)| s >= ls && e <= le) && !relro.iter().any(|&(rs, re)| s < re && rs < e)
+        })
+        .collect()
+}
+
+/// After the boot load, gives back the resident pages of the embedded asset and data blobs (`include_bytes!` and
+/// `include_str!` data: plain bytes in the read-only part of the executable, with no relocations inside). The load
+/// reads every one once; later they are only touched when a model is first built, and a dropped page is read back from
+/// the file (the page cache) on that touch, so nothing is lost but a minor fault. Returns the bytes advised away.
+///
+/// Linux with glibc on 64-bit only; nothing elsewhere. Only whole pages inside a blob are advised, and only when the
+/// program headers (`dl_iterate_phdr`) show the pages sit in a load segment with no write flag and outside
+/// `PT_GNU_RELRO`. A relocated or writable page (`.data.rel.ro`, `.got`, `.data`) would come back as the unrelocated
+/// file bytes, so a range that cannot be shown to be plain read-only file data is skipped. Call it once, off the frame.
+pub fn release_blob_pages(blobs: &[&[u8]]) -> usize {
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_pointer_width = "64"))]
+    {
+        use std::ffi::{c_char, c_int, c_void};
+        // mirrors of glibc's Elf64_Phdr and dl_phdr_info (only the leading fields); the unread ones keep the layout
+        #[allow(dead_code)]
+        #[repr(C)]
+        struct Phdr {
+            p_type: u32,
+            p_flags: u32,
+            p_offset: u64,
+            p_vaddr: u64,
+            p_paddr: u64,
+            p_filesz: u64,
+            p_memsz: u64,
+            p_align: u64,
+        }
+        #[allow(dead_code)]
+        #[repr(C)]
+        struct DlPhdrInfo {
+            addr: u64,
+            name: *const c_char,
+            phdr: *const Phdr,
+            phnum: u16,
+        }
+        #[derive(Default)]
+        struct Segs {
+            loads: Vec<(usize, usize)>,
+            relro: Vec<(usize, usize)>,
+        }
+        extern "C" {
+            fn dl_iterate_phdr(
+                cb: extern "C" fn(*mut DlPhdrInfo, usize, *mut c_void) -> c_int,
+                data: *mut c_void,
+            ) -> c_int;
+            fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
+            fn sysconf(name: c_int) -> i64;
+        }
+        const PT_LOAD: u32 = 1;
+        const PT_GNU_RELRO: u32 = 0x6474_e552;
+        const PF_W: u32 = 2;
+        const MADV_DONTNEED: c_int = 4;
+        const SC_PAGESIZE: c_int = 30;
+        // The first object dl_iterate_phdr reports is the main program; stop there.
+        extern "C" fn first_object(info: *mut DlPhdrInfo, _size: usize, data: *mut c_void) -> c_int {
+            // SAFETY: glibc passes a valid dl_phdr_info whose phdr points at phnum program headers, and `data` is
+            // the `Segs` this module passed in below.
+            unsafe {
+                let segs = &mut *(data as *mut Segs);
+                let info = &*info;
+                if info.phdr.is_null() {
+                    return 1;
+                }
+                for h in std::slice::from_raw_parts(info.phdr, info.phnum as usize) {
+                    let start = (info.addr as usize).wrapping_add(h.p_vaddr as usize);
+                    let range = (start, start.wrapping_add(h.p_memsz as usize));
+                    if h.p_type == PT_LOAD && h.p_flags & PF_W == 0 {
+                        segs.loads.push(range);
+                    } else if h.p_type == PT_GNU_RELRO {
+                        segs.relro.push(range);
+                    }
+                }
+            }
+            1
+        }
+        let mut segs = Segs::default();
+        // SAFETY: the callback only reads the headers glibc hands it and writes into `segs`, which outlives the call.
+        unsafe {
+            dl_iterate_phdr(first_object, &mut segs as *mut Segs as *mut c_void);
+        }
+        if segs.loads.is_empty() {
+            return 0;
+        }
+        // SAFETY: sysconf takes no pointers.
+        let page = match unsafe { sysconf(SC_PAGESIZE) } {
+            p if p >= 4096 && (p & (p - 1)) == 0 => p as usize,
+            _ => 4096,
+        };
+        let blobs: Vec<(usize, usize)> = blobs.iter().map(|b| (b.as_ptr() as usize, b.len())).collect();
+        let ranges = safe_ranges(&page_interiors(&blobs, page), &segs.loads, &segs.relro);
+        let mut bytes = 0;
+        for (s, e) in ranges {
+            // SAFETY: the range is whole pages inside a read-only, non-RELRO load segment of this executable: clean
+            // file-backed private pages that nothing has written, which the kernel refaults from the file on the next
+            // read. Nothing holds a pointer into them across the call that would be invalid afterwards.
+            if unsafe { madvise(s as *mut c_void, e - s, MADV_DONTNEED) } == 0 {
+                bytes += e - s;
+            }
+        }
+        bytes
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu", target_pointer_width = "64")))]
+    {
+        let _ = blobs;
+        0
+    }
+}
+
 /// The process's resident memory in MB (Linux only: /proc/self/statm, 4 KiB pages). `None` elsewhere.
 pub fn rss_mb() -> Option<u32> {
     #[cfg(target_os = "linux")]
@@ -733,6 +913,66 @@ mod tests {
 
     fn parsed(text: &str) -> Rules {
         Rules::parse(&serde_json::from_str::<Value>(text).expect("valid json"))
+    }
+
+    #[test]
+    fn trim_gate_fires_on_transitions_and_is_rate_limited() {
+        let mut g = TrimGate::default();
+        // the first frame only records
+        assert!(!g.observe(0.0, false, (0, 0), 0));
+        // a steady frame does nothing
+        assert!(!g.observe(1.0, false, (0, 0), 0));
+        // a recentre fires
+        assert!(g.observe(2.0, false, (8, 0), 0));
+        // a second one 5 s later is inside the gap and is dropped
+        assert!(!g.observe(7.0, false, (16, 0), 0));
+        // a level switch after the gap fires
+        assert!(g.observe(22.5, false, (16, 0), 1));
+        // opening the pause screen inside the gap does not
+        assert!(!g.observe(30.0, true, (16, 0), 1));
+        // staying open does not fire; closing and reopening after the gap does
+        assert!(!g.observe(31.0, true, (16, 0), 1));
+        assert!(!g.observe(32.0, false, (16, 0), 1));
+        assert!(g.observe(50.0, true, (16, 0), 1));
+        // changes while a menu is up (no run) never fire
+        assert!(!g.observe(90.0, true, (0, 0), 0));
+    }
+
+    #[test]
+    fn blob_interiors_are_whole_pages_merged_and_sorted() {
+        // a blob inside one page has no interior
+        assert!(page_interiors(&[(0x1010, 0x100)], 0x1000).is_empty());
+        // 0x1800..0x4400 holds the whole pages 0x2000..0x4000
+        assert_eq!(page_interiors(&[(0x1800, 0x2c00)], 0x1000), vec![(0x2000, 0x4000)]);
+        // touching or overlapping interiors merge; the input order does not matter
+        let v = page_interiors(&[(0x6000, 0x2000), (0x1000, 0x3000), (0x4000, 0x2000)], 0x1000);
+        assert_eq!(v, vec![(0x1000, 0x8000)]);
+        // a gap stays a gap
+        assert_eq!(page_interiors(&[(0x1000, 0x1000), (0x3000, 0x1000)], 0x1000).len(), 2);
+    }
+
+    #[test]
+    fn only_ranges_inside_a_read_only_segment_and_outside_relro_are_kept() {
+        let loads = [(0x10000, 0x20000)];
+        let relro = [(0x18000, 0x19000)];
+        let ranges = [(0x11000, 0x13000), (0x17000, 0x18000), (0x17000, 0x18001), (0x1f000, 0x21000), (0x30000, 0x31000)];
+        // the second touches no relro (ends where it starts); the third overlaps it; the last two leave the segment
+        assert_eq!(safe_ranges(&ranges, &loads, &relro), vec![(0x11000, 0x13000), (0x17000, 0x18000)]);
+        // no read-only segment known: nothing is advised
+        assert!(safe_ranges(&ranges, &[], &relro).is_empty());
+    }
+
+    #[test]
+    fn release_blob_pages_leaves_the_data_readable() {
+        // a heap blob is never inside a read-only load segment, so nothing is advised and the bytes stay intact
+        let heap = vec![7u8; 1 << 20];
+        assert_eq!(release_blob_pages(&[&heap]), 0);
+        assert!(heap.iter().all(|&b| b == 7));
+        // a real embedded blob is read back unchanged after the pages are dropped
+        static BLOB: &[u8] = include_bytes!("../data/perf.json");
+        let before = BLOB.to_vec();
+        let _ = release_blob_pages(&[BLOB]);
+        assert_eq!(BLOB, &before[..]);
     }
 
     #[test]

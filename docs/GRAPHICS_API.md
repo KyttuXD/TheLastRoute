@@ -58,7 +58,7 @@ AUTO stays OpenGL because most people play in a window, where Metal is slower th
 
 ## The macOS frame pacer, VSYNC and FPS LIMIT
 
-Defaults: VSYNC on, FPS LIMIT 0 (unlimited), as in Godot (`DEFAULT_VSYNC := true`). With VSYNC on the loop is held to the display's refresh, so a 75 Hz screen shows 75 FPS (59-60 on a 60 Hz one): that is vsync working, not a limit. The Settings text under the two rows says so.
+Defaults: VSYNC on, FPS LIMIT 0 (UNLIMITED; the slider's top stop, 1000, is UNLIMITED too; a saved exact 60 stays as the player's choice), as in Godot (`DEFAULT_VSYNC := true`). With VSYNC on the loop is held to the display's refresh, so a 75 Hz screen shows 75 FPS (59-60 on a 60 Hz one): that is vsync working, not a limit. The Settings text under the two rows says so.
 
 miniquad's macOS run loop waits on a CVDisplayLink at the top of every iteration, whatever the swap interval is. Measured (OpenGL, window, vsync off): pacer left on 74.1 FPS, pacer off 264 FPS. So that wait, not OpenGL, was the 60-75 cap with vsync off.
 
@@ -67,6 +67,12 @@ The vendored miniquad exposes `window::set_frame_pacer(bool)` (a shared `AtomicB
 FPS LIMIT works above the refresh rate when VSYNC is off: `Pacer::wait` sleeps to a fixed frame grid. Measured (OpenGL, vsync off, `--stress-limit N`): 60 gave 58.8, 120 gave 117.7, 200 gave 194.0 FPS. With VSYNC on a cap above the refresh does nothing. In a Metal window the cap cannot exceed the refresh either (see Measured).
 
 With vsync off and no limit the loop has no wait of its own: it uses a core flat out and can tear on a screen that does not match the frame rate. A window that is fully hidden still sleeps (miniquad's occlusion throttle, 60 Hz); a visible but unfocused window does not. Set an FPS LIMIT to keep laptops cool.
+
+### Linux, the browser and phones
+
+Linux (X11 GLX, X11 EGL, Wayland EGL): `apply_vsync` calls the vendored `window::set_swap_interval`; the loop applies it on the GL thread just before the next swap (one relaxed atomic load per frame, the GL call only on a change), so VSYNC is live and FPS LIMIT works above the refresh with VSYNC off. The driver may still ignore the request (a compositor that forces vsync, such as some Wayland setups).
+
+Browser (wasm): requestAnimationFrame paces the loop at the screen's refresh whatever VSYNC and FPS LIMIT say, so the FPS LIMIT wait is skipped (`app/gfx.rs`) and VSYNC has no effect. Phones (Android, iOS): the compositor paces the frame the same way; the rows do not raise the rate. The Settings note says the browser is screen-paced.
 
 ## Measuring
 

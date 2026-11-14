@@ -85,7 +85,7 @@ impl Default for Settings {
             sensitivity: crate::config::MOUSE_SENSITIVITY,
             fullscreen: false,
             vsync: true,
-            fps_limit: 60.0,
+            fps_limit: 0.0,
             quality: "LOW".into(),
             adaptive_quality: true,
             ads: "off".into(),
@@ -164,7 +164,7 @@ impl Settings {
         );
         s.fullscreen = b("fullscreen", false);
         s.vsync = b("vsync", true);
-        s.fps_limit = f("fps_limit", 60.0).max(0.0);
+        s.fps_limit = f("fps_limit", 0.0).max(0.0);
         s.pause_on_focus_loss = b("pause_on_focus_loss", true);
         s.teammate_waypoints = b("teammate_waypoints", true);
         s.reduced_motion = b("reduced_motion", false);
@@ -255,14 +255,43 @@ impl Settings {
 
     /// The frame cap the FPS LIMIT row asks for: `None` is UNLIMITED. Mirrors Godot's
     /// `Settings.set_fps_limit`: a value under 15 means unlimited, anything else is rounded and
-    /// kept at the data floor (`frame.min_cap_fps` in data/controls.json) or more.
+    /// kept at the data floor (`frame.min_cap_fps` in data/controls.json) or more. The slider's top
+    /// stop (`FPS_LIMIT_UNLIMITED_AT`, 1000) is UNLIMITED too.
     pub fn frame_cap_fps(&self) -> Option<u32> {
-        if self.fps_limit < 15.0 {
+        if fps_limit_is_unlimited(self.fps_limit) {
             None
         } else {
             let floor = super::bindings::rules().frame.min_cap_fps as f32;
             Some(self.fps_limit.round().max(floor) as u32)
         }
+    }
+}
+
+/// The FPS LIMIT value from which the cap is off: the slider's top stop.
+pub const FPS_LIMIT_UNLIMITED_AT: f32 = 1000.0;
+
+/// Whether an FPS LIMIT value means UNLIMITED: under 15 (0 is the default) or the slider's top stop.
+pub fn fps_limit_is_unlimited(fps_limit: f32) -> bool {
+    !(15.0..FPS_LIMIT_UNLIMITED_AT).contains(&fps_limit)
+}
+
+/// The FPS LIMIT row's text: UNLIMITED or the number.
+pub fn fps_limit_label(fps_limit: f32) -> String {
+    if fps_limit_is_unlimited(fps_limit) {
+        "UNLIMITED".to_string()
+    } else {
+        format!("{}", fps_limit as i32)
+    }
+}
+
+/// Snaps a slider value to the row's steps: multiples of 30, and the last step below the top stop
+/// joins the top stop (UNLIMITED) so it can be reached.
+pub fn snap_fps_limit(v: f32) -> f32 {
+    let snapped = (v / 30.0).round() * 30.0;
+    if snapped >= FPS_LIMIT_UNLIMITED_AT - 30.0 {
+        FPS_LIMIT_UNLIMITED_AT
+    } else {
+        snapped
     }
 }
 
@@ -288,7 +317,33 @@ mod tests {
         assert_eq!(with_limit(60.0).frame_cap_fps(), Some(60));
         assert_eq!(with_limit(144.0).frame_cap_fps(), Some(144));
         assert_eq!(with_limit(240.0).frame_cap_fps(), Some(240));
-        assert_eq!(with_limit(1000.0).frame_cap_fps(), Some(1000));
+        assert_eq!(with_limit(990.0).frame_cap_fps(), Some(990));
+        // the slider's top stop is UNLIMITED
+        assert_eq!(with_limit(1000.0).frame_cap_fps(), None);
+        assert_eq!(with_limit(2000.0).frame_cap_fps(), None);
+    }
+
+    #[test]
+    fn fps_limit_defaults_to_unlimited_and_an_exact_60_is_kept() {
+        assert_eq!(Settings::default().fps_limit, 0.0);
+        assert_eq!(Settings::default().frame_cap_fps(), None);
+        // a saved 60 is the player's choice, not migrated
+        let s = Settings::from_json(&serde_json::json!({"fps_limit": 60.0}));
+        assert_eq!(s.frame_cap_fps(), Some(60));
+    }
+
+    #[test]
+    fn fps_limit_slider_top_stop_is_unlimited() {
+        assert_eq!(super::fps_limit_label(0.0), "UNLIMITED");
+        assert_eq!(super::fps_limit_label(14.0), "UNLIMITED");
+        assert_eq!(super::fps_limit_label(60.0), "60");
+        assert_eq!(super::fps_limit_label(990.0), "990");
+        assert_eq!(super::fps_limit_label(1000.0), "UNLIMITED");
+        assert_eq!(super::snap_fps_limit(1000.0), 1000.0);
+        assert_eq!(super::snap_fps_limit(980.0), 1000.0);
+        assert_eq!(super::snap_fps_limit(100.0), 90.0);
+        assert_eq!(super::snap_fps_limit(5.0), 0.0);
+        assert_eq!(super::fps_limit_is_unlimited(super::snap_fps_limit(1000.0)), true);
     }
 
     #[test]

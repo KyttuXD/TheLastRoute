@@ -9,13 +9,15 @@
 //! Anything unexpected in the file (not TrueType outlines, a table out of bounds) returns `None` and the caller
 //! loads the font as it is.
 
-/// The characters kept: Latin (Basic, Latin-1, Extended-A), general punctuation, currency, arrows, maths, box drawing
-/// and shapes. That covers every string the game ships and Western European text; usernames are ASCII already.
-/// Other scripts (Greek, Cyrillic, Vietnamese) draw blank; `LR_FULL_FONTS=1` loads whole fonts for a pack that
+/// The characters kept: Latin (Basic, Latin-1, Extended-A), general punctuation, currency and arrows. That covers every
+/// string the game ships (a scan of the sources and data found nothing outside Latin-1 but the dash, bullet, ellipsis,
+/// euro sign and right arrow) and Western European text; usernames are ASCII already. Maths operators and the box
+/// drawing and shapes blocks (about 500 outlines a face, about 2 MB a face) are no longer kept. Other scripts (Greek,
+/// Cyrillic, Vietnamese) and those symbols draw blank; `LR_FULL_FONTS=1` loads whole fonts for a pack that
 /// needs them (see `shared/assets.rs`).
 pub fn wanted(c: char) -> bool {
     matches!(c as u32,
-        0x20..=0x17F | 0x2000..=0x206F | 0x20A0..=0x20BF | 0x2190..=0x21FF | 0x2200..=0x22FF | 0x2500..=0x25FF | 0xFFFD)
+        0x20..=0x17F | 0x2000..=0x206F | 0x20A0..=0x20BF | 0x2190..=0x21FF | 0xFFFD)
 }
 
 fn u16_at(b: &[u8], at: usize) -> Option<u16> {

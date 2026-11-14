@@ -496,6 +496,7 @@ where
 
     let mut event_handler = (f.take().unwrap())();
 
+    let mut last_swap_interval = conf.platform.swap_interval.unwrap_or(1);
     while !crate::native_display().try_lock().unwrap().quit_ordered {
         while let Ok(request) = rx.try_recv() {
             display.process_request(request);
@@ -523,6 +524,12 @@ where
             event_handler.update();
             event_handler.draw();
 
+            // Last Route patch: a live swap interval change (window::set_swap_interval), one relaxed load per frame
+            let want = crate::SWAP_INTERVAL_REQUEST.load(std::sync::atomic::Ordering::Relaxed);
+            if want >= 0 && want != last_swap_interval {
+                last_swap_interval = want;
+                glx.swap_interval(display.display, glx_window, glx_context, want);
+            }
             glx.swap_buffers(display.display, glx_window);
             (display.libx11.XFlush)(display.display);
         }
@@ -608,6 +615,7 @@ where
 
     let mut event_handler = (f.take().unwrap())();
 
+    let mut last_swap_interval = conf.platform.swap_interval.unwrap_or(1);
     while !crate::native_display().try_lock().unwrap().quit_ordered {
         while let Ok(request) = rx.try_recv() {
             display.process_request(request);
@@ -630,6 +638,12 @@ where
             event_handler.update();
             event_handler.draw();
 
+            // Last Route patch: a live swap interval change (window::set_swap_interval), one relaxed load per frame
+            let want = crate::SWAP_INTERVAL_REQUEST.load(std::sync::atomic::Ordering::Relaxed);
+            if want >= 0 && want != last_swap_interval {
+                last_swap_interval = want;
+                (egl_lib.eglSwapInterval)(egl_display, want);
+            }
             (egl_lib.eglSwapBuffers)(egl_display, egl_surface);
             (display.libx11.XFlush)(display.display);
         }

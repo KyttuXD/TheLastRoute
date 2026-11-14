@@ -437,11 +437,16 @@ impl PropModel {
         }
         let parts = by_tex
             .into_iter()
-            .map(|(t, geo)| Part {
-                verts: geo.verts,
-                idx: geo.idx,
-                tex: t.and_then(|i| textures[i].clone()).unwrap_or_else(|| white.clone()),
-                key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            .map(|(t, mut geo)| {
+                // a model stays loaded for the session: drop the spare capacity its growth left
+                geo.verts.shrink_to_fit();
+                geo.idx.shrink_to_fit();
+                Part {
+                    verts: geo.verts,
+                    idx: geo.idx,
+                    tex: t.and_then(|i| textures[i].clone()).unwrap_or_else(|| white.clone()),
+                    key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+                }
             })
             .collect();
         Some(PropModel {
