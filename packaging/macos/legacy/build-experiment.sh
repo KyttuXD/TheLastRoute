@@ -69,6 +69,9 @@ APP="$ROOT/dist/legacy-$OSVER/KYTTU The Last Route ($NAME).app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/last_route"
+# the icon: OS X 10.5 and 10.6 read only the classic icns entries (iconutil writes PNG ones they ignore, which gave the
+# generic application icon), so the file is written by make-icns.py
+python3 -I "$ROOT/packaging/macos/legacy/make-icns.py" "$APP/Contents/Resources/last_route.icns" "$ROOT/src/bin/last_route/assets/branding"
 # the compatibility library the binary links (MacPorts legacy-support), beside the executable
 cp "$SUPPORT/libMacportsLegacySystem.B.dylib" "$APP/Contents/MacOS/"
 install_name_tool -change /opt/local/lib/libMacportsLegacySystem.B.dylib \

@@ -57,6 +57,15 @@ The Mac is for testing only: nothing is compiled there. Copy the zip over, unzip
 Terminal to keep what it prints. `--screenshot FILE` with `LR_SHOT_RUN=1 LR_SHOT_INF=1` writes the picture the game
 drew.
 
+### The app icon
+
+The legacy bundle used to ship no icon file (`Contents/Resources` was empty while `Info.plist` named `last_route`), so the
+Finder showed the generic application icon. `packaging/macos/legacy/make-icns.py` now writes `last_route.icns` from the logo
+PNGs. It writes the classic entries OS X 10.5 and 10.6 read (`is32`/`s8mk` 16 px, `il32`/`l8mk` 32 px, `it32`/`t8mk` 128 px)
+and adds PNG entries (`ic07`, `ic08`) for newer systems; `iconutil` writes only PNG entries, which 10.5 and 10.6 ignore. The
+script checks its own output and the build fails if it does. Not seen on a Mac yet: after the next legacy build, unzip and
+look at the Finder icon (if it still shows the old one, run `touch` on the app, the Finder caches icons by bundle).
+
 ### The 10.5 build
 
 MacPorts publishes a Darwin 9 build of the Rust 1.77 standard library (no Grand Central Dispatch, which 10.5 lacks)
